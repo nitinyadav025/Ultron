@@ -65,6 +65,8 @@ def list_files_reply(result: dict[str, Any]) -> str | None:
     except (TypeError, ValueError):
         count = len(items)
     folder = folder_display_name(raw.get("directory"))
+    if count <= 0:
+        return f"There are no items in your {folder} folder."
     noun = "item" if count == 1 else "items"
     verb = "is" if count == 1 else "are"
     return f"There {verb} {count} {noun} in your {folder} folder."

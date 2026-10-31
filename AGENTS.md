@@ -1,3 +1,5 @@
+Before anything else, read docs/PROGRESS.md and continue from its NEXT STEP.
+
 # Ultron — Local Voice Assistant
 
 Ultron is a Fedora 44 voice-controlled laptop assistant (Python, `~/Downloads/assistant-project`)
