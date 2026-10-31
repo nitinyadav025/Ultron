@@ -1,0 +1,41 @@
+assistant:
+  name: "Ultron"
+  target_os: "Fedora Linux 44 (GNOME 50.5 Wayland)"
+  target_python: "3.14.8"
+  default_mode: "auto-safe"  # ask | auto-safe | human-only (auto-safe = safe tools run, risky ones still confirm)
+  max_steps: 25
+  wall_clock_timeout_sec: 180
+  idle_standdown_sec: 30
+  max_repeated_failures: 3
+  max_tool_output_chars: 4000
+  confirmation_timeout_sec: 60
+
+thinking:
+  default_level: "medium"
+  planning_level: "high"
+  routing_level: "low"
+  available_levels:
+    - "low"
+    - "medium"
+    - "high"
+
+safety:
+  allow_full_home_dir: true
+  allowed_xdg_dirs:
+    - "Desktop"
+    - "Documents"
+    - "Downloads"
+  include_workspace: true
+  readonly_system_dirs:
+    - "/etc"
+    - "/usr"
+    - "/boot"
+    - "/proc"
+    - "/sys"
+  kill_hotkey_binding: "<Ctrl><Alt>q"
+
+sandbox:
+  memory_max: "512M"
+  cpu_quota: "25%"
+  timeout_sec: 30
+  use_bubblewrap_if_available: false

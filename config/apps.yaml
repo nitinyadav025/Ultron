@@ -1,0 +1,24 @@
+apps:
+  text editor:
+    desktop_id: "org.gnome.TextEditor.desktop"
+    binary: "gnome-text-editor"
+    flatpak_id: "org.gnome.TextEditor"
+  files:
+    desktop_id: "org.gnome.Nautilus.desktop"
+    binary: "nautilus"
+  terminal:
+    desktop_id: "org.gnome.Ptyxis.desktop"
+    binary: "ptyxis"
+    alt_binary: "gnome-terminal"
+  calculator:
+    desktop_id: "org.gnome.Calculator.desktop"
+    binary: "gnome-calculator"
+  settings:
+    desktop_id: "org.gnome.Settings.desktop"
+    binary: "gnome-control-center"
+  firefox:
+    desktop_id: "org.mozilla.firefox.desktop"
+    binary: "firefox"
+  code:
+    desktop_id: "code.desktop"
+    binary: "code"

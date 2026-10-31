@@ -1,0 +1,37 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Ultron: Dashboard (GUI)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["gui"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Ultron: Chat (CLI)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["chat"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Ultron: Doctor",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["doctor"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Ultron: Self-Test",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["self-test"],
+      "console": "integratedTerminal"
+    }
+  ]
+}
