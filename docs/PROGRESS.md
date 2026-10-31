@@ -16,7 +16,10 @@ Tasks 1-3 were not audited or changed. No issues were found that need a code cha
 ## Head state
 
 - Local branch for this work: `phase5-b1-work` (from `main` @ 9d95911).
-- `main` tracks `origin/snapshot-oct31`; nothing was pushed and the remote was not touched.
+- Task 4 commit: `96287de` "Phase 5 B1 Task 4: finish list_files reply and lead-in guard tests".
+- Working tree is clean after that commit; nothing was pushed and the remote was not touched.
+- To catch up: read this file, then `git switch phase5-b1-work` and run
+  `.venv/bin/python -m pytest -q` (expect 114 passed).
 
 ## Task 4 result
 
@@ -54,8 +57,8 @@ Tasks 1-3 were not audited or changed. No issues were found that need a code cha
 
 ## NEXT STEP - how to resume
 
-Task 4 is finished and committed locally on `phase5-b1-work`. The next step is the user's
-live voice test (do not run interactive voice commands from the coding tool):
+Task 4 is finished and committed locally on `phase5-b1-work` (commit 96287de). The next step
+is the user's live voice test (do not run interactive voice commands from the coding tool):
 
 1. `.venv/bin/python main.py voice-test` — speak one long sentence and then pause; check the
    transcript and the peak/RMS lines.
@@ -64,5 +67,5 @@ live voice test (do not run interactive voice commands from the coding tool):
    `list files in my Downloads folder` — expect the spoken reply
    "There are 43 items in your Downloads folder." (count may differ).
 
-After the voice tests, the next project step is Phase 5 Part C (the 15-command benchmark);
-do not start it without the user's approval.
+If the voice tests pass, the next project step is Phase 5 Part C (the 15-command benchmark);
+do not start it without the user's approval. Tasks 1-3 stay unaudited and unchanged.
