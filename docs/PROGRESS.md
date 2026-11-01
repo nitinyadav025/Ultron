@@ -1,12 +1,14 @@
-# Ultron progress — Phase 5 Part B1
+# Ultron progress — Phase 5 Part B2
 
-Last updated: 2026-11-01 (Phase 5 B2 work in progress)
+Last updated: 2026-11-01 (Phase 5 B2 finished; live tests pending)
 
-## Phase 5 B2 (Nov 1)
+## Phase 5 B2 (Nov 1) — CURRENT
 
-Work branch: `phase5-b2-work` (local only, nothing pushed). Baseline before any B2 edit:
-`.venv/bin/python -m pytest -q` → **174 passed, 3 skipped** (the 3 skips are the real-clip
-tests whose `/tmp/cmp2_*.wav` files are gone; see Part 1).
+Work branch: `phase5-b2-work` (local only, nothing pushed). This section is the current
+state; every section below it is older history and is kept only as a record. Baseline
+before any B2 edit: `.venv/bin/python -m pytest -q` → **174 passed, 3 skipped** (the 3
+skips were the real-clip tests whose `/tmp/cmp2_*.wav` files are gone; Part 1 replaced
+them with the saved live attempts).
 
 | Part | What | Status |
 |------|------|--------|
@@ -262,8 +264,18 @@ sudo commands for the user and the risks are in the plan.
   - `9c9f90a` parts 1–2 (test log isolation, Bug A)
   - `9eaf686` part 2B (fan SNR gate, optional denoise, noise plan)
   - `c07e24b` parts 3–6 (hands-free listen, fast path, web tools, typing plan)
+  - `3beb29d` part 7 (head state + live tests)
+  - `ff2013b` polish (minimal `listen` output, true speech-start delay)
 - Latest pytest: **248 passed, 0 skipped**. `ss -ltnp | grep 9931` → **no llama-server**.
 - Working tree clean; `.env` untouched and not committed.
+
+### How to resume this session
+
+1. Read this B2 section (it is the current state).
+2. `git switch phase5-b2-work`; `git status` and `git log --oneline -5`.
+3. `.venv/bin/python -m pytest -q` → expect **248 passed, 0 skipped**.
+4. Run the live tests in **NEXT STEP — live tests** below.
+5. Do not start Phase 5 Part C without the user's approval.
 
 ### NEXT STEP — live tests (the coding tool cannot use the mic)
 
@@ -307,25 +319,16 @@ Run these and report each result. Do not start Phase 5 Part C without approval.
   ~300-400 ms (`134518`, `135201`, `135223`). The other attempts start quiet.
 - `/tmp/cmp2_*.wav` are gone.
 
-### Files changed so far
+### Files changed (summary)
 
-- `docs/PROGRESS.md` (this section). No code changed yet.
-
-### Open problems
-
-- Bug A root cause to be written up in Part 2 (replay of `135201` reproduces
-  `max_length` exactly).
-- The named `134335` attempt cannot be read: it was pruned. `135201` is used instead.
-
-### NEXT STEP
-
-Finish Part 1 (test log hygiene + real-clip tests), then Part 2.
+Every file is listed in the part sections above and committed on `phase5-b2-work`
+(`994f85a`, `9c9f90a`, `9eaf686`, `c07e24b`, `3beb29d`, `ff2013b`).
 
 ---
 
-Last updated: 2026-11-01 (full session handoff)
+Last updated: 2026-11-01 (full session handoff — Phase 5 Part B1)
 
-## HANDOFF — CURRENT STATE (read this first)
+## HANDOFF — Phase 5 Part B1 (HISTORY, superseded by Phase 5 B2 above)
 
 ### Project in one paragraph
 
