@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
+
 from assistant.brain.fast_path import match_fast_command
 from assistant.config import AssistantConfig
 from assistant.speech.ears import NO_SPEECH
@@ -45,6 +47,7 @@ from assistant.speech.recorder import (
     frame_peak,
     frame_rms,
     pcm16_samples,
+    normalise_mic_level,
     percentile,
     samples_to_pcm16,
     write_pcm16_wav,
@@ -53,6 +56,13 @@ from assistant.speech.wake import aliases_for, first_word, load_learned_aliases,
 from assistant.tools.registry import ToolRegistry
 
 logger = logging.getLogger("ultron.listen")
+
+
+def pcm_to_float32(pcm: bytes, *, normalise: bool = True) -> np.ndarray:
+    """Same audio path as /voice: repair the level, then give Whisper a float32 array."""
+    if normalise and pcm:
+        pcm, _info = normalise_mic_level(pcm, has_speech=True)
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
 START_LINE = "Listening. Say 'Ultron, <command>'. Ctrl+C to stop."
 CONFIRMATION_REPLY = "That needs confirmation. Please type it in the chat."
@@ -714,8 +724,7 @@ def run_listen(config: AssistantConfig) -> int:
     print(f"  Mouth: ready \u2014 {mouth_msg}", flush=True)
 
     def transcribe(pcm: bytes) -> Transcript:
-        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-        ok, text = voice.ears.transcribe_samples(samples, log_text=False)
+        ok, text = voice.ears.transcribe_samples(pcm_to_float32(pcm), log_text=False)
         confidence = dict(getattr(voice.ears, "last_confidence", {}) or {})
         return Transcript(
             ok=ok,

@@ -27,7 +27,7 @@ from typing import Any, Callable
 import numpy as np
 
 from assistant.config import WORKSPACE_DIR, AssistantConfig
-from assistant.interfaces.listen import ContinuousReader, UtteranceDetector
+from assistant.interfaces.listen import ContinuousReader, UtteranceDetector, pcm_to_float32
 from assistant.speech.ears import WhisperEars
 from assistant.speech.recorder import (
     FRAME_BYTES,
@@ -165,7 +165,7 @@ def run_wake_train(
                     continue
                 stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                 write_pcm16_wav(clips / f"wake_{stamp}_{index:02d}.wav", pcm)
-                samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+                samples = pcm_to_float32(pcm)
                 texts: dict[str, str] = {}
                 seconds: dict[str, float] = {}
                 variants: list[tuple[str, Any, dict[str, Any]]] = [

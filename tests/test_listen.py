@@ -419,3 +419,15 @@ def test_debug_text_is_screen_only(caplog: pytest.LogCaptureFixture) -> None:
     assert any('debug: heard "open firefox"' in line for line in prints)
     assert any("debug: wake score=" in line for line in prints)
     assert "open firefox" not in caplog.text
+
+
+def test_listen_uses_the_same_level_repair_as_voice() -> None:
+    import numpy as np
+
+    from assistant.interfaces.listen import pcm_to_float32
+
+    quiet = tone(20, amp=300)
+    raw = np.frombuffer(quiet, dtype="<i2").astype(np.float32) / 32768.0
+    repaired = pcm_to_float32(quiet)
+    assert repaired.dtype == np.float32
+    assert float(np.sqrt(np.mean(repaired**2))) > 2.0 * float(np.sqrt(np.mean(raw**2)))

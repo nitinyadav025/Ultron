@@ -74,8 +74,10 @@ Read from `assistant/config.py`, `.env.example`, the approved `.env` grep, and a
 `language="en"`, `beam_size=1`, `vad_filter=True`, `condition_on_previous_text=False`,
 `without_timestamps=True`, no `initial_prompt`/`prompt`, `hotwords` only when
 `WHISPER_HOTWORDS` is non-empty (it is blank), and a contiguous float32 array. **WRONG:**
-`listen` does **not** run the `/voice` normaliser (`normalise_mic_level`) or the transient
-trim; it sends raw `int16/32768`. Part 3 fixes this.
+`listen` did **not** run the `/voice` normaliser; it sent raw `int16/32768`. **Fixed in
+B3:** `pcm_to_float32()` applies `normalise_mic_level(..., has_speech=True)` before
+Whisper (and `wake-train` uses it too), so a quiet voice gets the same 3× repair as `/voice`.
+Pinned by `test_listen_uses_the_same_level_repair_as_voice`.
 
 **Thresholds** (code): start = `max(280, min(floor×2.5, 500), floor×10^(SNR/20))`, end =
 `max(140, floor×1.8, min(start×0.6, speaker×0.18))`. With his logged floor 234 and
