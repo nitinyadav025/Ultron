@@ -127,6 +127,13 @@ Verified without sudo (`getfacl /dev/uinput`, `timeout 2 ydotoold …`, `command
 - `ss -ltnp | grep 9931` → no llama-server. `pgrep -a ydotoold` → none.
 - The pytest suite’s real-log guard passed (tests use temp logs/workspace).
 
+### Head state (B5)
+
+- Branch `phase5-b5-full-control`, commit `d7903d0` (local only, nothing pushed).
+- Final pytest **359 passed, 0 skipped**; benchmark **25/25** (mocked, average 1.519 ms).
+- No llama-server on port 9931; no `ydotoold` left running.
+- Working tree clean after the docs commit.
+
 ### Files changed
 
 - Part 1: `assistant/config.py`, `.env.example`, `assistant/speech/recorder.py`,
