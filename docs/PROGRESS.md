@@ -121,7 +121,7 @@ Verified without sudo (`getfacl /dev/uinput`, `timeout 2 ydotoold …`, `command
 
 ### Part 7 — verification (DONE)
 
-- `.venv/bin/python -m pytest -q` → **359 passed, 0 skipped**.
+- `.venv/bin/python -m pytest -q` → **362 passed, 0 skipped**.
 - `.venv/bin/python main.py benchmark` → **25/25**.
 - `compileall` → OK; `git diff --check` → clean.
 - `ss -ltnp | grep 9931` → no llama-server. `pgrep -a ydotoold` → none.
@@ -130,7 +130,7 @@ Verified without sudo (`getfacl /dev/uinput`, `timeout 2 ydotoold …`, `command
 ### Head state (B5)
 
 - Branch `phase5-b5-full-control`, commit `d7903d0` (local only, nothing pushed).
-- Final pytest **359 passed, 0 skipped**; benchmark **25/25** (mocked, average 1.519 ms).
+- Final pytest **362 passed, 0 skipped**; benchmark **25/25** (mocked, average 1.519 ms).
 - No llama-server on port 9931; no `ydotoold` left running.
 - Working tree clean after the docs commit.
 
