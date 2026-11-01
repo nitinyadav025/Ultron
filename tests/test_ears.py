@@ -222,16 +222,48 @@ def test_clean_clip_confidence_is_accepted(tmp_path: Path) -> None:
 
 
 def test_garbled_low_confidence_asks_to_say_it_again(tmp_path: Path) -> None:
+    # One bad signal is never enough (a real live attempt scored -1.087); two are.
     ears = _ears_with(
         tmp_path,
-        [_seg("Turn, board, volume to, cut, triple, percent", avg_logprob=-1.4)],
+        [_seg("Turn, board, volume to, cut, triple, percent", avg_logprob=-1.4, compression_ratio=2.7)],
     )
     assert ears.transcribe(_write_wav(tmp_path / "bad.wav", _tone())) == (False, UNCLEAR_SPEECH)
 
 
+def test_one_bad_signal_from_real_speech_is_accepted(tmp_path: Path) -> None:
+    # Exact scores of the genuine live attempt at 11:09:50 that the old guard rejected.
+    ears = _ears_with(
+        tmp_path,
+        [_seg("Where is the MMAS folder?", avg_logprob=-1.087, no_speech_prob=0.065, compression_ratio=0.76)],
+    )
+    ok, text = ears.transcribe(_write_wav(tmp_path / "real.wav", _tone()))
+    assert ok is True
+    assert text == "Where is the MMAS folder?"
+    assert ears.last_confidence["verdict"] == "ok"
+    assert ears.last_confidence["min_avg_logprob"] == pytest.approx(-1.087)
+
+
 def test_high_no_speech_probability_is_rejected(tmp_path: Path) -> None:
-    ears = _ears_with(tmp_path, [_seg("mute", no_speech_prob=0.85)])
+    ears = _ears_with(tmp_path, [_seg("mute", no_speech_prob=0.90)])
     assert ears.transcribe(_write_wav(tmp_path / "ns.wav", _tone())) == (False, UNCLEAR_SPEECH)
+
+
+def test_two_mildly_bad_signals_are_rejected(tmp_path: Path) -> None:
+    ears = _ears_with(tmp_path, [_seg("list files", avg_logprob=-1.2, no_speech_prob=0.7)])
+    assert ears.transcribe(_write_wav(tmp_path / "two.wav", _tone())) == (False, UNCLEAR_SPEECH)
+
+
+def test_guard_limits_are_configurable(tmp_path: Path) -> None:
+    from assistant.speech.ears import GuardLimits
+
+    cfg = _cfg(tmp_path)
+    model = ConfidenceModel([_seg("mute", avg_logprob=-1.1)])
+    ears = WhisperEars(cfg, model_factory=lambda _d: model)
+    assert ears.transcribe(_write_wav(tmp_path / "cfg1.wav", _tone()))[0] is True
+
+    # Tighten the limit: the same score is now extreme.
+    ears._guard_limits = lambda: GuardLimits(min_avg_logprob=-1.15, extreme_avg_logprob=-1.05)
+    assert ears.transcribe(_write_wav(tmp_path / "cfg2.wav", _tone())) == (False, UNCLEAR_SPEECH)
 
 
 def test_high_compression_ratio_is_rejected(tmp_path: Path) -> None:

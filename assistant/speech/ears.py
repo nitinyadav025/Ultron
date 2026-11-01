@@ -18,6 +18,7 @@ import threading
 import time
 import wave
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -35,11 +36,20 @@ UNCLEAR_SPEECH = "I didn't catch that, please say it again."
 _BLANK_TRANSCRIPTS = {"", "[blank_audio]", "(silence)", "[silence]", "[no speech]", "[no_speech]"}
 
 # "Say it again" guard. The six clean /tmp/cmp2 clips score avg_logprob -0.14..-0.65,
-# no_speech_prob 0.01..0.07 and compression_ratio 0.38..0.81, so these bounds leave a
-# wide margin for real speech while rejecting confident-looking garbage.
-MIN_AVG_LOGPROB = -1.0
-MAX_NO_SPEECH_PROB = 0.60
-MAX_COMPRESSION_RATIO = 2.4
+# no_speech_prob 0.01..0.07 and compression_ratio 0.38..0.81. A real live attempt scored
+# -1.087 / 0.065 / 0.76 — one bad signal must NOT reject speech. Reject only on two bad
+# signals or one extreme value, plus the plain text rules. All limits are configurable.
+@dataclass(frozen=True)
+class GuardLimits:
+    min_avg_logprob: float = -1.0
+    max_no_speech_prob: float = 0.60
+    max_compression_ratio: float = 2.4
+    extreme_avg_logprob: float = -1.5
+    extreme_no_speech_prob: float = 0.85
+    extreme_compression_ratio: float = 3.0
+
+
+DEFAULT_LIMITS = GuardLimits()
 _WORD = re.compile(r"[a-z']+")
 
 
@@ -60,21 +70,59 @@ def looks_like_repetition_loop(text: str) -> bool:
     return top >= 2 and top / len(words) >= 0.5
 
 
-def transcript_is_unreliable(text: str, segments: list[Any]) -> bool:
+def transcript_scores(segments: list[Any]) -> dict[str, float | None]:
+    """Aggregate faster-whisper confidence: worst average, highest no-speech/compression."""
+    averages = [getattr(s, "avg_logprob", None) for s in segments]
+    no_speech = [getattr(s, "no_speech_prob", None) for s in segments]
+    compression = [getattr(s, "compression_ratio", None) for s in segments]
+    averages = [v for v in averages if v is not None]
+    no_speech = [v for v in no_speech if v is not None]
+    compression = [v for v in compression if v is not None]
+    return {
+        "min_avg_logprob": min(averages) if averages else None,
+        "max_no_speech_prob": max(no_speech) if no_speech else None,
+        "max_compression_ratio": max(compression) if compression else None,
+    }
+
+
+def _fmt_score(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
+
+
+def guard_reason(text: str, segments: list[Any], limits: GuardLimits | None = None) -> str:
+    """Return "" for reliable speech, otherwise a short reason for the rejection."""
+    limits = limits or DEFAULT_LIMITS
+    if not has_real_word(text):
+        return "no_real_word"
+    if looks_like_repetition_loop(text):
+        return "repetition_loop"
+
+    scores = transcript_scores(segments)
+    avg = scores["min_avg_logprob"]
+    no_speech = scores["max_no_speech_prob"]
+    compression = scores["max_compression_ratio"]
+    bad: list[str] = []
+    if avg is not None:
+        if avg < limits.extreme_avg_logprob:
+            return f"extreme_avg_logprob={avg:.2f}"
+        if avg < limits.min_avg_logprob:
+            bad.append("avg_logprob")
+    if no_speech is not None:
+        if no_speech > limits.extreme_no_speech_prob:
+            return f"extreme_no_speech={no_speech:.2f}"
+        if no_speech > limits.max_no_speech_prob:
+            bad.append("no_speech")
+    if compression is not None:
+        if compression > limits.extreme_compression_ratio:
+            return f"extreme_compression={compression:.2f}"
+        if compression > limits.max_compression_ratio:
+            bad.append("compression")
+    return f"two_bad_signals:{'+'.join(bad)}" if len(bad) >= 2 else ""
+
+
+def transcript_is_unreliable(text: str, segments: list[Any], limits: GuardLimits | None = None) -> bool:
     """Use faster-whisper's own confidence plus plain text rules to reject bad decodes."""
-    if not has_real_word(text) or looks_like_repetition_loop(text):
-        return True
-    for segment in segments:
-        avg_logprob = getattr(segment, "avg_logprob", None)
-        no_speech = getattr(segment, "no_speech_prob", None)
-        compression = getattr(segment, "compression_ratio", None)
-        if avg_logprob is not None and avg_logprob < MIN_AVG_LOGPROB:
-            return True
-        if no_speech is not None and no_speech > MAX_NO_SPEECH_PROB:
-            return True
-        if compression is not None and compression > MAX_COMPRESSION_RATIO:
-            return True
-    return False
+    return bool(guard_reason(text, segments, limits))
 
 
 class EarsError(RuntimeError):
@@ -146,6 +194,18 @@ class WhisperEars:
         self._model: Any = None
         self._model_factory = model_factory or _default_model_factory
         self._load_lock = threading.Lock()
+        # Filled by every transcribe() call: text, the three scores and the guard verdict.
+        self.last_confidence: dict[str, Any] = {}
+
+    def _guard_limits(self) -> GuardLimits:
+        return GuardLimits(
+            min_avg_logprob=float(self.config.whisper_min_avg_logprob),
+            max_no_speech_prob=float(self.config.whisper_max_no_speech_prob),
+            max_compression_ratio=float(self.config.whisper_max_compression_ratio),
+            extreme_avg_logprob=float(self.config.whisper_extreme_avg_logprob),
+            extreme_no_speech_prob=float(self.config.whisper_extreme_no_speech_prob),
+            extreme_compression_ratio=float(self.config.whisper_extreme_compression_ratio),
+        )
 
     @property
     def model_dir(self) -> Path:
@@ -221,10 +281,23 @@ class WhisperEars:
         audio_sec = audio.size / SAMPLE_RATE
         logger.info("Ears: %.2fs for %.1fs audio (lang=%s)", elapsed, audio_sec, getattr(info, "language", "en"))
 
+        scores = transcript_scores(rows)
+        reason = guard_reason(text, rows, self._guard_limits())
+        verdict = reason or "ok"
+        self.last_confidence = {**scores, "text": text, "verdict": verdict}
+        logger.info(
+            "Ears confidence: min_avg_logprob=%s max_no_speech=%s max_compression=%s verdict=%s text=%r",
+            _fmt_score(scores["min_avg_logprob"]),
+            _fmt_score(scores["max_no_speech_prob"]),
+            _fmt_score(scores["max_compression_ratio"]),
+            verdict,
+            redact_secrets(text),
+        )
+
         if text.strip().lower() in _BLANK_TRANSCRIPTS:
             logger.info("Ears: VAD/model reported no speech.")
             return False, NO_SPEECH
-        if transcript_is_unreliable(text, rows):
-            logger.info("Ears: transcript looks unreliable; asking the user to repeat.")
+        if reason:
+            logger.info("Ears: transcript rejected by the say-it-again guard (%s).", reason)
             return False, UNCLEAR_SPEECH
         return True, text.strip()
