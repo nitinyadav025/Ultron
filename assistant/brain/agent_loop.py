@@ -23,6 +23,7 @@ from assistant.brain.tool_replies import (
     code_reply_for_tool,
     fallback_reply,
     is_lead_in,
+    mute_audio_reply,
 )
 from assistant.config import AssistantConfig
 from assistant.safety.killswitch import WatchdogMonitor
@@ -170,9 +171,20 @@ class AgentLoop:
         if asks_for_timed_mute(request_text):
             # No timer exists: ask first and run nothing (the next "yes" may mute now).
             self._pending_mute_offer = True
+            self.watchdog.stop_task()
             self.step_callback("Timed mute requested; no timer available.")
             return AgentTaskResult(
                 ok=True, reply=TIMED_MUTE_REPLY, steps_taken=0, usage=usage_acc, dry_run=dry_run
+            )
+        if answered_mute_offer and not dry_run and is_affirmative(request_text):
+            # The user accepted "Should I mute it now?": do it directly, no model guess.
+            res = self.registry.execute("mute_audio", {"muted": True}, request_text)
+            self.watchdog.stop_task()
+            return AgentTaskResult(
+                ok=True,
+                reply=mute_audio_reply(res) or "I couldn't change the audio.",
+                steps_taken=0,
+                usage=usage_acc,
             )
 
         failures = 0

@@ -273,10 +273,10 @@ def test_timed_mute_asks_honestly_without_the_llm() -> None:
     assert NeverAdapter.calls == 0
 
 
-def test_yes_after_the_timed_mute_offer_mutes_now() -> None:
+def test_yes_after_the_timed_mute_offer_mutes_now_without_the_llm() -> None:
     _reset_mute()
-    adapter = MuteAdapter(muted=False)
-    loop = _mute_loop(adapter)
+    NeverAdapter.calls = 0
+    loop = _mute_loop(NeverAdapter())
 
     first = loop.run_task("Stay silent for 10 seconds.")
     assert first.reply == TIMED_MUTE_REPLY and MUTE_CALLS["n"] == 0
@@ -284,3 +284,4 @@ def test_yes_after_the_timed_mute_offer_mutes_now() -> None:
     second = loop.run_task("yes")
     assert MUTE_CALLS == {"n": 1, "args": [True]}
     assert second.reply == "Audio is now muted."
+    assert NeverAdapter.calls == 0
