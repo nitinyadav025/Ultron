@@ -18,6 +18,7 @@ from assistant.safety.killswitch import register_gnome_kill_hotkey
 from assistant.safety.permissions import PermissionGate
 from assistant.safety.redact import run_redactor_self_test
 from assistant.speech.ears import WhisperEars
+from assistant.speech.mic_input import apply_mic_source_volume
 from assistant.speech.mouth import PiperMouth
 from assistant.tools.sandbox import run_sandboxed_script
 
@@ -177,6 +178,9 @@ def _run_local_voice_test(config: AssistantConfig) -> int:
 
 def run_voice_test(config: AssistantConfig) -> int:
     """Run an interactive voice diagnostic (local ears in local mode, cloud pipeline in gemini mode)."""
+    _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
+    if config.mic_source_volume:
+        print(f"[Mic] {mic_msg}")
     if config.backend == "local":
         return _run_local_voice_test(config)
     print("=== Ultron Voice Pipeline Test (Speak into your microphone for 3 seconds) ===")

@@ -11,7 +11,7 @@ template fragments, and the over-loosened guard.
 | Part | What | Status |
 |------|------|--------|
 | Part 1 | Normaliser never clips: cap gain by the true raw peak | DONE (code + tests) |
-| Part 2 | Optional `MIC_SOURCE_VOLUME` applied at chat / voice-test start | NOT STARTED |
+| Part 2 | Optional `MIC_SOURCE_VOLUME` applied at chat / voice-test start | DONE (code + tests; `.env` set to 0.21) |
 | Part 3 | Slash commands never reach the LLM; raw-line logging | NOT STARTED |
 | Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | NOT STARTED |
 | Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | NOT STARTED |
@@ -52,6 +52,20 @@ template fragments, and the over-loosened guard.
 | 3000 | 9000 | 3.000 | no |
 
 - Tests: `tests/test_mic_level.py` (five peak cases, loud-but-not-clipping stays at gain 1.0).
+
+### Part 2 result (MIC_SOURCE_VOLUME)
+
+- New `assistant/speech/mic_input.py`: validates 0.05–0.6, runs
+  `wpctl set-volume @DEFAULT_AUDIO_SOURCE@ <value>` once, logs one line, and never blocks
+  startup. Missing wpctl / failures / invalid values are ignored with a log line.
+- `assistant/config.py`: `mic_source_volume` reads `MIC_SOURCE_VOLUME` (and `MIC_` is now an
+  accepted env prefix).
+- `assistant/interfaces/cli.py` (`chat`) and `assistant/doctor.py` (`voice-test`) apply it at
+  startup and print one line when configured.
+- `.env.example` documents it. The user's `.env` got `MIC_SOURCE_VOLUME=0.21` appended
+  (count checked first; file contents never read or printed; `.env` is not committed).
+- Tests: `tests/test_mic_input.py` with a fake runner (set, unset, range, missing wpctl,
+  failure log, config read).
 
 
 ## Listening fix (Nov 1)

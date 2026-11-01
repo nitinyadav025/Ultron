@@ -11,6 +11,7 @@ from assistant.safety.audit import read_audit_logs
 from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey, trigger_kill_switch
 from assistant.safety.permissions import PermissionGate
 from assistant.speech.ears import UNCLEAR_SPEECH
+from assistant.speech.mic_input import apply_mic_source_volume
 from assistant.tools.apps import open_app
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
@@ -32,6 +33,9 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
     """Start the interactive CLI chat loop."""
     show_privacy_notice_once(config)
     register_gnome_kill_hotkey(config.kill_hotkey_binding)
+    _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
+    if config.mic_source_volume:
+        print(f"  Mic input: {mic_msg}", flush=True)
 
     gate = PermissionGate(config=config, mode=initial_mode or config.default_mode)
     registry = ToolRegistry(config=config, gate=gate)

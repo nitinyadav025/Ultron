@@ -65,6 +65,7 @@ class AssistantConfig:
     whisper_extreme_avg_logprob: float = -1.5
     whisper_extreme_no_speech_prob: float = 0.85
     whisper_extreme_compression_ratio: float = 3.0
+    mic_source_volume: str = ""
     piper_voice_dir: Path = MODELS_DIR / "piper"
     piper_voice: str = "en_US-lessac-medium"
     api_key: str = ""
@@ -189,6 +190,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
                 "LLAMA_",
                 "WHISPER_",
                 "PIPER_",
+                "MIC_",
             )
         ):
             merged[k] = v
@@ -314,6 +316,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         whisper_extreme_avg_logprob=_float_value("WHISPER_EXTREME_AVG_LOGPROB", -1.5),
         whisper_extreme_no_speech_prob=_float_value("WHISPER_EXTREME_NO_SPEECH_PROB", 0.85),
         whisper_extreme_compression_ratio=_float_value("WHISPER_EXTREME_COMPRESSION_RATIO", 3.0),
+        mic_source_volume=(merged.get("MIC_SOURCE_VOLUME") or "").strip(),
         piper_voice_dir=piper_voice_dir,
         piper_voice=piper_voice,
         api_key=merged.get("GEMINI_API_KEY", ""),
