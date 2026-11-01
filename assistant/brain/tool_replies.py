@@ -122,26 +122,30 @@ def volume_reply(result: dict[str, Any]) -> str | None:
     return f"Volume is now set to {percent} percent."
 
 
+def _app_display(app: str) -> str:
+    return app.title() if app.islower() else app
+
+
 def open_app_reply(result: dict[str, Any], requested: str = "") -> str | None:
     """Speak the app that was actually launched, or say honestly that it cannot."""
     raw = _raw_summary(result)
     app = str(raw.get("app_name") or requested or "").strip()
     if raw.get("unknown"):
-        return f"I don't know how to open {app or 'that app'}."
+        return f"I couldn't find an app named {app or 'that'}."
     if not _result_ok(result):
         return "I couldn't open that app."
     if not app:
         return "Done."
-    return f"{app.title()} is open."
+    return f"{_app_display(app)} is open."
 
 
 def close_app_reply(result: dict[str, Any]) -> str | None:
     """Speak exactly what close_app did: closed, not running, or unknown."""
     raw = _raw_summary(result)
     app = str(raw.get("app_name") or "").strip()
-    display = app.title() if app else "That app"
+    display = _app_display(app) if app else "That app"
     if raw.get("unknown"):
-        return f"I don't know how to close {app or 'that app'}."
+        return f"I couldn't find an app named {app or 'that'}."
     if not _result_ok(result):
         return f"I couldn't close {display}."
     if raw.get("closed") is True:
@@ -149,6 +153,108 @@ def close_app_reply(result: dict[str, Any]) -> str | None:
     if raw.get("running") is False:
         return f"{display} is not running."
     return None
+
+
+def switch_app_reply(result: dict[str, Any]) -> str | None:
+    """Speak whether Ultron focused the existing window or had to open the app."""
+    raw = _raw_summary(result)
+    app = str(raw.get("app_name") or "").strip()
+    display = _app_display(app) if app else "That app"
+    if raw.get("unknown"):
+        return f"I couldn't find an app named {app or 'that'}."
+    if not _result_ok(result):
+        return f"I couldn't switch to {display}."
+    if raw.get("opened") and not raw.get("running"):
+        return f"{display} was not running, so I opened it."
+    return f"Switching to {display}."
+
+
+def type_text_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't type that.")
+    return str(raw.get("reply") or "Typed that.")
+
+
+def scroll_page_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't scroll.")
+    return {
+        "down": "Scrolled down.",
+        "up": "Scrolled up.",
+        "page_down": "Scrolled down one page.",
+        "page_up": "Scrolled up one page.",
+        "top": "Scrolled to the top.",
+        "bottom": "Scrolled to the bottom.",
+    }.get(str(raw.get("direction") or ""), "Scrolled.")
+
+
+def browser_tab_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't control the tab.")
+    return {
+        "new_tab": "Opened a new tab.",
+        "close_tab": "Closed the tab.",
+        "next_tab": "Switched to the next tab.",
+        "prev_tab": "Switched to the previous tab.",
+        "reopen_tab": "Reopened the last tab.",
+        "refresh": "Refreshed the page.",
+        "back": "Went back.",
+        "forward": "Went forward.",
+    }.get(str(raw.get("action") or ""), "Done.")
+
+
+def window_control_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't control the window.")
+    return {
+        "next_window": "Switched windows.",
+        "maximize": "Maximized the window.",
+        "minimize": "Minimized the window.",
+        "fullscreen": "Toggled fullscreen.",
+        "workspace_next": "Moved to the next workspace.",
+        "workspace_prev": "Moved to the previous workspace.",
+        "overview": "Opened the overview.",
+    }.get(str(raw.get("action") or ""), "Done.")
+
+
+def brightness_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't change the brightness.")
+    percent = raw.get("percent")
+    return f"Brightness is now {percent} percent." if percent is not None else "Brightness changed."
+
+
+def media_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't control the media.")
+    return {
+        "play_pause": "Toggled play or pause.",
+        "play": "Toggled play or pause.",
+        "pause": "Toggled play or pause.",
+        "next": "Skipped to the next song.",
+        "previous": "Went back one song.",
+    }.get(str(raw.get("action") or ""), "Done.")
+
+
+def system_info_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't read the system information.")
+    return str(raw.get("reply") or "Done.")
+
+
+def screenshot_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't take a screenshot.")
+    path = str(raw.get("path") or "").strip()
+    return f"Screenshot saved to {path}." if path else "Screenshot saved."
 
 
 def web_search_reply(result: dict[str, Any]) -> str | None:
@@ -202,6 +308,24 @@ def code_reply_for_tool(tool_name: str, result: dict[str, Any]) -> str | None:
         return open_app_reply(result, str((result.get("raw_summary") or {}).get("app_name", "")))
     if tool_name == "close_app":
         return close_app_reply(result)
+    if tool_name == "switch_app":
+        return switch_app_reply(result)
+    if tool_name == "type_text":
+        return type_text_reply(result)
+    if tool_name == "scroll_page":
+        return scroll_page_reply(result)
+    if tool_name == "browser_tab_control":
+        return browser_tab_reply(result)
+    if tool_name == "window_control":
+        return window_control_reply(result)
+    if tool_name == "set_brightness":
+        return brightness_reply(result)
+    if tool_name == "media_control":
+        return media_reply(result)
+    if tool_name == "system_info":
+        return system_info_reply(result)
+    if tool_name == "take_screenshot":
+        return screenshot_reply(result)
     if tool_name == "web_search":
         return web_search_reply(result)
     if tool_name == "open_first_result":

@@ -56,7 +56,7 @@ class FakeVoice:
         return True, "fake.wav"
 
     def transcribe_audio(self) -> tuple[bool, str]:
-        return True, "hello"
+        return True, "tell me a story"
 
     def stop_speaking(self) -> None:
         return None
@@ -98,7 +98,7 @@ def test_unknown_command_never_reaches_the_llm_and_double_slash_voice_works(
     out = capsys.readouterr().out
     assert UNKNOWN_COMMAND_MESSAGE in out
     assert fake_voice.record_calls == 1  # //voice was treated as /voice
-    assert FakeLoop.instances[0].calls == ["hello"]  # /nonsense never reached run_task
+    assert FakeLoop.instances[0].calls == ["tell me a story"]  # /nonsense never reached run_task
     assert "Chat input: '//voice'" in caplog.text
     assert "Chat input: '/nonsense'" in caplog.text
 
@@ -113,7 +113,7 @@ class OutcomeVoice:
     last_peak = 0
     last_rms = 0
 
-    def __init__(self, record_outcome, transcribe_outcome=(True, "hello")):
+    def __init__(self, record_outcome, transcribe_outcome=(True, "tell me a story")):
         self.record_outcome = record_outcome
         self.transcribe_outcome = transcribe_outcome
         self.spoken: list[str] = []

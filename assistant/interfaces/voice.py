@@ -338,7 +338,11 @@ class VoiceController:
             recording = record_until_silence(
                 source,
                 start_timeout_s=getattr(self.config, "voice_start_timeout_s", 10.0),
-                silence_ms=getattr(self.config, "voice_silence_ms", 2000),
+                silence_ms=getattr(
+                    self.config,
+                    "voice_record_silence_ms",
+                    getattr(self.config, "voice_silence_ms", 1350),
+                ),
                 max_seconds=getattr(self.config, "voice_max_seconds", 30.0),
                 warmup_ms=getattr(self.config, "recorder_warmup_ms", 300),
                 warmup_max_ms=getattr(self.config, "recorder_warmup_max_ms", 1500),

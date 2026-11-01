@@ -51,7 +51,7 @@ def _gauss(ms: int, sigma: float, seed: int) -> bytes:
     return array.array("h", values).tobytes()
 
 
-def test_recorder_stops_900ms_after_speech_despite_room_noise_450() -> None:
+def test_recorder_stops_1350ms_after_speech_despite_room_noise_450() -> None:
     # The live numbers: floor ~100, speech 1400-2500, post-speech room/breathing 200-450.
     pcm = _gauss(500, 100, 1) + _gauss(2000, 1800, 2) + _gauss(4000, 450, 3)
 
@@ -60,15 +60,15 @@ def test_recorder_stops_900ms_after_speech_despite_room_noise_450() -> None:
     assert recording.saw_speech is True
     assert recording.reason == "silence"  # never max_length / 30 s
     after_speech_ms = recording.duration_ms - 2500
-    assert 800 <= after_speech_ms <= 1150
+    assert 1250 <= after_speech_ms <= 1450
     assert recording.duration_ms < 5000
     assert recording.trace["thresholds"]["speech_rms"] > 1500
 
 
-def test_detector_stops_900ms_after_speech_despite_room_noise_450() -> None:
+def test_detector_stops_1450ms_after_speech_despite_room_noise_450() -> None:
     pcm = _gauss(500, 100, 1) + _gauss(2000, 1800, 2) + _gauss(4000, 450, 3)
     detector = UtteranceDetector(
-        warmup_ms=300, silence_ms=900, early_ms=600, min_snr_db=10.0, max_seconds=30.0
+        warmup_ms=300, silence_ms=1450, early_ms=1050, min_snr_db=10.0, max_seconds=30.0
     )
     events: list[str] = []
     final_ms = 0
@@ -80,11 +80,11 @@ def test_detector_stops_900ms_after_speech_despite_room_noise_450() -> None:
             final_ms = detector.audio_ms
             break
 
-    assert "early" in events  # 600 ms early check = the snappy path
+    assert "early" in events  # 1.05 s early check, held for long/unknown text
     assert "final" in events
     assert detector.last_reason == "silence"
-    assert 3200 <= final_ms <= 3700  # speech ended at 2.5 s; +900 ms + pre-roll
-    assert final_ms < 5000
+    assert 3850 <= final_ms <= 4150  # speech ended at 2.5 s; +1450 ms + pre-roll
+    assert final_ms < 6000
 
 
 # --------------------------------------------------------------------------------------
@@ -192,9 +192,9 @@ def _listener(
 ) -> tuple[HandsFreeListener, list[str], list[str]]:
     config = load_config()
     config.backend = "local"
-    config.listen_early_check_ms = 600
+    config.listen_early_check_ms = 1050
     config.listen_after_speech_ms = 300
-    config.voice_silence_ms = 900
+    config.voice_silence_ms = 1450
     config.recorder_warmup_ms = 300
     config.voice_min_snr_db = 10
     config.listen_debug = debug
@@ -274,7 +274,7 @@ def test_fake_app_is_never_claimed_open() -> None:
     reply = open_app_reply(
         {"ok": True, "raw_summary": {"ok": False, "unknown": True, "app_name": "banana spaceship app"}}
     )
-    assert reply == "I don't know how to open banana spaceship app."
+    assert reply == "I couldn't find an app named banana spaceship app."
 
 
 def test_wake_mishearing_extracts_open_firefox_and_runs_open_app() -> None:
@@ -339,7 +339,7 @@ def test_close_app_refuses_unknown_and_system_processes(monkeypatch: pytest.Monk
     assert close_app("gnome-shell")["unknown"] is True
     assert close_app("banana spaceship")["unknown"] is True
     assert close_app_reply({"ok": True, "raw_summary": close_app("gnome-shell")}) == (
-        "I don't know how to close gnome shell."
+        "I couldn't find an app named gnome shell."
     )
 
 
@@ -427,9 +427,9 @@ def test_listen_debug_prints_one_line_per_utterance() -> None:
     texts = iter(["Ultron", "open firefox"])
     config = load_config()
     config.backend = "local"
-    config.listen_early_check_ms = 600
+    config.listen_early_check_ms = 1050
     config.listen_after_speech_ms = 300
-    config.voice_silence_ms = 900
+    config.voice_silence_ms = 1450
     config.recorder_warmup_ms = 300
     config.voice_min_snr_db = 10
     config.listen_debug = True

@@ -45,6 +45,10 @@ def _dispatch(args: argparse.Namespace, config: AssistantConfig) -> int:
         return 0
     if args.command == "download-models":
         return _download_models(config)
+    if args.command == "benchmark":
+        from scripts.benchmark_phase5c import run_benchmark
+
+        return 0 if run_benchmark()["failed"] == 0 else 1
     if args.command == "doctor":
         return run_doctor(config)
     if args.command == "self-test":
@@ -74,7 +78,19 @@ def main() -> int:
         "command",
         nargs="?",
         default="chat",
-        choices=["chat", "gui", "listen", "wake-train", "doctor", "self-test", "voice-test", "logs", "stop", "download-models"],
+        choices=[
+            "chat",
+            "gui",
+            "listen",
+            "wake-train",
+            "benchmark",
+            "doctor",
+            "self-test",
+            "voice-test",
+            "logs",
+            "stop",
+            "download-models",
+        ],
     )
     parser.add_argument("--mode", choices=["ask", "auto-safe", "human-only"], default=None)
     parser.add_argument("--dry-run", action="store_true")

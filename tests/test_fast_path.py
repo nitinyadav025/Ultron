@@ -135,7 +135,7 @@ def test_unknown_app_is_never_claimed_open() -> None:
 
     reply = try_fast_path(registry, "Open the banana spaceship app")
 
-    assert reply == "I don't know how to open banana spaceship app."
+    assert reply == "I couldn't find an app named banana spaceship app."
     assert "is open" not in reply.lower()
 
 

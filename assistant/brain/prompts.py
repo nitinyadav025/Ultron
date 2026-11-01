@@ -38,6 +38,16 @@ BASE_RULES: tuple[str, ...] = (
 _LOCAL_HEADER = "You are Ultron, a calm, helpful Fedora GNOME voice assistant."
 
 
+def build_chat_prompt(config: AssistantConfig) -> str:
+    """A tiny prompt for pure conversation: no tool rules and no tool schemas."""
+    return (
+        f"{_LOCAL_HEADER}\n"
+        f"- {VOICE_RULE}\n"
+        "- Answer directly and naturally; no tools are available.\n"
+        f"Ctx: date={datetime.now():%Y-%m-%d}\n"
+    )
+
+
 def _short_roots(config: AssistantConfig) -> str:
     """Render ALLOWED_ROOTS compactly, with the home directory as '~'.
 

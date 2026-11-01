@@ -7,6 +7,7 @@ import re
 
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
+from assistant.brain.context import SESSION
 from assistant.brain.fast_path import try_fast_path
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.config import LOGS_DIR, AssistantConfig
@@ -17,7 +18,17 @@ from assistant.safety.permissions import PermissionGate
 from assistant.safety.redact import redact_secrets
 from assistant.speech.ears import UNCLEAR_SPEECH
 from assistant.speech.mic_input import apply_mic_source_volume
-from assistant.tools.apps import close_app, open_app
+from assistant.tools.apps import close_app, open_app, switch_app
+from assistant.tools.desktop_control import (
+    browser_tab_control,
+    media_control,
+    scroll_page,
+    set_brightness,
+    system_info,
+    take_screenshot,
+    type_text,
+    window_control,
+)
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
@@ -90,12 +101,21 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         read_file,
         open_app,
         close_app,
+        switch_app,
         volume_up,
         volume_down,
         set_volume,
         mute_audio,
         web_search,
         open_first_result,
+        type_text,
+        scroll_page,
+        browser_tab_control,
+        window_control,
+        set_brightness,
+        media_control,
+        system_info,
+        take_screenshot,
     ):
         registry.register(fn)
 
@@ -211,6 +231,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             fast_reply = try_fast_path(registry, user_in)
             if fast_reply is not None:
                 print(f"\n{config.assistant_name}: {fast_reply}\n")
+                SESSION.note_turn(user_in, fast_reply)
                 try:
                     ok_s, msg_s = voice.speak_sync(fast_reply)
                     if not ok_s:
@@ -222,6 +243,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         try:
             res = loop.run_task(user_in, dry_run=dry_run)
             print(f"\n{config.assistant_name}: {res.reply}")
+            SESSION.note_turn(user_in, res.reply)
             u: TokenUsageStats = res.usage
             print(f"  [Usage] Task={u.total_tokens} tok | Today={u.daily_total}/{u.daily_cap} ({u.cap_percent}%)\n")
             if is_voice_turn and res.reply:

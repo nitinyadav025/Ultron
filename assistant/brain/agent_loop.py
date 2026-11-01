@@ -14,7 +14,7 @@ from google.genai import types
 
 from assistant.brain.gemini_client import GeminiAdapter, TokenUsageStats
 from assistant.brain.local_client import LocalAdapter
-from assistant.brain.prompts import build_system_prompt
+from assistant.brain.prompts import build_chat_prompt, build_system_prompt
 from assistant.brain.reply_style import short_plain_reply
 from assistant.brain.tool_output import compact_tool_result
 from assistant.brain.tool_replies import (
@@ -68,6 +68,25 @@ def is_affirmative(text: str) -> bool:
 def request_wants_app_action(text: str) -> bool:
     """True only when the user actually asked to open/launch/close/quit an app."""
     return bool(_APP_ACTION.search(text or ""))
+
+
+# Words that mean "this needs a tool". Anything without one is pure conversation and
+# can use the lean chat request (no ~500-token tool schema).
+_TOOL_INTENT = re.compile(
+    r"\b(?:open|launch|close|quit|exit|switch|focus|search|list|read|write|type|"
+    r"scroll|tab|tabs|window|windows|workspace|brightness|media|play|pause|song|"
+    r"track|battery|screenshot|capture|volume|mute|unmute|files?|folders?|downloads?|"
+    r"first link|first result|status)\b",
+    re.I,
+)
+
+
+def looks_like_pure_chat(text: str) -> bool:
+    """True for a conversational turn that cannot need a tool."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    return not bool(_TOOL_INTENT.search(cleaned))
 
 
 # Local generation caps: a tool call needs far fewer tokens than the 512 default, and a
@@ -194,6 +213,28 @@ class AgentLoop:
                 steps_taken=0,
                 usage=usage_acc,
             )
+
+        if self.config.backend == "local" and looks_like_pure_chat(cleaned):
+            # Pure conversation: send no tool schemas and only the last four turns.
+            self.step_callback("Thinking (chat)...")
+            history = self.history[-8:]
+            resp, turn_u = self.adapter.generate_turn(
+                contents=history,
+                system_instruction=build_chat_prompt(self.config),
+                tools=None,
+                max_output_tokens=LOCAL_MAX_TOKENS_FOLLOWUP,
+            )
+            usage_acc.prompt_tokens += turn_u.prompt_tokens
+            usage_acc.candidate_tokens += turn_u.candidate_tokens
+            usage_acc.thought_tokens += turn_u.thought_tokens
+            usage_acc.total_tokens += turn_u.total_tokens
+            usage_acc.daily_total = turn_u.daily_total
+            self.watchdog.stop_task()
+            if not resp.candidates:
+                return AgentTaskResult(False, "No response candidates returned.", 1, usage_acc)
+            reply = self._finalize_reply(resp.text or "I'm not sure how to answer that.")
+            self.history.append(types.Content(role="model", parts=[types.Part.from_text(text=reply)]))
+            return AgentTaskResult(True, reply, 1, usage_acc, dry_run=dry_run)
 
         failures = 0
         steps = 0

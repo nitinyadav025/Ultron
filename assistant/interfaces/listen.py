@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from assistant.brain.context import SESSION
 from assistant.brain.fast_path import match_fast_command
 from assistant.config import AssistantConfig
 from assistant.speech.ears import NO_SPEECH
@@ -60,6 +61,7 @@ from assistant.speech.recorder import (
     write_pcm16_wav,
 )
 from assistant.speech.wake import (
+    CONTINUATION_WORDS,
     aliases_for,
     first_word,
     load_learned_aliases,
@@ -77,6 +79,29 @@ def pcm_to_float32(pcm: bytes, *, normalise: bool = True) -> np.ndarray:
     if normalise and pcm:
         pcm, _info = normalise_mic_level(pcm, has_speech=True)
     return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+
+
+def early_command_is_complete(
+    text: str,
+    wake_word: str = "ultron",
+    aliases: str | tuple[str, ...] | list[str] = "",
+    learned_aliases: list[str] | tuple[str, ...] = (),
+) -> bool:
+    """True only for a short, self-contained command that may finish at 1.05 s.
+
+    A wake word alone, or a 1-5 word fast-path command whose last word is not a
+    continuation word. Longer sentences keep listening until VOICE_SILENCE_MS so a
+    natural breathing pause cannot split them.
+    """
+    command = strip_wake_prefixes(text, wake_word, aliases, learned_aliases)
+    tokens = re.findall(r"[a-z0-9']+", (command or "").lower())
+    if not tokens:
+        return True
+    if len(tokens) > 5:
+        return False
+    if tokens[-1] in CONTINUATION_WORDS:
+        return False
+    return match_fast_command(command) is not None
 
 START_LINE = "Listening. Say 'Ultron, <command>'. Ctrl+C to stop."
 CONFIRMATION_REPLY = "That needs confirmation. Please type it in the chat."
@@ -108,8 +133,8 @@ class UtteranceDetector:
         warmup_ms: int = DEFAULT_WARMUP_MS,
         warmup_max_ms: int = 1500,
         min_snr_db: float = 10.0,
-        silence_ms: int = 900,
-        early_ms: int = 600,
+        silence_ms: int = 1450,
+        early_ms: int = 1050,
         max_seconds: float = 30.0,
     ) -> None:
         self.warmup_ms = int(warmup_ms)
@@ -471,8 +496,8 @@ class HandsFreeListener:
             warmup_ms=getattr(config, "recorder_warmup_ms", DEFAULT_WARMUP_MS),
             warmup_max_ms=getattr(config, "recorder_warmup_max_ms", 1500),
             min_snr_db=getattr(config, "voice_min_snr_db", 10.0),
-            silence_ms=getattr(config, "voice_silence_ms", 900),
-            early_ms=getattr(config, "listen_early_check_ms", 600),
+            silence_ms=getattr(config, "voice_silence_ms", 1450),
+            early_ms=getattr(config, "listen_early_check_ms", 1050),
             max_seconds=getattr(config, "voice_max_seconds", 30.0),
         )
         self.learned_aliases = load_learned_aliases(getattr(config, "wake_aliases_file", None))
@@ -490,6 +515,12 @@ class HandsFreeListener:
         self._t_endpoint = 0.0
         self._t_trans = 0.0
         self._first_tool: float | None = None
+        # Reuse the 1.05 s early transcript at final when the user did not resume,
+        # so a short non-fast-path command is not sent to Whisper twice.
+        self._early_transcript: Transcript | None = None
+        self._early_pcm = b""
+        self._early_started_ms = -1
+        self._early_speech_frames = 0
 
     def note_tool_call(self, _name: str = "") -> None:
         """Called by the tool registry on the first tool execution of a command."""
@@ -597,25 +628,65 @@ class HandsFreeListener:
 
     def _handle_early(self) -> None:
         self._t_end = self.clock()
+        self._early_transcript = None
+        self._early_pcm = b""
+        self._early_started_ms = -1
+        self._early_speech_frames = 0
+        # A long sentence cannot finish at the early check; do not pay for a second
+        # Whisper decode of the same audio at the final check.
+        if self.detector.speech_ms > 2500 or (
+            self.detector.audio_ms - self.detector.last_start_ms
+        ) > 3500:
+            logger.info("Hands-free: long utterance; waiting for the full silence window.")
+            return
         pcm = self.detector.take_pcm(trim_tail=False)
         self._t_endpoint = self.clock()
         transcript = self._transcribe(pcm)
         self._t_trans = self.clock()
+        self._early_transcript = transcript
+        self._early_pcm = pcm
+        self._early_started_ms = self.detector.last_start_ms
+        self._early_speech_frames = self.detector.speech_ms
         if not transcript.ok:
             # A rejected decode cannot be trusted either way; process it now so a wake word
             # that is still readable in the raw text gets "Sorry, say that again.".
             self._process(transcript, pcm)
-        elif sentence_is_complete(transcript.text):
+        elif early_command_is_complete(
+            transcript.text,
+            getattr(self.config, "wake_word", "ultron"),
+            getattr(self.config, "wake_aliases", ""),
+            self.learned_aliases,
+        ):
             self._process(transcript, pcm)
         else:
-            logger.info("Hands-free: sentence not finished yet (dangling word).")
+            logger.info(
+                "Hands-free: long or unfinished sentence; waiting for %.2f s of silence.",
+                self.detector.silence_ms / 1000.0,
+            )
 
     def _handle_final(self) -> None:
         self._t_end = self.clock()
-        pcm = self.detector.take_pcm()
-        self._t_endpoint = self.clock()
-        transcript = self._transcribe(pcm)
-        self._t_trans = self.clock()
+        same_utterance = self._early_started_ms == self.detector.last_start_ms
+        no_new_speech = self.detector.speech_ms <= self._early_speech_frames + 2
+        if (
+            self._early_transcript is not None
+            and same_utterance
+            and no_new_speech
+            and sentence_is_complete(self._early_transcript.text)
+        ):
+            # The user did not resume after the early check: the early decode already
+            # covers this utterance. Save one Whisper call.
+            transcript = self._early_transcript
+            pcm = self._early_pcm or self.detector.take_pcm()
+            self._t_endpoint = self.clock()
+            self._t_trans = self.clock()
+        else:
+            pcm = self.detector.take_pcm()
+            self._t_endpoint = self.clock()
+            transcript = self._transcribe(pcm)
+            self._t_trans = self.clock()
+        self._early_transcript = None
+        self._early_pcm = b""
         self._process(transcript, pcm)
 
     def _process(self, transcript: Transcript, pcm: bytes) -> None:
@@ -791,7 +862,17 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey
     from assistant.safety.permissions import PermissionGate
     from assistant.speech.mic_input import apply_mic_source_volume
-    from assistant.tools.apps import close_app, open_app
+    from assistant.tools.apps import close_app, open_app, switch_app
+    from assistant.tools.desktop_control import (
+        browser_tab_control,
+        media_control,
+        scroll_page,
+        set_brightness,
+        system_info,
+        take_screenshot,
+        type_text,
+        window_control,
+    )
     from assistant.tools.files import list_files, read_file
     from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
     from assistant.tools.web import open_first_result, web_search
@@ -808,12 +889,21 @@ def run_listen(config: AssistantConfig) -> int:
         read_file,
         open_app,
         close_app,
+        switch_app,
         volume_up,
         volume_down,
         set_volume,
         mute_audio,
         web_search,
         open_first_result,
+        type_text,
+        scroll_page,
+        browser_tab_control,
+        window_control,
+        set_brightness,
+        media_control,
+        system_info,
+        take_screenshot,
     ):
         registry.register(fn)
 
@@ -861,10 +951,12 @@ def run_listen(config: AssistantConfig) -> int:
         registry.needs_confirmation_seen = False
         fast_reply = try_fast_path(registry, command)
         if fast_reply is not None:
+            SESSION.note_turn(command, fast_reply)
             return fast_reply, False
         result = loop.run_task(command)
         if registry.needs_confirmation_seen:
             return CONFIRMATION_REPLY, True
+        SESSION.note_turn(command, result.reply)
         return result.reply, False
 
     source = PwRecordSource(target=(config.mic_source_name or ""))

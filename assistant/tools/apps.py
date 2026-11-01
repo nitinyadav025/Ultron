@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import yaml
 
+from assistant.brain.context import SESSION
 from assistant.config import PROJECT_ROOT
 from assistant.tools.registry import tool
 
@@ -31,18 +35,29 @@ APP_ALIASES: dict[str, str] = {
     "text editor": "text editor",
     "vs code": "code",
     "vscode": "code",
+    "visual studio": "code",
+    "visual studio code": "code",
     "code": "code",
     "gnome terminal": "terminal",
+    "console": "terminal",
     "terminal": "terminal",
+    "ptyxis": "terminal",
     "calc": "calculator",
     "calculator": "calculator",
+    "control center": "settings",
+    "gnome settings": "settings",
+    "settings": "settings",
+    "file browser": "files",
+    "files": "files",
+    "system monitor": "system monitor",
     "brave browser": "brave",
     "brave": "brave",
     "google chrome": "chrome",
     "chrome": "chrome",
     "spotify": "spotify",
     "vlc": "vlc",
-    "settings": "settings",
+    "web browser": "firefox",
+    "browser": "firefox",
 }
 
 APP_DISPLAY: dict[str, str] = {
@@ -86,11 +101,47 @@ NEVER_CLOSE = frozenset(
         "sh",
         "python",
         "python3",
+        "sshd",
+        "wayland",
         "dbus-daemon",
         "gdm",
         "gdm3",
     }
 )
+
+# User entries win over system entries with the same desktop file name.
+DESKTOP_DIRS = (
+    Path.home() / ".local/share/applications",
+    Path("/usr/share/applications"),
+    Path("/var/lib/flatpak/exports/share/applications"),
+)
+
+
+@dataclass(frozen=True)
+class DesktopApp:
+    key: str
+    desktop_id: str
+    name: str
+    generic: str
+    exec_argv: tuple[str, ...]
+    try_exec: str
+    no_display: bool
+    source: str
+
+
+@dataclass(frozen=True)
+class AppMatch:
+    key: str
+    display: str
+    desktop_id: str = ""
+    exec_argv: tuple[str, ...] = ()
+    try_exec: str = ""
+    yaml_entry: dict[str, Any] | None = None
+    source: str = ""
+    process_names: tuple[str, ...] = ()
+
+
+_APP_CACHE: list[DesktopApp] | None = None
 
 ProcessRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
@@ -128,27 +179,242 @@ def _catalog() -> dict[str, Any]:
     return apps if isinstance(apps, dict) else {}
 
 
+def reset_app_cache() -> None:
+    """Forget the .desktop scan (tests and after a package install)."""
+    global _APP_CACHE
+    _APP_CACHE = None
+
+
+def _clean_exec(exec_line: str) -> tuple[str, ...]:
+    """Turn an Exec= line into a clean argv list, dropping %U/%f field codes."""
+    try:
+        tokens = shlex.split(exec_line or "")
+    except ValueError:
+        tokens = (exec_line or "").split()
+    cleaned: list[str] = []
+    for token in tokens:
+        token = re.sub(r"%[a-zA-Z]", "", token).strip()
+        if token and not token.startswith("%"):
+            cleaned.append(token)
+    if cleaned and cleaned[0] == "env":
+        cleaned = cleaned[1:]
+        while cleaned and "=" in cleaned[0] and "/" not in cleaned[0]:
+            cleaned.pop(0)
+    return tuple(cleaned)
+
+
+def _parse_desktop_file(path: Path) -> DesktopApp | None:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    section = ""
+    values: dict[str, str] = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line
+            continue
+        if section != "[Desktop Entry]" or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    if values.get("Type", "Application") != "Application":
+        return None
+    name = values.get("Name", "").strip()
+    if not name:
+        return None
+    exec_argv = _clean_exec(values.get("Exec", ""))
+    try_exec = values.get("TryExec", "").strip()
+    if not exec_argv and not try_exec:
+        return None
+    return DesktopApp(
+        key=normalise_app_name(path.stem),
+        desktop_id=path.name,
+        name=name,
+        generic=values.get("GenericName", "").strip(),
+        exec_argv=exec_argv,
+        try_exec=try_exec,
+        no_display=values.get("NoDisplay", "").strip().lower() == "true",
+        source=str(path),
+    )
+
+
+def scan_desktop_apps() -> list[DesktopApp]:
+    """Cached scan of every visible .desktop application for this user."""
+    global _APP_CACHE
+    if _APP_CACHE is not None:
+        return _APP_CACHE
+    seen: set[str] = set()
+    found: list[DesktopApp] = []
+    for directory in DESKTOP_DIRS:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.desktop")):
+            if path.name in seen:
+                continue
+            seen.add(path.name)
+            app = _parse_desktop_file(path)
+            if app is not None:
+                found.append(app)
+    _APP_CACHE = found
+    return found
+
+
+def _process_names_for(match: AppMatch) -> tuple[str, ...]:
+    if match.process_names:
+        return match.process_names
+    names: list[str] = []
+    entry = match.yaml_entry or {}
+    for key in ("binary", "alt_binary"):
+        binary = str(entry.get(key) or "")
+        if binary:
+            names.append(Path(binary).name)
+    for raw in (match.try_exec, match.exec_argv[0] if match.exec_argv else ""):
+        if raw:
+            names.append(Path(raw).name)
+    ignored = {"gtk-launch", "flatpak", "sh", "bash", "env", "gio", "gio-launch"}
+    return tuple(dict.fromkeys(name for name in names if name and name not in ignored))
+
+
+def _match_texts(app: DesktopApp) -> set[str]:
+    texts = {
+        normalise_app_name(app.key),
+        normalise_app_name(app.name),
+        normalise_app_name(app.generic),
+        normalise_app_name(app.desktop_id.removesuffix(".desktop")),
+    }
+    for raw in (app.try_exec, app.exec_argv[0] if app.exec_argv else ""):
+        if raw:
+            texts.add(normalise_app_name(Path(raw).stem))
+    return {text for text in texts if text}
+
+
+def _soundex(word: str) -> str:
+    """Small phonetic key so 'fierfox' still finds Firefox."""
+    letters = re.sub(r"[^a-z]", "", word.lower())
+    if not letters:
+        return ""
+    codes = {
+        **dict.fromkeys("bfpv", "1"),
+        **dict.fromkeys("cgjkqsxz", "2"),
+        **dict.fromkeys("dt", "3"),
+        "l": "4",
+        **dict.fromkeys("mn", "5"),
+        "r": "6",
+    }
+    first = letters[0].upper()
+    last = codes.get(letters[0], "")
+    digits: list[str] = []
+    for char in letters[1:]:
+        code = codes.get(char, "")
+        if code and code != last:
+            digits.append(code)
+        if char not in "hw":
+            last = code
+    return (first + "".join(digits) + "000")[:4]
+
+
+def _score_app(query: str, app: DesktopApp) -> float:
+    texts = _match_texts(app)
+    if query in texts:
+        return 1.0
+    query_tokens = query.split()
+    best = 0.0
+    for text in texts:
+        if len(query_tokens) >= 2 and all(token in text.split() for token in query_tokens):
+            best = max(best, 0.92)
+        best = max(best, difflib.SequenceMatcher(None, query, text).ratio())
+        if " " not in query and len(query) >= 4 and _soundex(query):
+            if any(_soundex(word) == _soundex(query) for word in text.split() if len(word) >= 4):
+                best = max(best, 0.87)
+    if app.no_display:
+        best -= 0.08
+    return best
+
+
+def find_app(app_name: str) -> AppMatch | None:
+    """Resolve a spoken name against apps.yaml (high priority) and .desktop files."""
+    cleaned = normalise_app_name(app_name)
+    if not cleaned:
+        return None
+    key = app_key(app_name)
+    catalog = _catalog()
+    entry = catalog.get(key)
+    if isinstance(entry, dict):
+        display = APP_DISPLAY.get(key, str(entry.get("name") or key.title()))
+        return AppMatch(
+            key=key,
+            display=display,
+            desktop_id=str(entry.get("desktop_id") or ""),
+            yaml_entry=entry,
+            source="apps.yaml",
+            process_names=CLOSE_EXECUTABLES.get(key, ()),
+        )
+
+    best: tuple[float, DesktopApp] | None = None
+    for app in scan_desktop_apps():
+        score = _score_app(cleaned, app)
+        if best is None or score > best[0]:
+            best = (score, app)
+    if best is None or best[0] < 0.86:
+        return None
+    app = best[1]
+    return AppMatch(
+        key=normalise_app_name(app.key),
+        display=app.name,
+        desktop_id=app.desktop_id,
+        exec_argv=app.exec_argv,
+        try_exec=app.try_exec,
+        source=app.source,
+        process_names=_process_names_for(
+            AppMatch(
+                key=app.key,
+                display=app.name,
+                desktop_id=app.desktop_id,
+                exec_argv=app.exec_argv,
+                try_exec=app.try_exec,
+                source=app.source,
+            )
+        ),
+    )
+
+
+def _launch_command_for(match: AppMatch) -> tuple[list[str], str] | None:
+    entry = match.yaml_entry
+    if entry:
+        for key in ("binary", "alt_binary"):
+            binary = str(entry.get(key) or "")
+            if binary and shutil.which(binary):
+                return [binary], binary
+        desktop_id = str(entry.get("desktop_id") or "")
+        if desktop_id and shutil.which("gtk-launch"):
+            return ["gtk-launch", desktop_id], desktop_id
+        flatpak_id = str(entry.get("flatpak_id") or "")
+        if flatpak_id and shutil.which("flatpak"):
+            return ["flatpak", "run", flatpak_id], flatpak_id
+    if match.desktop_id and shutil.which("gtk-launch"):
+        return ["gtk-launch", match.desktop_id], match.desktop_id
+    if match.exec_argv:
+        argv = list(match.exec_argv)
+        if shutil.which(argv[0]) or (Path(argv[0]).is_file() and os.access(argv[0], os.X_OK)):
+            return argv, Path(argv[0]).name
+    return None
+
+
 def is_known_app(app_name: str) -> bool:
-    """True only for a configured app (plus its known aliases), never a guess."""
-    return app_key(app_name) in _catalog()
+    """True for apps.yaml entries and installed .desktop applications."""
+    return find_app(app_name) is not None
 
 
 def resolve_known_app(app_name: str) -> tuple[list[str], str] | None:
-    """Launch command for a configured app, or None. Unknown names are never resolved."""
-    entry = _catalog().get(app_key(app_name))
-    if not isinstance(entry, dict):
+    """Launch command for a known app, or None. Unknown names are never resolved."""
+    match = find_app(app_name)
+    if match is None:
         return None
-    for key in ("binary", "alt_binary"):
-        binary = str(entry.get(key) or "")
-        if binary and shutil.which(binary):
-            return [binary], binary
-    desktop_id = str(entry.get("desktop_id") or "")
-    if desktop_id and shutil.which("gtk-launch"):
-        return ["gtk-launch", desktop_id], desktop_id
-    flatpak_id = str(entry.get("flatpak_id") or "")
-    if flatpak_id and shutil.which("flatpak"):
-        return ["flatpak", "run", flatpak_id], flatpak_id
-    return None
+    return _launch_command_for(match)
 
 
 def resolve_app_launch_command(app_name: str) -> tuple[list[str], str]:
@@ -186,61 +452,103 @@ def resolve_app_launch_command(app_name: str) -> tuple[list[str], str]:
     return [cleaned], cleaned
 
 
+def _launch_match(match: AppMatch) -> tuple[dict[str, Any], list[str]]:
+    """Launch a resolved app; return (result_payload_or_empty, command)."""
+    resolved_command = _launch_command_for(match)
+    if resolved_command is None:
+        return (
+            {
+                "ok": False,
+                "app_name": match.display,
+                "error": f"{match.display} is not installed.",
+            },
+            [],
+        )
+    cmd, resolved = resolved_command
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True
+        )
+        try:
+            _, err = proc.communicate(timeout=0.4)
+            if proc.returncode not in (0, None):
+                return (
+                    {
+                        "ok": False,
+                        "app_name": match.display,
+                        "command": cmd,
+                        "error": err.decode("utf-8", errors="replace").strip(),
+                    },
+                    cmd,
+                )
+        except subprocess.TimeoutExpired:
+            pass
+        SESSION.note_app(match.key)
+        return (
+            {
+                "ok": True,
+                "app_name": match.display,
+                "resolved": resolved,
+                "command": cmd,
+                "pid": proc.pid,
+            },
+            cmd,
+        )
+    except Exception as exc:
+        return (
+            {"ok": False, "app_name": match.display, "command": cmd, "error": str(exc)},
+            cmd,
+        )
+
+
 @tool(risk_level="safe", read_only=False)
 def open_app(app_name: str) -> dict[str, Any]:
     """Open a desktop app by name."""
     cleaned = normalise_app_name(app_name)
-    display = APP_DISPLAY.get(app_key(app_name), cleaned)
-    if not is_known_app(app_name):
-        # Never claim "X is open" for a name that is not in config/apps.yaml.
+    match = find_app(app_name)
+    if match is None:
         return {
             "ok": False,
             "unknown": True,
             "app_name": cleaned,
-            "error": f"Unknown app '{cleaned}'.",
+            "error": f"I couldn't find an app named {cleaned}.",
         }
-    resolved_command = resolve_known_app(app_name)
-    if resolved_command is None:
-        return {
-            "ok": False,
-            "app_name": display,
-            "error": f"{display} is configured but not installed.",
-        }
-    cmd, resolved = resolved_command
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
-        try:
-            _, err = proc.communicate(timeout=0.4)
-            if proc.returncode not in (0, None):
-                return {"ok": False, "app_name": display, "command": cmd, "error": err.decode("utf-8", errors="replace").strip()}
-        except subprocess.TimeoutExpired:
-            pass
-        return {"ok": True, "app_name": display, "resolved": resolved, "command": cmd, "pid": proc.pid}
-    except Exception as exc:
-        return {"ok": False, "app_name": display, "command": cmd, "error": str(exc)}
+    payload, _cmd = _launch_match(match)
+    return payload
 
 
 @tool(risk_level="safe", read_only=False)
 def close_app(app_name: str) -> dict[str, Any]:
     """Close a running desktop app."""
     cleaned = normalise_app_name(app_name)
-    key = app_key(app_name)
-    display = APP_DISPLAY.get(key, cleaned.title() or "That app")
-    if cleaned in NEVER_CLOSE or key in NEVER_CLOSE:
+    match = find_app(app_name)
+    if match is None:
+        return {
+            "ok": False,
+            "unknown": True,
+            "app_name": cleaned,
+            "error": f"I couldn't find an app named {cleaned}.",
+        }
+    key, display = match.key, match.display
+    executables = _process_names_for(match)
+    if cleaned in NEVER_CLOSE or key in NEVER_CLOSE or any(name in NEVER_CLOSE for name in executables):
         return {
             "ok": False,
             "unknown": True,
             "app_name": cleaned,
             "error": "Refusing to close a system process.",
         }
-    executables = CLOSE_EXECUTABLES.get(key)
     if not executables:
-        return {
-            "ok": False,
-            "unknown": True,
-            "app_name": cleaned,
-            "error": f"Unknown app '{cleaned}'.",
-        }
+        # No process name (for example a DBus-only desktop app): close by window title.
+        if shutil.which("wmctrl"):
+            try:
+                closed = _process_runner(["wmctrl", "-c", display])
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {"ok": False, "app_name": display, "error": str(exc)}
+            if closed.returncode == 0:
+                SESSION.note_closed(key)
+                return {"ok": True, "running": True, "closed": True, "app_name": display}
+        return {"ok": True, "running": False, "closed": False, "app_name": display}
     if shutil.which("pgrep") is None:
         return {"ok": False, "app_name": display, "error": "pgrep is not installed."}
 
@@ -271,4 +579,49 @@ def close_app(app_name: str) -> dict[str, Any]:
             "error": (killed.stderr or "kill failed").strip(),
         }
     logger.info("Closed %s (pids %s)", display, sorted(pids))
+    SESSION.note_closed(key)
     return {"ok": True, "running": True, "closed": True, "app_name": display, "pids": sorted(pids)}
+
+
+@tool(risk_level="safe", read_only=False)
+def switch_app(app_name: str) -> dict[str, Any]:
+    """Switch to a running desktop app, or open it if it is not running."""
+    cleaned = normalise_app_name(app_name)
+    match = find_app(app_name)
+    if match is None:
+        return {
+            "ok": False,
+            "unknown": True,
+            "app_name": cleaned,
+            "error": f"I couldn't find an app named {cleaned}.",
+        }
+    display = match.display
+    process_names = _process_names_for(match)
+    running = False
+    if process_names and shutil.which("pgrep"):
+        for executable in process_names:
+            found = _process_runner(["pgrep", "-x", executable])
+            if found.returncode == 0 and (found.stdout or "").strip():
+                running = True
+                break
+
+    focused = False
+    if shutil.which("wmctrl"):
+        try:
+            moved = _process_runner(["wmctrl", "-a", display])
+            focused = moved.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            focused = False
+
+    if not focused:
+        payload, _cmd = _launch_match(match)
+        if not payload.get("ok"):
+            return {**payload, "running": running, "focused": False, "opened": False}
+    SESSION.note_app(match.key)
+    return {
+        "ok": True,
+        "app_name": display,
+        "running": running,
+        "focused": focused or running,
+        "opened": not running,
+    }

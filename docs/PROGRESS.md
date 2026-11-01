@@ -1,4 +1,157 @@
-# Ultron progress — Phase 5 Part B4 (current)
+# Ultron progress — Phase 5 B5 + Part C + Full Desktop Control (current)
+
+Last updated: 2026-11-01 (B5 + Part C code, tests and benchmark complete)
+
+## Phase 5 B5 + Part C + Full Desktop Control (Nov 1)
+
+Work branch: `phase5-b5-full-control` (from `phase5-b4-work` @ `456ff7f`, local only,
+nothing pushed). This section supersedes every section below it.
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | Smart two-speed endpointing (no mid-sentence cut-offs) | DONE |
+| 2 | Browser targeting + session context memory | DONE |
+| 3 | Dynamic desktop app discovery (open/close/switch) | DONE |
+| 4 | Full laptop control (typing, scroll, tabs, windows, system) | DONE |
+| 5 | Fast conversational brain (instant chat + lean local chat) | DONE |
+| 6 | Phase 5 Part C 25-command benchmark + pytest | DONE |
+| 7 | Full verification, docs, commits | DONE |
+
+**Live evidence (user, Nov 1 20:39–20:41, UNVERIFIED by the coding tool):**
+
+- 7 of 8 `listen` utterances ended `reason=early`; at 20:40:09 one sentence split into
+  two `no_wake_word` fragments (3.37 s + 2.35 s). `LISTEN_EARLY_CHECK_MS=600` was too
+  aggressive for breathing pauses.
+- `"open firefox and search for github"` opened Firefox but searched in **Brave**.
+  The real log shows why: at 20:31:10 `Fast path: LLM used for 'Can you open Firefox and
+  search for Sadicing?'`, then `open_app({"app_name":"Firefox"})` followed by
+  `web_search({"query":"Sadicing"})` with no browser; at 20:28:44 and 20:37:55 a
+  standalone search also had `browser=null`, so `xdg-open` used Brave.
+- Apps outside `config/apps.yaml` could not be opened or closed.
+- `"Hello"` took 2.69 s and `"What is your name?"` 2.24 s
+  (`reply_ready=2.69s` and `reply_ready=2.24s` in `logs/assistant.log`).
+
+### Part 1 — smart two-speed endpointing (DONE)
+
+- `LISTEN_EARLY_CHECK_MS` default **1050 ms**, hands-free `VOICE_SILENCE_MS` **1450 ms**,
+  `/voice` `VOICE_RECORD_SILENCE_MS` **1350 ms**.
+- The early event only finishes a **wake word alone** or a **1–5 word fast-path command**
+  that does not end in a continuation word (`and, then, the, a, an, to, for, with, in,
+  of, on, my, or, but, also, so, that, because, like, search, open, close, type, write,
+  can, you, please, about, from, into, at`).
+- Longer speech (>2.5 s or >3.5 s from speech start) skips the early Whisper decode and
+  waits for the full 1450 ms window. If the user resumes before 1450 ms, the detector
+  continues the same recording; no split.
+- Tests:
+  - short command early at ~2100 ms (640 ms lead + 400 ms voice + 1050 ms window), final
+    only after the extra 400 ms;
+  - `"Ultron open firefox" + 1.0 s pause + "and search for github"` → one recording,
+    one `transcribe` call, one command;
+  - `/voice` 1.0 s pause → one recording;
+  - room noise RMS 450 still ends at 1250–1450 ms after speech, never 30 s.
+
+### Part 2 — browser and session context (DONE)
+
+- `choose_browser()` order: explicit browser → `SESSION.last_browser` → Firefox if
+  installed → system opener. An explicit or remembered browser always launches that
+  exact executable with the URL (`[firefox, url]`), never `xdg-open`.
+- `open_app` records `last_app`/`last_browser`; `web_search`/`open_first_result` record
+  `last_query`; `close_app` clears the matching `last_app`.
+- Follow-ups: `"close it"` closes `last_app`; `"open the first link"` reuses
+  `last_query` in `last_browser`.
+- Conversational prefixes (`can you`, `could you`, `please`, `I want you to`, `tell me`)
+  are stripped before matching, so `"Can you open Firefox and search for Sadicing?"` is
+  **one** `web_search(query="sadicing", browser="firefox")` — no LLM, no second action.
+
+### Part 3 — dynamic desktop apps (DONE)
+
+- Cached scanner reads `/usr/share/applications`, `/var/lib/flatpak/exports/share/
+  applications`, and `~/.local/share/applications`.
+- On this Fedora machine it discovered **176** `.desktop` applications (152 system + 10
+  user + 15 Flatpak exports, one duplicate), merged with `config/apps.yaml` as
+  high-priority aliases.
+- Matching: exact name/key/GenericName/executable, token containment, difflib fuzzy
+  score ≥0.86, plus a conservative Soundex phonetic match (for example “fierfox”).
+- Garbage such as `"some fake app"` and `"the first link for github"` is rejected with
+  `"I couldn't find an app named <name>."`.
+- `close_app` derives process names from `Exec=`/`TryExec=`/YAML and keeps the strict
+  blocklist (`gnome-shell`, `systemd`, `pipewire`, `wireplumber`, `wayland`, `Xwayland`,
+  `bash`, `python`, `sshd`, …). `switch_app` tries `wmctrl -a` then relaunches the
+  `.desktop` app to focus it on GNOME Wayland.
+
+### Part 4 — full desktop control (DONE)
+
+Verified without sudo (`getfacl /dev/uinput`, `timeout 2 ydotoold …`, `command -v`):
+
+- `/dev/uinput`: `user:nitinyadav:rw-`; `ydotoold --socket-path=/tmp/…` starts as this
+  user and creates the socket (the 2 s timeout killed it; **no daemon was left**).
+  Actual key injection into a window is **UNVERIFIED** because automated tests must not
+  type into real windows.
+- Available: `ydotool`/`ydotoold`, `wl-copy`, `wmctrl`, `gdbus`, `notify-send`,
+  `gnome-screenshot`. Missing: `xdotool`, `wtype`, `dotool`, `brightnessctl`,
+  `playerctl`.
+- GNOME Power DBus on this machine exposes `Keyboard.Brightness` but **not**
+  `Screen.Brightness`; `/sys/class/backlight/intel_backlight/brightness` is root-only and
+  not writable as the user. `set_brightness` tries the requested GNOME call,
+  `brightnessctl`, then sysfs, and returns an honest failure when none is writable.
+- New tools: `type_text`, `scroll_page`, `browser_tab_control`, `window_control`,
+  `set_brightness`, `media_control`, `system_info`, `take_screenshot`, plus `switch_app`.
+  Typing has a 200-character cap, refuses secret-like text, and never presses Enter
+  unless `press_enter=True`. Clipboard fallback is reported, never silent.
+
+### Part 5 — fast conversation (DONE)
+
+- Instant, tool-free replies for `hello`, `hi`, `hey`, `hey ultron`, `what is your name`,
+  `who are you`, `how are you`, `thank you`, `thanks`, `are you there`.
+- Pure conversation that still goes to the local model now sends **no tool schemas**,
+  only the last 8 history items (4 turns), a lean chat prompt, and 96 max tokens.
+- Live “before”: Hello `reply_ready=2.69 s`, name `reply_ready=2.24 s`. “After” live
+  latency is **UNVERIFIED**; the deterministic fast-path router measured 0.007 ms in the
+  benchmark and the live transcription stage was 0.34–0.47 s in the old log.
+
+### Part 6 — Phase 5 Part C benchmark (DONE)
+
+- `scripts/benchmark_phase5c.py`, wired as `.venv/bin/python main.py benchmark`.
+- 25 realistic commands across apps, web/first link, audio, files, scrolling, tabs,
+  typing, windows, system info and conversation.
+- Mocked OS runners only: no window opened, no key injected, no screenshot taken, no
+  real LLM called.
+- Result: **25/25 passed, 0 failed**, average **1.519 ms** (mocked routing/CPU time).
+- Report: `logs/benchmark_phase5c.json` (real command) or a temp path during pytest.
+
+### Part 7 — verification (DONE)
+
+- `.venv/bin/python -m pytest -q` → **359 passed, 0 skipped**.
+- `.venv/bin/python main.py benchmark` → **25/25**.
+- `compileall` → OK; `git diff --check` → clean.
+- `ss -ltnp | grep 9931` → no llama-server. `pgrep -a ydotoold` → none.
+- The pytest suite’s real-log guard passed (tests use temp logs/workspace).
+
+### Files changed
+
+- Part 1: `assistant/config.py`, `.env.example`, `assistant/speech/recorder.py`,
+  `assistant/interfaces/listen.py`, `assistant/interfaces/voice.py`.
+- Part 2: `assistant/brain/context.py` (new), `assistant/tools/web.py`,
+  `assistant/tools/apps.py`, `assistant/brain/fast_path.py`,
+  `assistant/interfaces/cli.py`, `assistant/interfaces/listen.py`.
+- Part 3: `assistant/tools/apps.py`, `config/apps.yaml`, `assistant/brain/tool_replies.py`.
+- Part 4: `assistant/tools/desktop_control.py` (new), `assistant/brain/fast_path.py`,
+  `assistant/brain/tool_replies.py`, `assistant/interfaces/cli.py`,
+  `assistant/interfaces/listen.py`, `assistant/interfaces/gui.py`.
+- Part 5: `assistant/brain/fast_path.py`, `assistant/brain/agent_loop.py`,
+  `assistant/brain/prompts.py`.
+- Part 6: `scripts/benchmark_phase5c.py` (new), `main.py`,
+  `tests/test_phase5c_benchmark.py`.
+- Tests: `tests/test_b5_full_control.py` (new) plus updates to existing tests.
+
+**NEXT STEP:** run the live checklist in the final report:
+`listen` with “Ultron”, “open firefox”, “open firefox and search for github”,
+“close it”, “open the first link”, “scroll down”, “open a new tab”, “type hello world”,
+“what is my battery”; then `/voice` with “Hello” and “What is your name?”.
+
+---
+
+# Ultron progress — Phase 5 Part B4
 
 Last updated: 2026-11-01 (B4 code, tests and docs complete; live test pending)
 

@@ -168,7 +168,9 @@ def test_loud_burst_while_piper_talks_does_not_raise_the_thresholds() -> None:
 def test_two_commands_after_one_wake_word() -> None:
     clip = read_clip()
     wake = silence(32) + tone(20) + silence(40)
-    source = ScriptedSource(wake + silence(25) + clip + silence(60) + silence(25) + clip + silence(150))
+    # 2.6 s between the two commands so the first one really finishes (the production
+    # silence window is 1.45 s; this test uses 2 s).
+    source = ScriptedSource(wake + silence(25) + clip + silence(130) + clip + silence(150))
     transcriber = ScriptedTranscriber(
         [
             Transcript(True, "Ultron"),

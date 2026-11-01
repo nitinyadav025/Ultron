@@ -192,11 +192,12 @@ def split_wake_word(
     return match.found, match.command
 
 
-DANGLING_WORDS = {
+CONTINUATION_WORDS = {
     "and",
     "then",
     "the",
     "a",
+    "an",
     "to",
     "for",
     "with",
@@ -207,7 +208,24 @@ DANGLING_WORDS = {
     "or",
     "but",
     "also",
+    "so",
+    "that",
+    "because",
+    "like",
+    "search",
+    "open",
+    "close",
+    "type",
+    "write",
+    "can",
+    "you",
+    "please",
+    "about",
+    "from",
+    "into",
+    "at",
 }
+DANGLING_WORDS = CONTINUATION_WORDS
 
 
 def sentence_is_complete(text: str) -> bool:

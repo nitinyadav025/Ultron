@@ -23,7 +23,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from assistant.tools.apps import resolve_app_launch_command
+from assistant.brain.context import SESSION
+from assistant.tools.apps import resolve_app_launch_command, resolve_known_app
 from assistant.tools.registry import tool
 
 logger = logging.getLogger("ultron.web")
@@ -67,14 +68,28 @@ def _safe_http_url(url: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def choose_browser(browser: str | None = None) -> str:
+    """Explicit browser, else the session's last browser, else Firefox if installed."""
+    explicit = (browser or "").strip().lower()
+    if explicit:
+        return explicit
+    if SESSION.last_browser:
+        return SESSION.last_browser
+    if resolve_known_app("firefox") is not None:
+        return "firefox"
+    return ""
+
+
 def open_url(url: str, browser: str | None = None) -> dict[str, Any]:
     """Open a URL with the named browser, else with the system opener (argv lists only)."""
     if not _safe_http_url(url):
         return {"ok": False, "error": f"Refused a non-http(s) URL: {url!r}"}
     if browser:
-        cmd, resolved = resolve_app_launch_command(browser)
+        resolved_command = resolve_known_app(browser) or resolve_app_launch_command(browser)
+        cmd, resolved = resolved_command
         if not shutil.which(cmd[0]):
             return {"ok": False, "error": f"Browser '{browser}' was not found."}
+        # Exact browser only: never xdg-open (the live Brave bug).
         argv = [*cmd, url]
         name = resolved or browser
     elif shutil.which("xdg-open"):
@@ -154,14 +169,16 @@ def web_search(query: str, browser: str | None = None) -> dict[str, Any]:
     cleaned = clean_query(query)
     if not cleaned:
         return {"ok": False, "error": "The search text was empty."}
+    chosen = choose_browser(browser)
     url = search_url(cleaned)
-    opened = open_url(url, browser)
+    opened = open_url(url, chosen or None)
     if not opened.get("ok"):
-        return {"ok": False, "query": cleaned, "browser": browser, "error": opened.get("error")}
+        return {"ok": False, "query": cleaned, "browser": chosen, "error": opened.get("error")}
+    SESSION.note_search(cleaned, chosen or None)
     return {
         "ok": True,
         "query": cleaned,
-        "browser": browser or "",
+        "browser": chosen,
         "url": url,
         "opened_with": opened.get("opened_with"),
     }
@@ -181,18 +198,27 @@ def first_result_url(query: str, method: str | None = None) -> tuple[str, str]:
 
 
 @tool(risk_level="safe", read_only=False)
-def open_first_result(query: str) -> dict[str, Any]:
+def open_first_result(query: str, browser: str | None = None) -> dict[str, Any]:
     """Search the web and open the first result."""
     cleaned = clean_query(query)
     if not cleaned:
         return {"ok": False, "error": "The search text was empty."}
+    chosen = choose_browser(browser)
     url, method = first_result_url(cleaned)
-    opened = open_url(url)
+    opened = open_url(url, chosen or None)
     if not opened.get("ok"):
-        return {"ok": False, "query": cleaned, "error": opened.get("error")}
+        return {"ok": False, "query": cleaned, "browser": chosen, "error": opened.get("error")}
+    SESSION.note_search(cleaned, chosen or None)
     reply = (
         f"Opening the search results for {cleaned}."
         if method == "search"
         else f"Opening the first result for {cleaned}."
     )
-    return {"ok": True, "query": cleaned, "url": url, "method": method, "reply": reply}
+    return {
+        "ok": True,
+        "query": cleaned,
+        "browser": chosen,
+        "url": url,
+        "method": method,
+        "reply": reply,
+    }

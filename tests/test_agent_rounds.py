@@ -95,7 +95,7 @@ def test_local_backend_caps_tool_rounds_at_three() -> None:
     adapter = FakeLocalAdapter()
     loop = AgentLoop(cfg, adapter, registry, watchdog)  # type: ignore[arg-type]
 
-    result = loop.run_task("ping")
+    result = loop.run_task("list files")
     assert result.ok is True
     assert result.reply == "Summary done."
     assert EXEC_COUNT["n"] == 3  # exactly three tool rounds, never a 4th
@@ -315,7 +315,7 @@ def test_ambiguous_mute_and_unmute_asks_and_runs_nothing() -> None:
     assert adapter.calls == 1  # only the model turn that proposed the call
 
 
-def test_open_app_is_never_run_for_a_conversational_question() -> None:
+def test_open_app_is_never_run_when_the_request_is_not_an_app_action() -> None:
     OPEN_APP_CALLS["n"] = 0
     cfg = load_config()
     cfg.backend = "local"
@@ -326,13 +326,65 @@ def test_open_app_is_never_run_for_a_conversational_question() -> None:
     adapter = QuestionAppAdapter()
     loop = AgentLoop(cfg, adapter, registry, watchdog)  # type: ignore[arg-type]
 
-    result = loop.run_task("how are you?")
+    result = loop.run_task("list files")
 
     assert result.ok is True
     assert "Ultron" in result.reply
     assert OPEN_APP_CALLS["n"] == 0  # the model's app call was refused
     assert adapter.calls == 2  # one refused tool turn, then a plain answer with no tools
     assert adapter.tools_seen[-1] is None
+
+
+class ChatAdapter:
+    """Records the one lean chat request and answers with text."""
+
+    is_local = True
+    usage_meter = LocalUsageMeter()
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tools_seen: list[Any] = []
+        self.system_prompts: list[str] = []
+        self.history_lengths: list[int] = []
+
+    def select_model(self, role: str = "main") -> str:
+        return "fake-local"
+
+    def generate_turn(
+        self,
+        contents: object,
+        system_instruction: str,
+        tools: list[dict[str, Any]] | None = None,
+        role: str = "main",
+        thinking_level: str | None = None,
+        max_retries: int = 1,
+        max_output_tokens: int | None = None,
+    ) -> tuple[types.GenerateContentResponse, TokenUsageStats]:
+        self.calls += 1
+        self.tools_seen.append(tools)
+        self.system_prompts.append(system_instruction)
+        self.history_lengths.append(len(contents) if isinstance(contents, list) else -1)
+        content = types.Content(role="model", parts=[types.Part.from_text(text="Hello, I am Ultron.")])
+        return types.GenerateContentResponse(candidates=[types.Candidate(content=content)]), TokenUsageStats()
+
+
+def test_pure_chat_uses_one_lean_request_without_tools() -> None:
+    cfg = load_config()
+    cfg.backend = "local"
+    gate = PermissionGate(config=cfg, mode="auto-safe")
+    registry = ToolRegistry(config=cfg, gate=gate)
+    watchdog = WatchdogMonitor(cfg.max_steps, cfg.wall_clock_timeout_sec, cfg.idle_standdown_sec)
+    adapter = ChatAdapter()
+    loop = AgentLoop(cfg, adapter, registry, watchdog)  # type: ignore[arg-type]
+
+    result = loop.run_task("what can you do?")
+
+    assert result.ok is True and result.reply == "Hello, I am Ultron."
+    assert adapter.calls == 1
+    assert adapter.tools_seen == [None]  # no tool schemas on a conversation turn
+    assert "no tools are available" in adapter.system_prompts[0]
+    assert len(adapter.system_prompts[0]) < 300  # lean chat prompt
+    assert adapter.history_lengths[0] <= 8  # last four turns only
 
 
 def test_timed_mute_asks_honestly_without_the_llm() -> None:

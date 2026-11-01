@@ -86,7 +86,10 @@ class AssistantConfig:
     # fixed window (the old behaviour) for VOICE_FIXED_SECONDS.
     voice_mode: str = "auto"
     voice_start_timeout_s: float = 10.0
-    voice_silence_ms: int = 900
+    # Hands-free mode waits 1.45 s so a 1.0 s breathing pause cannot split a sentence.
+    voice_silence_ms: int = 1450
+    # /voice is a one-shot capture: 1.35 s is still safe for a 0.8-1.0 s pause.
+    voice_record_silence_ms: int = 1350
     voice_max_seconds: float = 30.0
     voice_fixed_seconds: float = 5.0
     voice_debug: bool = False
@@ -101,7 +104,7 @@ class AssistantConfig:
     wake_aliases: str = ""
     wake_aliases_file: Path = WORKSPACE_DIR / "wake_aliases.json"
     listen_followup_s: float = 6.0
-    listen_early_check_ms: int = 600
+    listen_early_check_ms: int = 1050
     listen_after_speech_ms: int = 300
     listen_log_ignored: bool = False
     listen_debug: bool = False
@@ -284,7 +287,8 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
             return default
 
     voice_start_timeout_s = _positive_float("VOICE_START_TIMEOUT_S", 10.0, 1.0, 60.0)
-    voice_silence_ms = _positive_int("VOICE_SILENCE_MS", 900, 300, 10000)
+    voice_silence_ms = _positive_int("VOICE_SILENCE_MS", 1450, 300, 10000)
+    voice_record_silence_ms = _positive_int("VOICE_RECORD_SILENCE_MS", 1350, 300, 10000)
     voice_max_seconds = _positive_float("VOICE_MAX_SECONDS", 30.0, 3.0, 120.0)
     voice_fixed_seconds = _positive_float("VOICE_FIXED_SECONDS", 5.0, 1.0, 60.0)
     voice_debug = merged.get("VOICE_DEBUG", "false").lower() == "true"
@@ -300,7 +304,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     wake_aliases = (merged.get("WAKE_ALIASES") or "").strip()
     wake_aliases_file = Path(os.path.expanduser(merged.get("WAKE_ALIASES_FILE") or str(WORKSPACE_DIR / "wake_aliases.json")))
     listen_followup_s = _positive_float("LISTEN_FOLLOWUP_S", 6.0, 0.0, 60.0)
-    listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 600, 200, 5000)
+    listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 1050, 400, 5000)
     listen_after_speech_ms = _positive_int("LISTEN_AFTER_SPEECH_MS", 300, 0, 5000)
     listen_log_ignored = merged.get("LISTEN_LOG_IGNORED", "0").strip().lower() in ("1", "true", "yes")
     listen_debug = merged.get("LISTEN_DEBUG", "0").strip().lower() in ("1", "true", "yes")
@@ -376,6 +380,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         voice_mode=voice_mode,
         voice_start_timeout_s=voice_start_timeout_s,
         voice_silence_ms=voice_silence_ms,
+        voice_record_silence_ms=voice_record_silence_ms,
         voice_max_seconds=voice_max_seconds,
         voice_fixed_seconds=voice_fixed_seconds,
         voice_debug=voice_debug,

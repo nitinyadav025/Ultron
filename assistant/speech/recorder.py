@@ -491,7 +491,7 @@ def record_until_silence(
     source: AudioSource,
     *,
     start_timeout_s: float = 10.0,
-    silence_ms: int = 900,
+    silence_ms: int = 1350,
     max_seconds: float = 30.0,
     min_speech_ms: int = MIN_SPEECH_MS,
     pre_roll_ms: int = PRE_ROLL_MS,
