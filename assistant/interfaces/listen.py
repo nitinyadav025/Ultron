@@ -16,6 +16,7 @@ from __future__ import annotations
 import array
 import json
 import logging
+import math
 import re
 import time
 from collections import deque
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from assistant.config import AssistantConfig
+from assistant.speech.ears import NO_SPEECH
 from assistant.speech.recorder import (
     CALIBRATION_MS,
     DEFAULT_NOISE_FLOOR,
@@ -44,7 +46,7 @@ from assistant.speech.recorder import (
     samples_to_pcm16,
     write_pcm16_wav,
 )
-from assistant.speech.wake import first_word, sentence_is_complete, split_wake_word
+from assistant.speech.wake import aliases_for, first_word, sentence_is_complete, wake_match
 from assistant.tools.registry import ToolRegistry
 
 logger = logging.getLogger("ultron.listen")
@@ -214,6 +216,22 @@ class UtteranceDetector:
             frames = frames[: last + 1 + TRAILING_SILENCE_MS // FRAME_MS]
         return b"".join(samples_to_pcm16(frame) for frame in frames)
 
+    def stats(self) -> dict[str, Any]:
+        """Peak/RMS/floor/SNR for the utterance log line (no text involved)."""
+        frames = list(self._collected)
+        levels = [frame_rms(frame) for frame in frames] or [0]
+        speech_level = percentile(levels, 0.75) if frames else 0
+        snr_db = 0.0
+        if speech_level > 0 and self.noise_floor > 0:
+            snr_db = 20.0 * math.log10(float(speech_level) / float(self.noise_floor))
+        return {
+            "duration_ms": max(0, self.audio_ms - self._start_ms),
+            "peak": max((frame_peak(frame) for frame in frames), default=0),
+            "rms": int(sum(levels) / len(levels)),
+            "noise_floor": self.noise_floor,
+            "snr_db": snr_db,
+        }
+
     @property
     def speech_ms(self) -> int:
         return self._speech_frames * FRAME_MS
@@ -255,6 +273,9 @@ class HandsFreeListener:
         self.followup_until_ms = 0
         self.ignore_until_ms = 0
         self._carry = b""
+        self._ready = False
+        self._discard_active = False
+        self._followup_active = False
         self._t_end = 0.0
         self._t_endpoint = 0.0
         self._t_trans = 0.0
@@ -268,7 +289,6 @@ class HandsFreeListener:
     # -- public -------------------------------------------------------------------
 
     def run(self) -> int:
-        self.print_fn(START_LINE)
         try:
             self.source.start()
             while not self.stop_requested:
@@ -286,14 +306,35 @@ class HandsFreeListener:
 
     # -- internals ----------------------------------------------------------------
 
+    def _say(self, line: str) -> None:
+        self.print_fn(f"\u00b7 {line}")
+
+    def _debug(self, line: str) -> None:
+        """LISTEN_DEBUG=1: screen only, never a log line or a file."""
+        if getattr(self.config, "listen_debug", False):
+            self.print_fn(f"\u00b7 debug: {line}")
+
     def _consume(self, chunk: bytes) -> None:
         self._carry += chunk
         while len(self._carry) >= FRAME_BYTES and not self.stop_requested:
             raw_frame, self._carry = self._carry[:FRAME_BYTES], self._carry[FRAME_BYTES:]
             frame = pcm16_samples(raw_frame)
+
+            if not self._ready and self.detector.audio_ms >= self.detector.warmup_ms:
+                self._ready = True
+                self.print_fn(START_LINE)
+
             if self.detector.audio_ms < self.ignore_until_ms:
                 self.detector.skip(frame)
                 continue
+            if self._discard_active:
+                self._discard_active = False
+                logger.info("Hands-free: discard window closed.")
+            if self._followup_active and self.detector.audio_ms > self.followup_until_ms:
+                self._followup_active = False
+                logger.info("Hands-free: follow-up window closed.")
+                self._say("window closed")
+
             event = self.detector.feed(frame)
             if event == "early":
                 self._handle_early()
@@ -305,13 +346,32 @@ class HandsFreeListener:
     def _transcribe(self, pcm: bytes) -> Transcript:
         return self.transcribe(pcm)
 
+    def _log_utterance(self, result: str) -> None:
+        """One INFO line per detected utterance, with no words from the speech."""
+        stats = self.detector.stats()
+        now = datetime.now()
+        start = datetime.fromtimestamp(now.timestamp() - stats["duration_ms"] / 1000.0)
+        logger.info(
+            "Utterance: start=%s end=%s duration=%.2fs peak=%d rms=%d noise_floor=%d "
+            "snr=%.1f dB reason=%s sent_to_whisper=yes result=%s",
+            start.strftime("%H:%M:%S"),
+            now.strftime("%H:%M:%S"),
+            stats["duration_ms"] / 1000.0,
+            stats["peak"],
+            stats["rms"],
+            int(stats["noise_floor"]),
+            stats["snr_db"],
+            self.detector.last_reason or "early",
+            result,
+        )
+
     def _handle_early(self) -> None:
         self._t_end = self.clock()
         pcm = self.detector.take_pcm(trim_tail=False)
         self._t_endpoint = self.clock()
         transcript = self._transcribe(pcm)
         self._t_trans = self.clock()
-        logger.info("Hands-free: early transcript in %.2fs: %r", self._t_trans - self._t_endpoint, transcript.text)
+        self._debug(f'heard "{transcript.text}"')
         if not transcript.ok:
             # A rejected decode cannot be trusted either way; process it now so a wake word
             # that is still readable in the raw text gets "Sorry, say that again.".
@@ -319,7 +379,6 @@ class HandsFreeListener:
         elif sentence_is_complete(transcript.text):
             self._process(transcript, pcm)
         else:
-            # A dangling word: keep listening, do not send this half-sentence anywhere.
             logger.info("Hands-free: sentence not finished yet (dangling word).")
 
     def _handle_final(self) -> None:
@@ -328,43 +387,58 @@ class HandsFreeListener:
         self._t_endpoint = self.clock()
         transcript = self._transcribe(pcm)
         self._t_trans = self.clock()
+        self._debug(f'heard "{transcript.text}"')
         self._process(transcript, pcm)
 
     def _process(self, transcript: Transcript, pcm: bytes) -> None:
         started = self.detector.last_start_ms
-        in_followup = started <= self.followup_until_ms
+        in_followup = self._followup_active and started <= self.followup_until_ms
         wake_text = transcript.raw or transcript.text
-        wake_found, command = split_wake_word(
-            wake_text,
-            getattr(self.config, "wake_word", "ultron"),
-            getattr(self.config, "wake_aliases", ""),
+        wake_word = getattr(self.config, "wake_word", "ultron")
+        wake_aliases = getattr(self.config, "wake_aliases", "")
+        match = wake_match(wake_text, wake_word, wake_aliases)
+        self._debug(
+            f"wake score={match.ratio:.2f} target={match.target or '-'} "
+            f"aliases={','.join(aliases_for(wake_word, wake_aliases))}"
         )
+        wake_found = match.found
+        command = match.command
+        used_followup = False
         if not wake_found and in_followup:
             wake_found = True
+            used_followup = True
             command = re.sub(r"\s+", " ", transcript.text or "").strip()
 
         if not wake_found:
             self.ignored += 1
             if getattr(self.config, "listen_log_ignored", False):
                 logger.info("Hands-free: ignored speech starting with %r", first_word(wake_text))
+            self._log_utterance("no_wake_word")
+            self._say("heard speech, no wake word")
             self.detector.reset()
             return
 
+        self._say("wake word heard")
+
         if not transcript.ok:
+            self._log_utterance("too_short" if transcript.text == NO_SPEECH else "rejected_by_guard")
             self.detector.reset()
             self._speak(RETRY_REPLY)
             return
 
         if not command:
+            self._log_utterance("wake_only")
             self.detector.reset()
             self._speak(YES_REPLY)
             return
 
         if command.strip(" .!?").lower() in STOP_COMMANDS:
+            self._log_utterance("stop_command")
             self.detector.reset()
             self.stop_requested = True
             return
 
+        self._log_utterance("follow_up" if used_followup else "accepted")
         self.detector.reset()
         if self.save_debug is not None:
             self.save_debug(pcm, transcript, command)
@@ -376,7 +450,6 @@ class HandsFreeListener:
         reply_ready = self.clock()
         speech_start = self.clock() - self._t_end
         self.commands_run += 1
-        self.print_fn(f"You: {command} | Ultron: {reply}")
         logger.info(
             "Latency: end_to_endpoint=%.2fs transcribe=%.2fs first_tool=%s reply_ready=%.2fs speech_start=%.2fs",
             self._t_endpoint - self._t_end,
@@ -389,15 +462,16 @@ class HandsFreeListener:
 
     def _speak(self, text: str) -> None:
         self.speak(text)
-        # Anything the mic picked up while Piper talked is discarded.
         self._drain()
-        self.ignore_until_ms = self.detector.audio_ms + int(getattr(self.config, "listen_after_speech_ms", 600))
-        self.followup_until_ms = self.ignore_until_ms + int(getattr(self.config, "listen_followup_s", 6.0) * 1000)
-        logger.info(
-            "Hands-free: speaking done; ignoring %.0f ms, wake-free window %.0f ms",
-            getattr(self.config, "listen_after_speech_ms", 600),
-            getattr(self.config, "listen_followup_s", 6.0) * 1000,
-        )
+        after = int(getattr(self.config, "listen_after_speech_ms", 600))
+        window = int(getattr(self.config, "listen_followup_s", 6.0) * 1000)
+        self.ignore_until_ms = self.detector.audio_ms + after
+        self.followup_until_ms = self.ignore_until_ms + window
+        self._discard_active = True
+        self._followup_active = True
+        logger.info("Hands-free: discard window open for %d ms.", after)
+        logger.info("Hands-free: follow-up window open for %d ms.", window)
+        self._say(f"waiting for your command ({window // 1000} s)")
 
     def _drain(self) -> None:
         while True:
@@ -451,9 +525,9 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.tools.web import open_first_result, web_search
 
     register_gnome_kill_hotkey(config.kill_hotkey_binding)
-    # Apply the optional mic level silently: `listen` prints only the start line and
-    # one line per accepted command.
-    apply_mic_source_volume(config.mic_source_volume)
+    _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
+    if config.mic_source_volume:
+        print(f"  Mic input: {mic_msg}", flush=True)
 
     gate = PermissionGate(config=config, mode=config.default_mode)
     registry = ToolRegistry(config=config, gate=gate, allow_prompts=False)
@@ -469,14 +543,16 @@ def run_listen(config: AssistantConfig) -> int:
     if not ok_ears:
         print(f"[ERROR] Ears unavailable: {ears_msg}", flush=True)
         return 1
+    print(f"  Ears: ready \u2014 {ears_msg}", flush=True)
     ok_mouth, mouth_msg = voice.load_mouth()
     if not ok_mouth:
         print(f"[ERROR] Mouth unavailable: {mouth_msg}", flush=True)
         return 1
+    print(f"  Mouth: ready \u2014 {mouth_msg}", flush=True)
 
     def transcribe(pcm: bytes) -> Transcript:
         samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-        ok, text = voice.ears.transcribe_samples(samples)
+        ok, text = voice.ears.transcribe_samples(samples, log_text=False)
         confidence = dict(getattr(voice.ears, "last_confidence", {}) or {})
         return Transcript(
             ok=ok,

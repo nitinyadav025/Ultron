@@ -10,7 +10,7 @@ pushed). This section supersedes every section below it.
 | Part | What | Status |
 |------|------|--------|
 | 1 | Audit every setting; permissions diff; "close" capability | DONE |
-| 2 | Make `listen` visible; fix text leaks of ignored speech | TODO |
+| 2 | Make `listen` visible; fix text leaks of ignored speech | DONE |
 | 3 | Offline replay: why no command after "Yes?" | TODO |
 | 4 | Adaptive warm-up; SNR thresholds from real clips | TODO |
 | 5 | `main.py wake-train` + learned aliases, with safety rule | TODO |
@@ -115,10 +115,38 @@ found only the sandbox timeout helpers. B1 had no `fast_path.py` and no close pa
 never actually closed anything — the old model probably claimed it. B2's `fast_path.py`
 recognises it and answers "I can't close apps yet." without acting. **Nothing built.**
 
+### Part 2 result — visible `listen`, no ignored-speech text
+
+- `run_listen()` now prints the same ready lines as chat: `  Mic input: …` (when
+  `MIC_SOURCE_VOLUME` is set), `  Ears: ready — …`, `  Mouth: ready — …`.
+- The start line is printed by the listener only after the warm-up, not before it.
+- One INFO `Utterance:` line per processed utterance, **no words**: start/end clock time,
+  duration, peak, rms, noise floor, SNR, end reason, `sent_to_whisper=yes`, result
+  (`accepted`, `follow_up`, `wake_only`, `no_wake_word`, `rejected_by_guard`, `too_short`,
+  `stop_command`).
+- INFO lines for the discard window (open/closed) and follow-up window (open/closed).
+- Screen lines only: `· heard speech, no wake word`, `· wake word heard`,
+  `· waiting for your command (6 s)`, `· window closed` (plus the ready/start lines).
+- `LISTEN_DEBUG=1` prints `· debug: heard "…"`, the wake score, the matched target and the
+  aliases tried — **screen only**; never a log line or file.
+- Privacy fix: `WhisperEars.transcribe_samples(..., log_text=False)` logs
+  `text_chars=N` instead of `text='…'`; `listen` uses it. Non-wake speech is not saved
+  (`save_debug` is only called after a wake match) and never reaches a tool, so it cannot
+  reach `audit.jsonl`.
+- Why `LISTEN_LOG_IGNORED=1` produced no line: the key is **not in `.env`**, so the
+  effective value was 0. When it is set, only the first word is logged; the full text the
+  user saw came from the old `Ears confidence … text='…'` line, which is now suppressed in
+  listen.
+- Tests: `test_ignored_speech_never_puts_its_words_in_the_log_or_on_screen`,
+  `test_listen_log_ignored_prints_only_the_first_word`, `test_debug_text_is_screen_only`,
+  and `test_private_transcription_keeps_the_words_out_of_the_log`.
+
 ### Files changed so far
 
-- `assistant/config.py` (two defaults), `tests/test_permissions_b3.py`,
-  `tests/test_config_defaults.py`, `docs/PROGRESS.md`.
+- `assistant/config.py` (`LISTEN_DEBUG`), `assistant/speech/ears.py` (private logging),
+  `assistant/speech/wake.py` (`wake_match`/`aliases_for`),
+  `assistant/interfaces/listen.py`, `.env.example`,
+  `tests/test_ears.py`, `tests/test_listen.py`, `docs/PROGRESS.md`.
 
 ### Open problems
 

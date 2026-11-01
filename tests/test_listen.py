@@ -156,7 +156,8 @@ def test_speech_without_the_wake_word_is_ignored_silently() -> None:
 
     assert commands == [] and saved == []
     assert listener.ignored == 1
-    assert prints == [START_LINE]  # not printed, not logged as a command
+    # One short screen line, with no words from the speech.
+    assert prints == [START_LINE, "\u00b7 heard speech, no wake word"]
 
 
 # 3) "ultron open firefox": one tool call, wake word removed ---------------------------
@@ -358,3 +359,63 @@ def test_debug_audio_is_saved_only_after_the_wake_word(tmp_path: Path) -> None:
     listener.run()
 
     assert [item[2] for item in saved] == ["mute"]
+
+
+def test_ignored_speech_never_puts_its_words_in_the_log_or_on_screen(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="ultron.listen")
+    prints: list[str] = []
+    listener = _listener(
+        ScriptedSource(utterance()),
+        ScriptedTranscriber([Transcript(True, "open firefox")]),
+        _runner([]),
+        prints=prints,
+    )
+
+    listener.run()
+
+    assert "open firefox" not in caplog.text
+    assert all("open firefox" not in line for line in prints)
+    assert "result=no_wake_word" in caplog.text
+    assert "duration=" in caplog.text and "snr=" in caplog.text
+
+
+def test_listen_log_ignored_prints_only_the_first_word(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="ultron.listen")
+    source = ScriptedSource(utterance())
+    listener = _listener(
+        source,
+        ScriptedTranscriber([Transcript(True, "open firefox")]),
+        _runner([]),
+    )
+    listener.config.listen_log_ignored = True
+
+    listener.run()
+
+    assert "ignored speech starting with 'open'" in caplog.text
+    assert "open firefox" not in caplog.text
+
+
+def test_debug_text_is_screen_only(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="ultron.listen")
+    prints: list[str] = []
+    listener = _listener(
+        ScriptedSource(utterance()),
+        ScriptedTranscriber([Transcript(True, "open firefox")]),
+        _runner([]),
+        prints=prints,
+    )
+    listener.config.listen_debug = True
+
+    listener.run()
+
+    assert any('debug: heard "open firefox"' in line for line in prints)
+    assert any("debug: wake score=" in line for line in prints)
+    assert "open firefox" not in caplog.text

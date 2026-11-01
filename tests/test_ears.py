@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -377,3 +378,19 @@ def test_voice_live_disabled_on_local_backend(tmp_path: Path) -> None:
     assert local.voice_live_enabled is False
     local.backend = "gemini"
     assert local.voice_live_enabled is True
+
+
+def test_private_transcription_keeps_the_words_out_of_the_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="ultron.ears")
+    cfg = _cfg(tmp_path)
+    cfg.backend = "local"
+    ears = WhisperEars(cfg, model_factory=lambda _d: FakeModel(["secret words"]))
+    samples = np.zeros(16000, dtype=np.float32)
+
+    ok, text = ears.transcribe_samples(samples, log_text=False)
+
+    assert ok is True and text == "secret words"  # returned in memory
+    assert "secret words" not in caplog.text       # but never written anywhere
+    assert "text_chars=12" in caplog.text

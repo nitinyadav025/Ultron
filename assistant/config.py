@@ -100,6 +100,7 @@ class AssistantConfig:
     listen_early_check_ms: int = 800
     listen_after_speech_ms: int = 600
     listen_log_ignored: bool = False
+    listen_debug: bool = False
     daily_token_cap: int = 500000
     save_screenshots: bool = False
     default_mode: str = "auto-safe"
@@ -290,6 +291,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 800, 200, 5000)
     listen_after_speech_ms = _positive_int("LISTEN_AFTER_SPEECH_MS", 600, 0, 5000)
     listen_log_ignored = merged.get("LISTEN_LOG_IGNORED", "0").strip().lower() in ("1", "true", "yes")
+    listen_debug = merged.get("LISTEN_DEBUG", "0").strip().lower() in ("1", "true", "yes")
 
     backend = (merged.get("BACKEND") or "local").strip().lower()
     if backend not in ("local", "gemini"):
@@ -369,6 +371,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         listen_early_check_ms=listen_early_check_ms,
         listen_after_speech_ms=listen_after_speech_ms,
         listen_log_ignored=listen_log_ignored,
+        listen_debug=listen_debug,
         daily_token_cap=int(merged.get("DAILY_TOKEN_CAP", "500000")),
         save_screenshots=merged.get("SAVE_SCREENSHOTS", "false").lower() == "true",
         default_mode=ast_cfg.get("default_mode", "auto-safe"),

@@ -236,10 +236,12 @@ class WhisperEars:
             return False, str(exc)
         return self._transcribe_array(audio)
 
-    def transcribe_samples(self, samples: np.ndarray) -> tuple[bool, str]:
+    def transcribe_samples(self, samples: np.ndarray, *, log_text: bool = True) -> tuple[bool, str]:
         """Transcribe a float32 mono array at 16 kHz (used by hands-free mode).
 
         No file is written, so audio that did not contain the wake word is never saved.
+        ``log_text=False`` keeps the decoded words out of every log line; the words are
+        still returned to the caller in memory.
         """
         try:
             self.load()
@@ -247,9 +249,9 @@ class WhisperEars:
             logger.error("Ears unavailable: %s", redact_secrets(str(exc)))
             return False, str(exc)
         audio = np.ascontiguousarray(samples.astype(np.float32, copy=False))
-        return self._transcribe_array(audio)
+        return self._transcribe_array(audio, log_text=log_text)
 
-    def _transcribe_array(self, audio: np.ndarray) -> tuple[bool, str]:
+    def _transcribe_array(self, audio: np.ndarray, *, log_text: bool = True) -> tuple[bool, str]:
         """Run faster-whisper on a float32 array and apply the confidence guard."""
         if audio.size == 0:
             logger.info("Ears: empty recording.")
@@ -285,14 +287,25 @@ class WhisperEars:
         reason = guard_reason(text, rows, self._guard_limits())
         verdict = reason or "ok"
         self.last_confidence = {**scores, "text": text, "verdict": verdict}
-        logger.info(
-            "Ears confidence: min_avg_logprob=%s max_no_speech=%s max_compression=%s verdict=%s text=%r",
-            _fmt_score(scores["min_avg_logprob"]),
-            _fmt_score(scores["max_no_speech_prob"]),
-            _fmt_score(scores["max_compression_ratio"]),
-            verdict,
-            redact_secrets(text),
-        )
+        if log_text:
+            logger.info(
+                "Ears confidence: min_avg_logprob=%s max_no_speech=%s max_compression=%s verdict=%s text=%r",
+                _fmt_score(scores["min_avg_logprob"]),
+                _fmt_score(scores["max_no_speech_prob"]),
+                _fmt_score(scores["max_compression_ratio"]),
+                verdict,
+                redact_secrets(text),
+            )
+        else:
+            # Hands-free mode: the words are never written to any log.
+            logger.info(
+                "Ears confidence: min_avg_logprob=%s max_no_speech=%s max_compression=%s verdict=%s text_chars=%d",
+                _fmt_score(scores["min_avg_logprob"]),
+                _fmt_score(scores["max_no_speech_prob"]),
+                _fmt_score(scores["max_compression_ratio"]),
+                verdict,
+                len(text),
+            )
 
         if text.strip().lower() in _BLANK_TRANSCRIPTS:
             logger.info("Ears: VAD/model reported no speech.")

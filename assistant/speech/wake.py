@@ -15,9 +15,18 @@ from __future__ import annotations
 
 import difflib
 import re
+from dataclasses import dataclass
 
 DEFAULT_ALIASES = ("ultra", "hey ultron")
 RATIO = 0.75
+
+
+@dataclass(frozen=True)
+class WakeMatch:
+    found: bool
+    command: str = ""
+    ratio: float = 0.0
+    target: str = ""
 
 
 def _tokens(text: str) -> list[str]:
@@ -33,15 +42,20 @@ def _alias_list(wake_word: str, aliases: str | tuple[str, ...] | list[str] = "")
     return [w for w in dict.fromkeys(words) if w]
 
 
-def split_wake_word(
+def aliases_for(wake_word: str = "ultron", aliases: str | tuple[str, ...] | list[str] = "") -> list[str]:
+    """Every wake spelling currently tried (wake word, built-ins, configured extra)."""
+    return _alias_list(wake_word, aliases)
+
+
+def wake_match(
     text: str, wake_word: str = "ultron", aliases: str | tuple[str, ...] | list[str] = ""
-) -> tuple[bool, str]:
-    """Return (wake_word_found, command_text_after_it)."""
+) -> WakeMatch:
+    """Return the best wake-word match, including its score and target (for debug output)."""
     tokens = _tokens(text)
     if not tokens:
-        return False, ""
+        return WakeMatch(False)
     targets = _alias_list(wake_word, aliases)
-    best: tuple[float, int] | None = None  # (ratio, words_consumed)
+    best: tuple[float, int, str] | None = None  # (ratio, words_consumed, target)
 
     # The shortest match wins a tie: Whisper can join "Ultron open" into "Ultra-open", and
     # taking only "Ultra" then leaves the real command word "open" in place.
@@ -56,11 +70,19 @@ def split_wake_word(
             if ratio < RATIO:
                 continue
             if best is None or ratio > best[0] + 1e-9:
-                best = (ratio, count)
+                best = (ratio, count, target)
     if best is None:
-        return False, ""
-    consumed = best[1]
-    return True, " ".join(tokens[consumed:]).strip()
+        return WakeMatch(False)
+    ratio, consumed, target = best
+    return WakeMatch(True, " ".join(tokens[consumed:]).strip(), ratio, target)
+
+
+def split_wake_word(
+    text: str, wake_word: str = "ultron", aliases: str | tuple[str, ...] | list[str] = ""
+) -> tuple[bool, str]:
+    """Return (wake_word_found, command_text_after_it)."""
+    match = wake_match(text, wake_word, aliases)
+    return match.found, match.command
 
 
 DANGLING_WORDS = {
