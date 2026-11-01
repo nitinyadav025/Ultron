@@ -1,3 +1,178 @@
+# Ultron progress — Phase 5 Part B4 (current)
+
+Last updated: 2026-11-01 (B4 code, tests and docs complete; live test pending)
+
+## Phase 5 B4 — Live Bug Fixes & Sub-Second Endpointing (Nov 1)
+
+Work branch: `phase5-b4-work` (from `phase5-b3-work` @ `72a00f0`, local only, nothing
+pushed). This section supersedes every section below it.
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | Sub-second end-of-speech detection (recorder + listen detector) | DONE |
+| 2 | Wake word, short hotwords, built-in aliases, `LISTEN_DEBUG` env fix | DONE |
+| 3 | `open_first_result` priority, `open_app` validation, real `close_app` | DONE |
+| 4 | Speak every `/voice` reply + conversational brain guard | DONE |
+| 5 | Deterministic tests for every live bug | DONE |
+| 6 | Full pytest, real-log guard, docs | DONE |
+| 7 | Local commits on `phase5-b4-work` | DONE |
+
+**Live evidence (user, Nov 1 18:18–18:28, UNVERIFIED by the coding tool):**
+
+- `listen` never saw the wake word and every utterance ran to `duration=30.01s
+  reason=max_length` (peak 10795..16459, rms 255..486, noise_floor 84..134).
+- In `/voice` the user had to press Enter; auto-stop never fired.
+- Post-speech room/breathing RMS 200–450 kept resetting the silence counter because the
+  end threshold was tied to the low noise floor instead of the active speech level.
+- `"Open the first link for the GitHub."` matched `open_app`.
+- `"Fire Fox is open. Can you close the firefox for me?"` called `open_app` (no close tool).
+- Fast-path replies and `"I didn't hear anything."` were printed but not spoken in `/voice`.
+
+### Part 1 — sub-second end of speech (DONE)
+
+- Each recording now keeps the speaker's **active speech level** (`speech_rms`, 75th
+  percentile of the speech-like frame RMS values, newest 250 frames).
+- A frame is silence when `rms < max(end floor, 0.35 × speech_rms)` **or**
+  `rms <= 0.40 × speech_rms` (a ≥60 % drop). In-speech classification uses the same rule,
+  so room noise above the low start threshold (live RMS 200–450) is no longer "speech".
+- Last-resort stop: 2.5 s after the last frame at ≥45 % of the robust speech level
+  (90th percentile) with low variance. This stops room/fan noise without a 30 s
+  `max_length` run.
+- `VOICE_SILENCE_MS` default **900** (range still configurable), `LISTEN_EARLY_CHECK_MS`
+  default **600**, `MIN_SPEECH_BEFORE_SILENCE_STOP_MS` **400** (the old forced 1.5 s wait
+  is gone, so "Ultron" / "mute" end immediately).
+- Simulated user room (floor 100, speech RMS 1800 for 2 s, room RMS 450 afterwards):
+  stops as `silence` at **900 ms after speech**, total capture 3.4 s, saved audio 2.5 s —
+  **never `max_length`**. A 1000/400 case falls back to the 2.5 s backstop.
+
+### Part 2 — wake word, hotwords, debug (DONE)
+
+- Config env prefixes now include `LISTEN_`, `RECORDER_`, `WAKE_`, `SEARCH_` and
+  `FIRST_RESULT_`. `LISTEN_DEBUG=1 .venv/bin/python main.py listen` now really enables
+  the debug output (B3 merged only `GEMINI_/VOICE_/...` prefixes).
+- `WHISPER_WAKE_HOTWORDS` (default `Ultron, Firefox, GitHub, Brave, Downloads`) is passed
+  only by `listen` and `wake-train`; chat `/voice` keeps `WHISPER_HOTWORDS` blank.
+- Built-in aliases now include the measured variants: `outron`, `ultra`, `hey ultron`,
+  `i'm drawn`, `i'll draw`, `i'll drawn`, `i drawn`, `i've drawn`, `i'll try on`,
+  `are you drawn`, `hey all drawn`, `hey all right`.
+- Filler/connector stripping turns `"I'll draw an open Firefox."` into `"open firefox"`;
+  nested wake spellings are stripped too (`"Ultron, I'll draw an open Firefox"`).
+- Mishearings `open 5ox / 5x / file box / fire box / fire fox` become `open firefox`.
+- Repeated wake words (`"Ultron, Ultron, Ultron"`) are treated as wake-only, not as a
+  command and not as a repetition-loop rejection.
+- Short (<1.8 s) wake word with `avg_logprob` in `[-1.35, -1.0)` is accepted as wake-only.
+- `load_learned_aliases` drops ordinary single-word starters (`i`, `hey`, `what`, …) so
+  the 18:01 `wake_aliases.json` cannot make every "I ..." sentence look like a wake word.
+- **Measured on the 16 saved clips** (`workspace/wake_clips/`, real base.en, hotwords
+  `Ultron, Firefox, GitHub, Brave, Downloads`):
+
+| Group | Plain + aliases | Hotwords + aliases |
+|---|---|---|
+| 8 × single "Ultron" | 4/8 wake-only | **8/8 wake-only** |
+| 4 × "Ultron open firefox" | 4/4 (one gave "firebox") | **4/4, all "open firefox"** |
+| 4 × "Hey Ultron" | 0/4 commands (1 wake-only) | 0/4 (hotwords hurt this phrasing) |
+| Total command/wake hits | 8/16 | **12/16** |
+
+- The old word-list leak did not return: the 10 `workspace/test_clips/` stay 3–33 chars
+  with hotwords; the longest saved wake transcript is < 120 chars.
+
+### Part 3 — first link, app validation, close (DONE)
+
+- `"Open the first link for the GitHub."` / `"open the first link on the GitHub"` /
+  `"open first link of github"` / `"search github and open the first link"` route to
+  `open_first_result(query="github")`; never `open_app`.
+- `FIRST_RESULT_METHOD` default is now **google** (config + `.env.example` + `web.py`).
+- `open_app` only resolves apps in `config/apps.yaml` (plus aliases). Unknown names return
+  `unknown=True` and speak `"I don't know how to open <app>."`; `open_app_reply` now also
+  checks the tool's own `ok`, so a failed call can never say "X is open.".
+- New `close_app(app_name)` tool: whitelisted user GUI apps only (`firefox`, `brave`,
+  `chrome`, `code`, `files/nautilus`, `vlc`, `spotify`, `calculator`, `text editor`,
+  `terminal`, `settings`), `pgrep -x` → `kill -TERM` with argv lists, PID 1/self excluded,
+  denied system processes (`gnome-shell`, `systemd`, `pipewire`, …).
+- Replies from code: `"Closed Firefox."`, `"Firefox is not running."`,
+  `"I don't know how to close <app>."`.
+- `fast_path` matches direct and conversational close forms, including
+  `"Fire Fox is open. Can you close the firefox for me?"`; `close_app` is registered in the
+  CLI, GUI, hands-free registry and therefore in the LLM tool list.
+
+### Part 4 — speaking and the conversational brain (DONE)
+
+- `/voice` fast-path replies now print a speaking failure if Piper cannot play, and the
+  `-> Speaking (Piper (...))...` line is emitted **before** playback, for every reply.
+- The "I didn't hear anything." path is spoken on every consecutive silence turn
+  (B3's `show_and_speak_outcome` now also reports a speak failure).
+- Local prompt rules now say: answer questions directly with no tool, and only call
+  `open_app`/`close_app` for an explicit open/launch/close/quit request.
+- `AgentLoop` refuses an `open_app`/`close_app` call when the request contains no such
+  intent, sends the refusal back, then answers once with tools disabled (tested).
+
+### Part 5 — tests (DONE)
+
+`tests/test_b4_live_bugs.py` adds deterministic coverage for: the 1800/450 room-noise
+endpoint, the detector's 600 ms early + 900 ms final events, the real 16-clip hotword
+comparison, repeated/short "Ultron", `"I'll draw an open Firefox."`, `"Ultron open 5ox"`,
+first-link priority, the fake-app reply, `close_app` (closed / not running / refused),
+`/voice` fast-path and consecutive no-hear speech, and `LISTEN_DEBUG` (env + one line per
+utterance). Existing tests updated for the 900 ms default and the new close/first-link
+behaviour.
+
+### Verification (DONE)
+
+- `.venv/bin/python -m pytest -q` → **328 passed, 0 skipped**.
+- `.venv/bin/python -m compileall -q assistant main.py` → OK.
+- `git diff --check` → no whitespace errors.
+- Tests still redirect `logs/` and `workspace/` to a temp folder (conftest) and the
+  real-log guard passes.
+- `ss -ltnp | grep 9931` → **no llama-server running**.
+- Nothing pushed; remote and git config untouched.
+
+### Files changed
+
+- Part 1: `assistant/speech/recorder.py`, `assistant/interfaces/listen.py`,
+  `assistant/config.py`, `.env.example`.
+- Part 2: `assistant/speech/wake.py`, `assistant/speech/ears.py` (no default change),
+  `assistant/interfaces/listen.py`, `assistant/interfaces/wake_train.py`,
+  `assistant/config.py`.
+- Part 3: `assistant/brain/fast_path.py`, `assistant/brain/tool_replies.py`,
+  `assistant/tools/apps.py`, `assistant/tools/web.py`, `config/apps.yaml`,
+  `assistant/interfaces/cli.py`, `assistant/interfaces/gui.py`,
+  `assistant/interfaces/listen.py`.
+- Part 4: `assistant/interfaces/cli.py`, `assistant/interfaces/voice.py`,
+  `assistant/brain/prompts.py`, `assistant/brain/agent_loop.py`.
+- Tests: `tests/test_b4_live_bugs.py` (new), `tests/test_agent_rounds.py`,
+  `tests/test_fast_path.py`, `tests/test_web.py`, `tests/test_wake_train.py`,
+  `tests/test_listen.py`, `tests/test_listen_timing.py`,
+  `tests/test_listening_reliability.py`, `tests/test_config_defaults.py`,
+  `tests/test_reply_style.py`.
+- Docs: `docs/PROGRESS.md`, `.env.example`.
+
+### NEXT STEP — live tests (the coding tool cannot use the mic/speakers)
+
+Run from `~/Downloads/assistant-project`, one command at a time:
+
+1. `.venv/bin/python main.py listen`
+   - Say **"Ultron"** → `· wake word heard`, `· waiting for your command (6 s)`,
+     Ultron says "Yes?" within roughly a second of you stopping.
+   - Say **"open firefox"** → Firefox opens, reply is spoken.
+   - Say **"I'll draw an open Firefox"** or **"Ultron open 5ox"** → Firefox opens
+     (mishearing repair).
+   - Say **"open the first link for the GitHub"** → the first Google result opens.
+   - Say **"Fire Fox is open. Can you close the firefox for me?"** → Firefox closes and
+     Ultron says "Closed Firefox." (or "Firefox is not running.").
+   - `scripts` should never run 30 s; if a command seems stuck, report the `Utterance:`
+     line from `logs/assistant.log`.
+2. `LISTEN_DEBUG=1 .venv/bin/python main.py listen` → every utterance prints
+   `· debug: heard=... verdict=... wake_match=... score=... cmd=... aliases=...`.
+3. `.venv/bin/python main.py chat` → `/voice`:
+   - "open firefox" → spoken fast-path reply.
+   - press Enter / stay silent twice → "I didn't hear anything." is shown **and spoken**
+     both times.
+   - "how are you?" → one short natural answer, no app opens.
+4. Check `logs/assistant.log` for one `Latency:` line per accepted command
+   (`transcribe`, `first_tool`, `reply_ready`, `speech_start`).
+
+---
+
 # Ultron progress — Phase 5 Part B3
 
 Last updated: 2026-11-01 (B3 started: hands-free listen failed live)

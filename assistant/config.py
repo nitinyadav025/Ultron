@@ -61,6 +61,8 @@ class AssistantConfig:
     whisper_model: str = "base.en"
     whisper_model_dir: Path = MODELS_DIR / "faster-whisper-base.en"
     whisper_hotwords: str = ""
+    # Short hotwords used only by hands-free listen/wake-train (never the chat path).
+    whisper_wake_hotwords: str = "Ultron, Firefox, GitHub, Brave, Downloads"
     whisper_min_avg_logprob: float = -1.0
     whisper_max_no_speech_prob: float = 0.60
     whisper_max_compression_ratio: float = 2.4
@@ -84,7 +86,7 @@ class AssistantConfig:
     # fixed window (the old behaviour) for VOICE_FIXED_SECONDS.
     voice_mode: str = "auto"
     voice_start_timeout_s: float = 10.0
-    voice_silence_ms: int = 2000
+    voice_silence_ms: int = 900
     voice_max_seconds: float = 30.0
     voice_fixed_seconds: float = 5.0
     voice_debug: bool = False
@@ -99,10 +101,11 @@ class AssistantConfig:
     wake_aliases: str = ""
     wake_aliases_file: Path = WORKSPACE_DIR / "wake_aliases.json"
     listen_followup_s: float = 6.0
-    listen_early_check_ms: int = 800
+    listen_early_check_ms: int = 600
     listen_after_speech_ms: int = 300
     listen_log_ignored: bool = False
     listen_debug: bool = False
+    first_result_method: str = "google"
     daily_token_cap: int = 500000
     save_screenshots: bool = False
     default_mode: str = "auto-safe"
@@ -206,6 +209,11 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
                 "WHISPER_",
                 "PIPER_",
                 "MIC_",
+                "LISTEN_",
+                "RECORDER_",
+                "WAKE_",
+                "SEARCH_",
+                "FIRST_RESULT_",
             )
         ):
             merged[k] = v
@@ -276,7 +284,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
             return default
 
     voice_start_timeout_s = _positive_float("VOICE_START_TIMEOUT_S", 10.0, 1.0, 60.0)
-    voice_silence_ms = _positive_int("VOICE_SILENCE_MS", 2000, 500, 10000)
+    voice_silence_ms = _positive_int("VOICE_SILENCE_MS", 900, 300, 10000)
     voice_max_seconds = _positive_float("VOICE_MAX_SECONDS", 30.0, 3.0, 120.0)
     voice_fixed_seconds = _positive_float("VOICE_FIXED_SECONDS", 5.0, 1.0, 60.0)
     voice_debug = merged.get("VOICE_DEBUG", "false").lower() == "true"
@@ -292,10 +300,13 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     wake_aliases = (merged.get("WAKE_ALIASES") or "").strip()
     wake_aliases_file = Path(os.path.expanduser(merged.get("WAKE_ALIASES_FILE") or str(WORKSPACE_DIR / "wake_aliases.json")))
     listen_followup_s = _positive_float("LISTEN_FOLLOWUP_S", 6.0, 0.0, 60.0)
-    listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 800, 200, 5000)
+    listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 600, 200, 5000)
     listen_after_speech_ms = _positive_int("LISTEN_AFTER_SPEECH_MS", 300, 0, 5000)
     listen_log_ignored = merged.get("LISTEN_LOG_IGNORED", "0").strip().lower() in ("1", "true", "yes")
     listen_debug = merged.get("LISTEN_DEBUG", "0").strip().lower() in ("1", "true", "yes")
+    first_result_method = (merged.get("FIRST_RESULT_METHOD") or "google").strip().lower()
+    if first_result_method not in ("ducky", "google", "search"):
+        first_result_method = "google"
 
     backend = (merged.get("BACKEND") or "local").strip().lower()
     if backend not in ("local", "gemini"):
@@ -341,6 +352,9 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         whisper_model=whisper_model,
         whisper_model_dir=whisper_model_dir,
         whisper_hotwords=(merged.get("WHISPER_HOTWORDS") or "").strip(),
+        whisper_wake_hotwords=(
+            merged.get("WHISPER_WAKE_HOTWORDS") or "Ultron, Firefox, GitHub, Brave, Downloads"
+        ).strip(),
         whisper_min_avg_logprob=_float_value("WHISPER_MIN_AVG_LOGPROB", -1.0),
         whisper_max_no_speech_prob=_float_value("WHISPER_MAX_NO_SPEECH_PROB", 0.60),
         whisper_max_compression_ratio=_float_value("WHISPER_MAX_COMPRESSION_RATIO", 2.4),
@@ -378,6 +392,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         listen_after_speech_ms=listen_after_speech_ms,
         listen_log_ignored=listen_log_ignored,
         listen_debug=listen_debug,
+        first_result_method=first_result_method,
         daily_token_cap=int(merged.get("DAILY_TOKEN_CAP", "500000")),
         save_screenshots=merged.get("SAVE_SCREENSHOTS", "false").lower() == "true",
         default_mode=ast_cfg.get("default_mode", "auto-safe"),

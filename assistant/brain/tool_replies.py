@@ -39,6 +39,21 @@ _MAX_LEAD_IN_WORDS = 14
 FOLDER_NOT_FOUND_REPLY = "I couldn't find that folder."
 
 
+def _raw_summary(result: dict[str, Any]) -> dict[str, Any]:
+    raw = result.get("raw_summary")
+    return raw if isinstance(raw, dict) else result
+
+
+def _result_ok(result: dict[str, Any]) -> bool:
+    """The registry wraps a tool call as ok=True; the tool's own ok must also be true."""
+    if not isinstance(result, dict) or not result.get("ok", False):
+        return False
+    raw = result.get("raw_summary")
+    if isinstance(raw, dict) and "ok" in raw:
+        return bool(raw.get("ok"))
+    return True
+
+
 def folder_display_name(directory: Any) -> str:
     """Return the spoken folder name: '/home/you/Downloads' -> 'Downloads', home -> 'home'."""
     if not directory:
@@ -58,11 +73,9 @@ def list_files_reply(result: dict[str, Any]) -> str | None:
     A failed call (missing folder, outside the allowed area, denied) always says the
     folder was not found. "No items" is only possible from a real, empty listing.
     """
-    if not result.get("ok", False):
+    if not _result_ok(result):
         return FOLDER_NOT_FOUND_REPLY
-    raw = result.get("raw_summary")
-    if not isinstance(raw, dict):
-        raw = result
+    raw = _raw_summary(result)
     items = raw.get("items")
     if not isinstance(items, list):
         return None
@@ -85,11 +98,9 @@ def claims_an_empty_folder(text: str) -> bool:
 
 def mute_audio_reply(result: dict[str, Any]) -> str | None:
     """Speak exactly what mute_audio did: muted, unmuted, or a failure."""
-    if not result.get("ok", False):
+    if not _result_ok(result):
         return "I couldn't change the audio."
-    raw = result.get("raw_summary")
-    if not isinstance(raw, dict):
-        raw = result
+    raw = _raw_summary(result)
     muted = raw.get("muted")
     if muted is True:
         return "Audio is now muted."
@@ -100,11 +111,9 @@ def mute_audio_reply(result: dict[str, Any]) -> str | None:
 
 def volume_reply(result: dict[str, Any]) -> str | None:
     """Speak the absolute volume the tool actually set."""
-    if not result.get("ok", False):
+    if not _result_ok(result):
         return "I couldn't set the volume."
-    raw = result.get("raw_summary")
-    if not isinstance(raw, dict):
-        raw = result
+    raw = _raw_summary(result)
     value = raw.get("requested_percent", raw.get("volume_percent"))
     try:
         percent = int(round(float(value)))
@@ -114,24 +123,38 @@ def volume_reply(result: dict[str, Any]) -> str | None:
 
 
 def open_app_reply(result: dict[str, Any], requested: str = "") -> str | None:
-    """Speak the app that was actually launched."""
-    if not result.get("ok", False):
-        return "I couldn't open that app."
-    raw = result.get("raw_summary")
-    if not isinstance(raw, dict):
-        raw = result
+    """Speak the app that was actually launched, or say honestly that it cannot."""
+    raw = _raw_summary(result)
     app = str(raw.get("app_name") or requested or "").strip()
+    if raw.get("unknown"):
+        return f"I don't know how to open {app or 'that app'}."
+    if not _result_ok(result):
+        return "I couldn't open that app."
     if not app:
         return "Done."
     return f"{app.title()} is open."
 
 
+def close_app_reply(result: dict[str, Any]) -> str | None:
+    """Speak exactly what close_app did: closed, not running, or unknown."""
+    raw = _raw_summary(result)
+    app = str(raw.get("app_name") or "").strip()
+    display = app.title() if app else "That app"
+    if raw.get("unknown"):
+        return f"I don't know how to close {app or 'that app'}."
+    if not _result_ok(result):
+        return f"I couldn't close {display}."
+    if raw.get("closed") is True:
+        return f"Closed {display}."
+    if raw.get("running") is False:
+        return f"{display} is not running."
+    return None
+
+
 def web_search_reply(result: dict[str, Any]) -> str | None:
     """Speak the query and the browser that was used."""
-    raw = result.get("raw_summary")
-    if not isinstance(raw, dict):
-        raw = result
-    if not result.get("ok", False):
+    raw = _raw_summary(result)
+    if not _result_ok(result):
         return "I couldn't open the search."
     query = str(raw.get("query") or "").strip()
     browser = str(raw.get("browser") or "").strip()
@@ -141,11 +164,9 @@ def web_search_reply(result: dict[str, Any]) -> str | None:
 
 def open_first_result_reply(result: dict[str, Any]) -> str | None:
     """Speak the domain that was opened, or the honest fallback sentence."""
-    raw = result.get("raw_summary")
-    if not isinstance(raw, dict):
-        raw = result
-    if not result.get("ok", False):
-        return str(raw.get("reply") or "I couldn't pick the first result, so I opened the search results.")
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("reply") or "I couldn't open the search.")
     if raw.get("reply"):
         return str(raw["reply"])
     query = str(raw.get("query") or "").strip()
@@ -179,6 +200,8 @@ def code_reply_for_tool(tool_name: str, result: dict[str, Any]) -> str | None:
         return volume_reply(result)
     if tool_name == "open_app":
         return open_app_reply(result, str((result.get("raw_summary") or {}).get("app_name", "")))
+    if tool_name == "close_app":
+        return close_app_reply(result)
     if tool_name == "web_search":
         return web_search_reply(result)
     if tool_name == "open_first_result":

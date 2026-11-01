@@ -276,11 +276,17 @@ class VoiceController:
         self._cloud_tts_retry_after: float = 0.0
 
     def _notify_engine_once(self, engine_label: str) -> None:
+        """Update the engine label and show "Speaking (...)" for every spoken reply.
+
+        The log line stays once-per-engine (it is a startup style fact), but the screen
+        line is printed every time: in `/voice` the user must see that Piper is talking
+        even when the sentence itself is unchanged.
+        """
         self.active_tts_engine = engine_label
         if self._announced_engine != engine_label:
             self._announced_engine = engine_label
             logger.info("Voice TTS engine active: %s", engine_label)
-            self.status_callback(f"Speaking ({engine_label})...")
+        self.status_callback(f"Speaking ({engine_label})...")
 
     def stop_speaking(self) -> None:
         """Kill every playing TTS process immediately so multiple voices never overlap."""
@@ -666,6 +672,8 @@ class VoiceController:
                 jobs.put(None)
 
         WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+        # Show the speaking line before sound starts, not after the last sentence.
+        self._notify_engine_once(f"Piper ({self.config.piper_voice})")
         worker = threading.Thread(target=_producer, name="piper-synth", daemon=True)
         worker.start()
 
@@ -693,8 +701,6 @@ class VoiceController:
             stop.set()
             worker.join(timeout=1.0)
 
-        if spoken_count:
-            self._notify_engine_once(f"Piper ({self.config.piper_voice})")
         if errors:
             prefix = f"Piper spoke {spoken_count} sentence(s), then: " if spoken_count else ""
             return spoken_count > 0, f"{prefix}{errors[0]}"

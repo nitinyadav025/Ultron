@@ -6,9 +6,10 @@ from typing import Any
 
 import pytest
 
-from assistant.brain.fast_path import CLOSE_REPLY, match_fast_command, try_fast_path
+from assistant.brain.fast_path import match_fast_command, try_fast_path
 from assistant.config import load_config
 from assistant.safety.permissions import PermissionGate
+from assistant.tools.apps import open_app
 from assistant.tools.registry import ToolRegistry, tool
 
 
@@ -25,6 +26,13 @@ def _registry(calls: list[tuple[str, dict[str, Any]]]) -> ToolRegistry:
         """Open an app."""
         calls.append(("open_app", {"app_name": app_name}))
         return {"ok": True, "app_name": app_name}
+
+    @tool(name="close_app", risk_level="safe", read_only=False)
+    def fake_close(app_name: str) -> dict[str, Any]:
+        """Close an app."""
+        calls.append(("close_app", {"app_name": app_name}))
+        display = app_name.title()
+        return {"ok": True, "app_name": display, "closed": True, "running": True}
 
     @tool(name="mute_audio", risk_level="safe", read_only=False)
     def fake_mute(muted: bool = True) -> dict[str, Any]:
@@ -59,7 +67,7 @@ def _registry(calls: list[tuple[str, dict[str, Any]]]) -> ToolRegistry:
     cfg = load_config()
     gate = PermissionGate(config=cfg, mode="auto-safe")
     registry = ToolRegistry(config=cfg, gate=gate)
-    for fn in (fake_open, fake_mute, fake_volume, fake_list, fake_search, fake_first):
+    for fn in (fake_open, fake_close, fake_mute, fake_volume, fake_list, fake_search, fake_first):
         registry.register(fn)
     return registry
 
@@ -72,6 +80,8 @@ def _answer(registry: ToolRegistry, text: str) -> str:
     ("sentence", "tool_name", "arguments"),
     [
         ("open firefox", "open_app", {"app_name": "firefox"}),
+        ("open fire fox", "open_app", {"app_name": "firefox"}),
+        ("open 5ox", "open_app", {"app_name": "firefox"}),
         ("mute", "mute_audio", {"muted": True}),
         ("unmute", "mute_audio", {"muted": False}),
         ("turn volume to thirty percent", "set_volume", {"percent": 30}),
@@ -80,7 +90,19 @@ def _answer(registry: ToolRegistry, text: str) -> str:
         ("search github in firefox", "web_search", {"query": "github", "browser": "firefox"}),
         ("search for github", "web_search", {"query": "github", "browser": None}),
         ("open the first result for github", "open_first_result", {"query": "github"}),
+        ("open the first link for the GitHub", "open_first_result", {"query": "github"}),
+        ("open the first link on the GitHub", "open_first_result", {"query": "github"}),
+        ("open first link of github", "open_first_result", {"query": "github"}),
         ("search github and open the first link", "open_first_result", {"query": "github"}),
+        ("close firefox", "close_app", {"app_name": "firefox"}),
+        ("quit firefox", "close_app", {"app_name": "firefox"}),
+        ("can you please close firefox", "close_app", {"app_name": "firefox"}),
+        ("close the firefox for me", "close_app", {"app_name": "firefox"}),
+        (
+            "Fire Fox is open. Can you close the firefox for me?",
+            "close_app",
+            {"app_name": "firefox"},
+        ),
     ],
 )
 def test_fast_path_runs_the_existing_tool_without_the_llm(
@@ -95,13 +117,33 @@ def test_fast_path_runs_the_existing_tool_without_the_llm(
     assert reply
 
 
-def test_close_is_refused_without_a_tool_or_the_llm() -> None:
+def test_open_first_link_never_calls_open_app() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
     registry = _registry(calls)
 
-    assert match_fast_command("close firefox") is not None
-    assert try_fast_path(registry, "close firefox") == CLOSE_REPLY
-    assert calls == []
+    assert try_fast_path(registry, "Open the first link for the GitHub.") == (
+        "Opening the first result for github."
+    )
+    assert calls == [("open_first_result", {"query": "github"})]
+
+
+def test_unknown_app_is_never_claimed_open() -> None:
+    cfg = load_config()
+    gate = PermissionGate(config=cfg, mode="auto-safe")
+    registry = ToolRegistry(config=cfg, gate=gate)
+    registry.register(open_app)
+
+    reply = try_fast_path(registry, "Open the banana spaceship app")
+
+    assert reply == "I don't know how to open banana spaceship app."
+    assert "is open" not in reply.lower()
+
+
+def test_close_reply_is_built_from_the_real_result() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    registry = _registry(calls)
+
+    assert try_fast_path(registry, "close firefox") == "Closed Firefox."
 
 
 def test_an_unclear_sentence_goes_to_the_llm() -> None:

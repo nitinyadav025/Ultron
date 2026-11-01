@@ -16,7 +16,7 @@ from assistant.config import VALID_THINKING_LEVELS, AssistantConfig
 from assistant.interfaces.voice import VoiceController
 from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey, trigger_kill_switch
 from assistant.safety.permissions import VALID_MODES, PermissionGate
-from assistant.tools.apps import open_app
+from assistant.tools.apps import close_app, open_app
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
@@ -32,7 +32,7 @@ def run_gui_dashboard(config: AssistantConfig) -> int:
 
     gate = PermissionGate(config=config, mode=config.default_mode)
     registry = ToolRegistry(config=config, gate=gate)
-    for fn in (list_files, read_file, open_app, volume_up, volume_down, set_volume, mute_audio):
+    for fn in (list_files, read_file, open_app, close_app, volume_up, volume_down, set_volume, mute_audio):
         registry.register(fn)
 
     watchdog = WatchdogMonitor(config.max_steps, config.wall_clock_timeout_sec, config.idle_standdown_sec)

@@ -38,7 +38,11 @@ from assistant.speech.recorder import (
     FRAME_BYTES,
     FRAME_MS,
     MIN_NOISE_FLOOR,
+    MIN_SPEECH_BEFORE_SILENCE_STOP_MS,
+    POST_SPEECH_PEAK_FRACTION,
     PRE_ROLL_MS,
+    RECENT_LEVEL_WINDOW,
+    SPEECH_RMS_FRACTION,
     AdaptiveWarmup,
     PwRecordSource,
     _end_threshold,
@@ -46,13 +50,23 @@ from assistant.speech.recorder import (
     _start_threshold,
     frame_peak,
     frame_rms,
+    is_end_silence,
+    is_steady_post_speech,
     pcm16_samples,
     normalise_mic_level,
     percentile,
     samples_to_pcm16,
+    speech_rms_percentile,
     write_pcm16_wav,
 )
-from assistant.speech.wake import aliases_for, first_word, load_learned_aliases, sentence_is_complete, wake_match
+from assistant.speech.wake import (
+    aliases_for,
+    first_word,
+    load_learned_aliases,
+    sentence_is_complete,
+    strip_wake_prefixes,
+    wake_match,
+)
 from assistant.tools.registry import ToolRegistry
 
 logger = logging.getLogger("ultron.listen")
@@ -94,8 +108,8 @@ class UtteranceDetector:
         warmup_ms: int = DEFAULT_WARMUP_MS,
         warmup_max_ms: int = 1500,
         min_snr_db: float = 10.0,
-        silence_ms: int = 2000,
-        early_ms: int = 800,
+        silence_ms: int = 900,
+        early_ms: int = 600,
         max_seconds: float = 30.0,
     ) -> None:
         self.warmup_ms = int(warmup_ms)
@@ -120,6 +134,10 @@ class UtteranceDetector:
         self._speech_frames = 0
         self._start_ms = 0
         self._speaker_level = 0.0
+        self._active_levels: list[int] = []
+        self._recent_levels: deque[int] = deque(maxlen=RECENT_LEVEL_WINDOW)
+        self._peak_speech_rms = 0.0
+        self._loud_until_ms = 0
         self._early_sent = False
         self._steady_checked = False
 
@@ -129,6 +147,13 @@ class UtteranceDetector:
         start = _start_threshold(self.noise_floor, self.min_snr_db)
         end = _end_threshold(self.noise_floor, start, self._speaker_level)
         return start, end
+
+    def _speech_rms(self) -> float:
+        return speech_rms_percentile(self._active_levels)
+
+    def _silence_threshold(self, end_threshold: float) -> float:
+        """The absolute end floor raised to 35 % of the speaker's active level."""
+        return max(float(end_threshold), SPEECH_RMS_FRACTION * self._speech_rms())
 
     def skip(self, frame: array.array) -> None:
         """Advance audio time for discarded audio (during/after Piper) without detecting."""
@@ -143,6 +168,10 @@ class UtteranceDetector:
         self._speech_frames = 0
         self._start_ms = 0
         self._speaker_level = 0.0
+        self._active_levels = []
+        self._recent_levels.clear()
+        self._peak_speech_rms = 0.0
+        self._loud_until_ms = 0
         self._early_sent = False
         self._steady_checked = False
         self.last_reason = ""
@@ -189,18 +218,39 @@ class UtteranceDetector:
                 self._in_speech = True
                 self._start_ms = max(0, self.audio_ms - MIN_SPEECH_MS)
                 self.last_start_ms = self._start_ms
-                self._speaker_level = float(max(frame_rms(item) for item in self._ring))
+                ring_levels = [frame_rms(item) for item in self._ring]
+                self._speaker_level = float(max(ring_levels, default=0))
+                self._active_levels = [value for value in ring_levels if value >= start_thr]
+                self._recent_levels.clear()
+                for value in ring_levels[-RECENT_LEVEL_WINDOW:]:
+                    self._recent_levels.append(value)
+                if self._active_levels:
+                    self._peak_speech_rms = float(percentile(self._active_levels, 0.90))
+                    self._loud_until_ms = self.audio_ms
                 self._collected = list(self._ring)
                 self._ring.clear()
             return None
 
         self._collected.append(frame)
-        speech_like = level >= start_thr and not burst
+        self._recent_levels.append(level)
+        current_speech_rms = self._speech_rms()
+        frame_active = not is_end_silence(level, end_thr, current_speech_rms)
+        speech_like = level >= start_thr and not burst and frame_active
         if speech_like:
             self._silence_run = 0
             self._speaker_level = max(self._speaker_level, float(level))
             self._speech_frames += 1
-        elif level < end_thr:
+            self._active_levels.append(level)
+            if len(self._active_levels) > 250:
+                self._active_levels.pop(0)
+            self._peak_speech_rms = max(
+                self._peak_speech_rms, float(percentile(self._active_levels, 0.90))
+            )
+            if level >= POST_SPEECH_PEAK_FRACTION * self._peak_speech_rms:
+                self._loud_until_ms = self.audio_ms
+        elif is_end_silence(level, end_thr, current_speech_rms):
+            # Post-speech room/breathing noise is silence relative to the speaker's own
+            # active level. Tying this to the low noise floor alone never stopped.
             self._silence_run += 1
         else:
             self._silence_run = 0
@@ -209,7 +259,16 @@ class UtteranceDetector:
         if not self._early_sent and self._silence_run * FRAME_MS >= self.early_ms:
             self._early_sent = True
             return "early"
-        if self._silence_run * FRAME_MS >= self.silence_ms and elapsed >= 1500:
+        if (
+            self._silence_run * FRAME_MS >= self.silence_ms
+            and elapsed >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS
+        ):
+            self.last_reason = "silence"
+            return "final"
+        if is_steady_post_speech(
+            self._recent_levels, self._peak_speech_rms, self.audio_ms - self._loud_until_ms
+        ):
+            # Steady room/fan noise after the last burst: stop now, never at 30 s.
             self.last_reason = "silence"
             return "final"
         if elapsed >= int(self.max_seconds * 1000):
@@ -231,9 +290,10 @@ class UtteranceDetector:
         frames = list(self._collected)
         if trim_tail and frames:
             _, end_thr = self._thresholds()
+            trim_threshold = self._silence_threshold(end_thr)
             last = 0
             for index, frame in enumerate(frames):
-                if frame_rms(frame) >= end_thr:
+                if frame_rms(frame) >= trim_threshold:
                     last = index
             frames = frames[: last + 1 + TRAILING_SILENCE_MS // FRAME_MS]
         return b"".join(samples_to_pcm16(frame) for frame in frames)
@@ -264,7 +324,15 @@ class UtteranceDetector:
                 self._in_speech = True
                 self._start_ms = max(0, self.audio_ms - MIN_SPEECH_MS)
                 self.last_start_ms = self._start_ms
-                self._speaker_level = float(max(frame_rms(item) for item in self._ring))
+                ring_levels = [frame_rms(item) for item in self._ring]
+                self._speaker_level = float(max(ring_levels, default=0))
+                self._active_levels = [value for value in ring_levels if value >= start_thr]
+                self._recent_levels.clear()
+                for value in ring_levels[-RECENT_LEVEL_WINDOW:]:
+                    self._recent_levels.append(value)
+                if self._active_levels:
+                    self._peak_speech_rms = float(percentile(self._active_levels, 0.90))
+                    self._loud_until_ms = self.audio_ms
                 self._collected = list(self._ring)
                 self._ring.clear()
                 break
@@ -402,9 +470,9 @@ class HandsFreeListener:
         self.detector = UtteranceDetector(
             warmup_ms=getattr(config, "recorder_warmup_ms", DEFAULT_WARMUP_MS),
             warmup_max_ms=getattr(config, "recorder_warmup_max_ms", 1500),
-            min_snr_db=getattr(config, "voice_min_snr_db", 5.0),
-            silence_ms=getattr(config, "voice_silence_ms", 2000),
-            early_ms=getattr(config, "listen_early_check_ms", 800),
+            min_snr_db=getattr(config, "voice_min_snr_db", 10.0),
+            silence_ms=getattr(config, "voice_silence_ms", 900),
+            early_ms=getattr(config, "listen_early_check_ms", 600),
             max_seconds=getattr(config, "voice_max_seconds", 30.0),
         )
         self.learned_aliases = load_learned_aliases(getattr(config, "wake_aliases_file", None))
@@ -533,7 +601,6 @@ class HandsFreeListener:
         self._t_endpoint = self.clock()
         transcript = self._transcribe(pcm)
         self._t_trans = self.clock()
-        self._debug(f'heard "{transcript.text}"')
         if not transcript.ok:
             # A rejected decode cannot be trusted either way; process it now so a wake word
             # that is still readable in the raw text gets "Sorry, say that again.".
@@ -549,7 +616,6 @@ class HandsFreeListener:
         self._t_endpoint = self.clock()
         transcript = self._transcribe(pcm)
         self._t_trans = self.clock()
-        self._debug(f'heard "{transcript.text}"')
         self._process(transcript, pcm)
 
     def _process(self, transcript: Transcript, pcm: bytes) -> None:
@@ -559,12 +625,14 @@ class HandsFreeListener:
         wake_word = getattr(self.config, "wake_word", "ultron")
         wake_aliases = getattr(self.config, "wake_aliases", "")
         match = wake_match(wake_text, wake_word, wake_aliases, self.learned_aliases)
-        self._debug(
-            f"wake score={match.ratio:.2f} target={match.target or '-'} learned={match.learned} "
-            f"aliases={','.join(aliases_for(wake_word, wake_aliases, self.learned_aliases))}"
-        )
         wake_found = match.found
-        command = match.command
+        raw_command = match.command
+        # "Ultron, Ultron", "Ultron, I'll draw an open Firefox" and "Ultron, I drawn" must
+        # reduce to "" / "open firefox"; repeated wake words are not a command.
+        command = strip_wake_prefixes(
+            raw_command, wake_word, wake_aliases, self.learned_aliases
+        )
+        wake_repeated = bool(raw_command) and not command
         if wake_found and match.learned and command and match_fast_command(command) is None:
             # A learned spelling (for example "I'll turn") is only trusted when the rest
             # of the sentence is a known fast-path command. Otherwise it is ordinary talk.
@@ -575,6 +643,13 @@ class HandsFreeListener:
             wake_found = True
             used_followup = True
             command = re.sub(r"\s+", " ", transcript.text or "").strip()
+
+        verdict = transcript.reason or ("ok" if transcript.ok else "rejected")
+        self._debug(
+            f"heard={wake_text!r} verdict={verdict} wake_match={wake_found} "
+            f"score={match.ratio:.2f} cmd={command!r} "
+            f"aliases={','.join(aliases_for(wake_word, wake_aliases, self.learned_aliases))}"
+        )
 
         if not wake_found:
             self.ignored += 1
@@ -588,6 +663,14 @@ class HandsFreeListener:
         self._say("wake word heard")
 
         if not transcript.ok:
+            if wake_repeated or self._accepts_short_wake_word(transcript, command):
+                # Repeated wake words trip the decoder's repetition rule; a short "Ultron"
+                # can score between -1.35 and -1.0 log-prob. Both are still the wake word,
+                # so answer "Yes?" instead of "Say that again.".
+                self._log_utterance("wake_only")
+                self.detector.reset()
+                self._speak(YES_REPLY)
+                return
             self._log_utterance("too_short" if transcript.text == NO_SPEECH else "rejected_by_guard")
             self.detector.reset()
             self._speak(RETRY_REPLY)
@@ -626,6 +709,22 @@ class HandsFreeListener:
             speech_start,
         )
         self._speak(reply)
+
+    def _accepts_short_wake_word(self, transcript: Transcript, command: str) -> bool:
+        """A short (<1.8 s) wake word may pass even at avg_logprob -1.35..-1.0.
+
+        Only when the transcript is exactly the wake word (no command) and the single
+        failing signal is average log-probability. One-word "Ultron" was rejected at
+        -1.0 in B3 while the user clearly said it.
+        """
+        if transcript.ok or command:
+            return False
+        if self.detector.stats()["duration_ms"] >= 1800:
+            return False
+        matched = re.fullmatch(r"avg_logprob=(-?\d+(?:\.\d+)?)", transcript.reason or "")
+        if not matched:
+            return False
+        return -1.35 <= float(matched.group(1)) < -1.0
 
     def _speak(self, text: str) -> None:
         self.speak(text)
@@ -692,7 +791,7 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey
     from assistant.safety.permissions import PermissionGate
     from assistant.speech.mic_input import apply_mic_source_volume
-    from assistant.tools.apps import open_app
+    from assistant.tools.apps import close_app, open_app
     from assistant.tools.files import list_files, read_file
     from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
     from assistant.tools.web import open_first_result, web_search
@@ -704,13 +803,28 @@ def run_listen(config: AssistantConfig) -> int:
 
     gate = PermissionGate(config=config, mode=config.default_mode)
     registry = ToolRegistry(config=config, gate=gate, allow_prompts=False)
-    for fn in (list_files, read_file, open_app, volume_up, volume_down, set_volume, mute_audio, web_search, open_first_result):
+    for fn in (
+        list_files,
+        read_file,
+        open_app,
+        close_app,
+        volume_up,
+        volume_down,
+        set_volume,
+        mute_audio,
+        web_search,
+        open_first_result,
+    ):
         registry.register(fn)
 
     adapter = build_adapter(config)
     watchdog = WatchdogMonitor(config.max_steps, config.wall_clock_timeout_sec, config.idle_standdown_sec)
     loop = AgentLoop(config, adapter, registry, watchdog)
-    voice = VoiceController(config=config, adapter=adapter)
+    voice = VoiceController(
+        config=config,
+        adapter=adapter,
+        status_callback=lambda line: print(f"  -> {line}", flush=True),
+    )
 
     ok_ears, ears_msg = voice.load_ears()
     if not ok_ears:
@@ -724,7 +838,11 @@ def run_listen(config: AssistantConfig) -> int:
     print(f"  Mouth: ready \u2014 {mouth_msg}", flush=True)
 
     def transcribe(pcm: bytes) -> Transcript:
-        ok, text = voice.ears.transcribe_samples(pcm_to_float32(pcm), log_text=False)
+        ok, text = voice.ears.transcribe_samples(
+            pcm_to_float32(pcm),
+            log_text=False,
+            hotwords=config.whisper_wake_hotwords or None,
+        )
         confidence = dict(getattr(voice.ears, "last_confidence", {}) or {})
         return Transcript(
             ok=ok,

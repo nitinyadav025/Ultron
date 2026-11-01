@@ -17,7 +17,7 @@ from assistant.safety.permissions import PermissionGate
 from assistant.safety.redact import redact_secrets
 from assistant.speech.ears import UNCLEAR_SPEECH
 from assistant.speech.mic_input import apply_mic_source_volume
-from assistant.tools.apps import open_app
+from assistant.tools.apps import close_app, open_app
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
@@ -59,7 +59,9 @@ def show_and_speak_outcome(voice: VoiceController, message: str) -> None:
     """Show a voice outcome and speak it exactly once (Ctrl+C stops only the speech)."""
     print(f"Voice: {message}\n")
     try:
-        voice.speak_sync(message)
+        ok, detail = voice.speak_sync(message)
+        if not ok:
+            print(f"Voice: could not speak that ({detail})\n")
     except KeyboardInterrupt:
         voice.stop_speaking()
 
@@ -83,7 +85,18 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
 
     gate = PermissionGate(config=config, mode=initial_mode or config.default_mode)
     registry = ToolRegistry(config=config, gate=gate)
-    for fn in (list_files, read_file, open_app, volume_up, volume_down, set_volume, mute_audio, web_search, open_first_result):
+    for fn in (
+        list_files,
+        read_file,
+        open_app,
+        close_app,
+        volume_up,
+        volume_down,
+        set_volume,
+        mute_audio,
+        web_search,
+        open_first_result,
+    ):
         registry.register(fn)
 
     watchdog = WatchdogMonitor(config.max_steps, config.wall_clock_timeout_sec, config.idle_standdown_sec)
@@ -199,7 +212,9 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             if fast_reply is not None:
                 print(f"\n{config.assistant_name}: {fast_reply}\n")
                 try:
-                    voice.speak_sync(fast_reply)
+                    ok_s, msg_s = voice.speak_sync(fast_reply)
+                    if not ok_s:
+                        print(f"Voice: could not speak that ({msg_s})\n")
                 except KeyboardInterrupt:
                     voice.stop_speaking()
                 continue

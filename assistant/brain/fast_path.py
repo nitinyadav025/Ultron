@@ -4,9 +4,9 @@ Only commands the registered tools already support are matched. Anything unclear
 through to the normal agent loop (the LLM) unchanged. Tools still run through
 ``ToolRegistry.execute``, so permission modes apply exactly as before.
 
-"close <app>" is recognised but not implemented: there is no close tool in this project,
-so the reply says so honestly and nothing is run. It never goes to the LLM, which used to
-invent an action.
+Priority matters: "open the first link for GitHub" is an ``open_first_result`` request,
+never ``open_app``. "close firefox" (including conversational forms such as "Fire Fox is
+open. Can you close the firefox for me?") calls the real ``close_app`` tool.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ import logging
 import re
 
 from assistant.brain.tool_replies import code_reply_for_tool
+from assistant.speech.wake import normalise_spoken_command
+from assistant.tools.apps import app_key
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import numbers_in_text
 
 logger = logging.getLogger("ultron.fastpath")
-
-CLOSE_REPLY = "I can't close apps yet."
 
 
 def _normalise(text: str) -> str:
@@ -39,9 +39,13 @@ def _clean_target(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" .")
 
 
+def _strip_article(value: str) -> str:
+    return re.sub(r"^(?:the|a|an) ", "", _clean_target(value)).strip()
+
+
 def match_fast_command(text: str) -> dict[str, object] | None:
     """Return {"kind", "tool", "arguments", "request"} for a simple whole sentence."""
-    cleaned = _normalise(text)
+    cleaned = _normalise(normalise_spoken_command(text))
     if not cleaned:
         return None
 
@@ -51,12 +55,36 @@ def match_fast_command(text: str) -> dict[str, object] | None:
             "web_search",
             re.compile(r"^(?:please )?open (?P<browser>[a-z0-9 ]+?) and search (?:the web )?for (?P<query>.+)$"),
         ),
-        ("open_first_result", re.compile(r"^(?:please )?open (?:the )?first result (?:for|of) (?P<query>.+)$")),
-        ("open_first_result", re.compile(r"^(?:please )?search (?:for )?(?P<query>.+?) and open (?:the )?first (?:link|result)$")),
+        # "open the first link for X" is never an app name (this was the live bug).
+        (
+            "open_first_result",
+            re.compile(
+                r"^(?:please )?open (?:the )?first (?:link|result) (?:for|of|on|in) (?P<query>.+)$"
+            ),
+        ),
+        (
+            "open_first_result",
+            re.compile(
+                r"^(?:please )?open (?:the )?(?P<query>.+?) and (?:then )?open (?:the )?first (?:link|result)$"
+            ),
+        ),
+        (
+            "open_first_result",
+            re.compile(
+                r"^(?:please )?search (?:for )?(?P<query>.+?) and open (?:the )?first (?:link|result)$"
+            ),
+        ),
+        # Direct and conversational close requests, before any "open" pattern.
+        (
+            "close_app",
+            re.compile(
+                r"^(?:.*?\b(?:can|could|would|will) you (?:please )?)?(?:please )?"
+                r"(?:close|quit|exit|kill) (?:the )?(?P<app>.+?)(?: for me)?$"
+            ),
+        ),
         ("web_search", re.compile(r"^(?:please )?search (?:for )?(?P<query>.+?) in (?P<browser>[a-z0-9 ]+)$")),
         ("web_search", re.compile(r"^(?:please )?search (?:for )?(?P<query>.+)$")),
         ("open_app", re.compile(r"^(?:please )?(?:open|launch) (?P<app>.+)$")),
-        ("close_app", re.compile(r"^(?:please )?(?:close|quit) (?P<app>.+)$")),
         ("mute", re.compile(r"^(?:please )?(?:mute|mute the audio|mute the sound)$")),
         ("unmute", re.compile(r"^(?:please )?(?:unmute|unmute the audio|unmute the sound)$")),
         ("set_volume", re.compile(r"^(?:please )?(?:turn|set|change) (?:the )?volume to (?P<value>.+)$")),
@@ -69,9 +97,12 @@ def match_fast_command(text: str) -> dict[str, object] | None:
             continue
         groups = match.groupdict()
         if kind == "close_app":
-            return {"kind": kind, "tool": None, "arguments": {"app_name": groups["app"]}, "request": text}
+            app = app_key(_clean_target(groups["app"]))
+            if not app:
+                return None
+            return {"kind": kind, "tool": "close_app", "arguments": {"app_name": app}, "request": text}
         if kind == "open_app":
-            app = _clean_target(groups["app"])
+            app = app_key(_clean_target(groups["app"]))
             if " and " in f" {app} " or " then " in f" {app} ":
                 return None  # a multi-step sentence belongs to the LLM
             return {"kind": kind, "tool": "open_app", "arguments": {"app_name": app}, "request": text}
@@ -103,21 +134,21 @@ def match_fast_command(text: str) -> dict[str, object] | None:
                 "request": text,
             }
         if kind == "open_first_result":
-            query = _clean_target(groups["query"])
-            if not query:
-                return None
+            # "Open the first link for the GitHub." -> query "github".
+            query = _strip_article(groups["query"])
+            if not query or " and " in f" {query} " or " then " in f" {query} ":
+                return None  # empty or multi-step: the LLM decides
             return {"kind": kind, "tool": "open_first_result", "arguments": {"query": query}, "request": text}
     return None
 
 
 def run_fast_command(registry: ToolRegistry, command: dict[str, object]) -> str:
     """Run the matched command through the registry and build the reply in code."""
-    kind = str(command["kind"])
     tool_name = command.get("tool")
     arguments = dict(command.get("arguments") or {})
     request = str(command.get("request") or "")
     if tool_name is None:
-        return CLOSE_REPLY
+        return "Done."
     result = registry.execute(str(tool_name), arguments, request)
     reply = code_reply_for_tool(str(tool_name), result)
     return reply or "Done."

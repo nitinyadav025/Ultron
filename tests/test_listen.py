@@ -416,8 +416,13 @@ def test_debug_text_is_screen_only(caplog: pytest.LogCaptureFixture) -> None:
 
     listener.run()
 
-    assert any('debug: heard "open firefox"' in line for line in prints)
-    assert any("debug: wake score=" in line for line in prints)
+    assert any(
+        "debug: heard=" in line
+        and "verdict=ok" in line
+        and "wake_match=False" in line
+        and "cmd=''" in line
+        for line in prints
+    )
     assert "open firefox" not in caplog.text
 
 

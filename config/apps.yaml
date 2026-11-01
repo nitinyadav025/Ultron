@@ -22,3 +22,16 @@ apps:
   code:
     desktop_id: "code.desktop"
     binary: "code"
+  brave:
+    desktop_id: "brave-browser.desktop"
+    binary: "brave-browser"
+  chrome:
+    desktop_id: "google-chrome.desktop"
+    binary: "google-chrome"
+  spotify:
+    desktop_id: "spotify.desktop"
+    binary: "spotify"
+    flatpak_id: "com.spotify.Client"
+  vlc:
+    desktop_id: "vlc.desktop"
+    binary: "vlc"

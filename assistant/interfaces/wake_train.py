@@ -170,7 +170,11 @@ def run_wake_train(
                 seconds: dict[str, float] = {}
                 variants: list[tuple[str, Any, dict[str, Any]]] = [
                     ("plain", ears, {}),
-                    ("hotwords", ears, {"hotwords": "Ultron"}),
+                    (
+                        "hotwords",
+                        ears,
+                        {"hotwords": config.whisper_wake_hotwords or "Ultron"},
+                    ),
                     ("no_vad", ears, {"vad_filter": False}),
                 ]
                 if small_ears is not None:

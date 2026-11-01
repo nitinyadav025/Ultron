@@ -24,6 +24,7 @@ import array
 import math
 import queue
 import select
+from collections import deque
 import shutil
 import signal
 import subprocess
@@ -74,11 +75,25 @@ STEADY_SPEECH_LIMIT_MS = 8000
 STEADY_LEVEL_CV = 0.06
 
 # End detection: hysteresis (clearly lower than the start threshold) and relative to the
-# speaker's own level in this recording. A pause of up to ~1.8 s must not end the capture.
+# speaker's own level in this recording. Default 900 ms (VOICE_SILENCE_MS) for a snappy
+# reply; a longer pause can still be configured explicitly.
 ABS_END_RMS = 140
 END_NOISE_MULTIPLIER = 1.8
 END_SPEAKER_FRACTION = 0.18
-MIN_SPEECH_BEFORE_SILENCE_STOP_MS = 1500
+# The end threshold must follow the *active speech* level, not just the room floor.
+# Live evidence (Nov 1): speech RMS 1400-2500, post-speech room/breathing RMS 200-450.
+# Tying silence to the 84-134 floor kept resetting the counter and every utterance ran
+# to the 30 s cap. A frame is now silence when it is below max(end floor, 35 % of the
+# speaker's active level) or at least 60 % below it (<= 40 %).
+SPEECH_RMS_FRACTION = 0.35
+SPEECH_DROP_FRACTION = 0.40
+# Last-resort stop: 2.5 s after the last frame at >=45 % of the peak speech level, steady
+# low audio (room/fan) ends the utterance instead of running to max_length.
+POST_SPEECH_PEAK_FRACTION = 0.45
+POST_SPEECH_CHECK_MS = 2500
+RECENT_LEVEL_WINDOW = 25  # 500 ms of 20 ms frames
+# A short command ("Ultron", "mute") must end as soon as the 900 ms silence is reached.
+MIN_SPEECH_BEFORE_SILENCE_STOP_MS = 400
 
 # A saturated burst (wake-up thump / stuck full-scale noise) is not a voice: its RMS is
 # very close to its peak. Real speech, even clipped, keeps a crest factor above ~2.8.
@@ -415,6 +430,46 @@ def _end_threshold(noise_floor: float, start_threshold: float, speaker_level: fl
     )
 
 
+def speech_rms_percentile(levels: list[int] | deque[int]) -> float:
+    """The speaker's active level: 75th percentile of the speech-like frames so far."""
+    values = list(levels)
+    return float(percentile(values, 0.75)) if values else 0.0
+
+
+def is_end_silence(level: int, end_threshold: float, speech_rms: float) -> bool:
+    """True when this frame is post-speech quiet, relative to the speaker's own level."""
+    if speech_rms > 0:
+        if level < max(float(end_threshold), SPEECH_RMS_FRACTION * speech_rms):
+            return True
+        # A >=60 % drop from the active speech level is silence too, even when the room
+        # noise happens to sit slightly above the absolute end threshold.
+        return level <= SPEECH_DROP_FRACTION * speech_rms
+    return level < float(end_threshold)
+
+
+def is_steady_post_speech(
+    levels: list[int] | deque[int], peak_speech_rms: float, quiet_ms: float
+) -> bool:
+    """Backstop for a room noise that never drops below the fractional end threshold.
+
+    After ``POST_SPEECH_CHECK_MS`` without any frame at >=45 % of the peak speech level,
+    steady low audio is room/fan noise, not a continuing sentence.
+    """
+    if quiet_ms < POST_SPEECH_CHECK_MS or peak_speech_rms <= 0:
+        return False
+    values = list(levels)[-RECENT_LEVEL_WINDOW:]
+    if len(values) < RECENT_LEVEL_WINDOW // 2:
+        return False
+    limit = POST_SPEECH_PEAK_FRACTION * peak_speech_rms
+    if any(value >= limit for value in values):
+        return False
+    mean = sum(values) / len(values)
+    if mean <= 0:
+        return True
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return math.sqrt(variance) / mean < 0.35
+
+
 def _default_enter_pressed() -> bool:
     """True when the user pressed Enter on a real terminal (newline is consumed)."""
     stream = sys.stdin
@@ -436,7 +491,7 @@ def record_until_silence(
     source: AudioSource,
     *,
     start_timeout_s: float = 10.0,
-    silence_ms: int = 2000,
+    silence_ms: int = 900,
     max_seconds: float = 30.0,
     min_speech_ms: int = MIN_SPEECH_MS,
     pre_roll_ms: int = PRE_ROLL_MS,
@@ -468,6 +523,10 @@ def record_until_silence(
     pre_roll: list[array.array] = []
     collected: list[array.array] = []
     speech_levels: list[int] = []
+    active_speech_levels: list[int] = []
+    recent_levels: deque[int] = deque(maxlen=RECENT_LEVEL_WINDOW)
+    peak_speech_rms = 0.0
+    loud_until_ms = 0
     calibration: list[int] = []
     trace_levels: list[dict[str, Any]] = []
     bucket: list[tuple[int, int, bool]] = []
@@ -569,6 +628,17 @@ def record_until_silence(
                         speech_start_ms = max(0, audio_ms - min_speech_ms)
                         recent = pre_roll[-max(1, min_speech_ms // FRAME_MS):]
                         speaker_level = float(max(frame_rms(f) for f in recent))
+                        active_speech_levels = [
+                            frame_rms(f) for f in recent if frame_rms(f) >= start_threshold
+                        ]
+                        recent_levels.clear()
+                        for recent_level in active_speech_levels[-RECENT_LEVEL_WINDOW:]:
+                            recent_levels.append(recent_level)
+                        if active_speech_levels:
+                            # Robust peak (p90), not one loud transient: a single very
+                            # loud frame must not make the rest of the sentence look quiet.
+                            peak_speech_rms = float(percentile(active_speech_levels, 0.90))
+                            loud_until_ms = audio_ms
                         notify("Heard you...")
                         collected.extend(pre_roll)
                         pre_roll = []
@@ -578,21 +648,41 @@ def record_until_silence(
                 else:
                     collected.append(frame)
                     speech_levels.append(level)
-                    speech_like = level >= start_threshold and not burst
+                    recent_levels.append(level)
+                    current_speech_rms = speech_rms_percentile(active_speech_levels)
+                    # Room noise can sit above the low start threshold. Once speech has
+                    # started, a frame that is >=60 % below the speaker's level is not
+                    # part of the sentence, whatever the absolute floor says.
+                    frame_active = not is_end_silence(level, end_threshold, current_speech_rms)
+                    speech_like = level >= start_threshold and not burst and frame_active
                     if speech_like:
                         silence_run = 0
                         speaker_level = max(speaker_level, float(level))
                         speech_frames += 1
-                    elif level < end_threshold:
+                        active_speech_levels.append(level)
+                        if len(active_speech_levels) > 250:
+                            active_speech_levels.pop(0)
+                        peak_speech_rms = max(
+                            peak_speech_rms, float(percentile(active_speech_levels, 0.90))
+                        )
+                        if level >= POST_SPEECH_PEAK_FRACTION * peak_speech_rms:
+                            loud_until_ms = audio_ms
+                    elif is_end_silence(level, end_threshold, current_speech_rms):
                         silence_run += 1
                     else:
                         # In the hysteresis band: assume the word is fading, not finished.
                         silence_run = 0
-                    frame_active = level >= end_threshold
                     if (
                         silence_run * FRAME_MS >= silence_ms
                         and audio_ms - speech_start_ms >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS
                     ):
+                        reason = "silence"
+                        break
+                    if is_steady_post_speech(
+                        recent_levels, peak_speech_rms, audio_ms - loud_until_ms
+                    ):
+                        # Steady room/fan noise after the last speech burst: stop now
+                        # instead of recording until the 30 s cap.
                         reason = "silence"
                         break
                     if audio_ms >= int(max_seconds * 1000):
@@ -645,6 +735,9 @@ def record_until_silence(
             "start": int(start_threshold),
             "end": int(end_threshold),
             "min_snr_db": round(float(min_snr_db), 1),
+            "speech_rms": int(speech_rms_percentile(active_speech_levels)),
+            "speech_rms_fraction": SPEECH_RMS_FRACTION,
+            "post_speech_check_ms": POST_SPEECH_CHECK_MS,
             "warmup_ms": int(warmup_end_ms),
             "warmup_max_ms": int(warmup_max_ms),
             "silence_ms": silence_ms,
@@ -669,8 +762,10 @@ def record_until_silence(
         )
 
     if reason == "silence":
-        # Cut the long pause, keeping only a short tail after the last speech-like frame.
-        trim_threshold = end_threshold
+        # Cut the pause using the same speech-relative threshold: room noise that is
+        # louder than the absolute end floor must not be kept as if it were speech.
+        final_speech_rms = speech_rms_percentile(active_speech_levels)
+        trim_threshold = max(end_threshold, SPEECH_RMS_FRACTION * final_speech_rms)
         last_speech = 0
         for index, frame in enumerate(collected):
             if frame_rms(frame) >= trim_threshold:

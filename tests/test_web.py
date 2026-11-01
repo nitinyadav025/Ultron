@@ -124,17 +124,23 @@ def test_google_lucky_and_plain_search_methods(monkeypatch: pytest.MonkeyPatch) 
     assert search["reply"] == "Opening the search results for github."
 
 
-def test_unknown_first_result_method_falls_back_to_ducky(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unknown_first_result_method_falls_back_to_google(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FIRST_RESULT_METHOD", "nonsense")
     url, method = web.first_result_url("github")
-    assert method == "ducky" and url.startswith(web.DUCKY_URL)
+    assert method == "google" and url.startswith(web.GOOGLE_LUCKY_URL)
+
+
+def test_google_is_the_default_method(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FIRST_RESULT_METHOD", raising=False)
+    url, method = web.first_result_url("github")
+    assert method == "google" and url.endswith("&btnI=1")
 
 
 def test_first_result_reports_a_browser_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(web, "open_url", lambda *_a, **_k: {"ok": False, "error": "no browser"})
     result = web.open_first_result("github")
     assert result["ok"] is False
-    assert open_first_result_reply({"ok": False, "raw_summary": result}) == web.FIRST_RESULT_FAILED_REPLY
+    assert open_first_result_reply({"ok": False, "raw_summary": result}) == "I couldn't open the search."
 
 
 def test_empty_query_opens_nothing(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -261,8 +261,9 @@ def test_local_prompt_is_short_and_static_prefix_comes_first() -> None:
     cfg = load_config()
     cfg.backend = "local"
     prompt = build_system_prompt(cfg, "auto-safe")
-    assert len(prompt) < 320
-    assert prompt.startswith("Ultron:")
+    assert len(prompt) < 520
+    assert prompt.startswith("You are Ultron")
+    assert "Answer questions directly" in prompt
     # Anything volatile (mode, roots, date) sits at the very end for prompt-cache reuse.
     assert prompt.rstrip().splitlines()[-1].startswith("Ctx:")
     other = build_system_prompt(cfg, "human-only")

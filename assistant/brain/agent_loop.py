@@ -56,10 +56,18 @@ _AFFIRMATIVE = {
 }
 
 
+_APP_ACTION = re.compile(r"\b(?:open|launch|close|quit|exit|kill)\b", re.I)
+
+
 def is_affirmative(text: str) -> bool:
     """True for a short yes-like answer to the timed-mute question."""
     cleaned = re.sub(r"[^a-z ]+", " ", (text or "").lower())
     return re.sub(r"\s+", " ", cleaned).strip() in _AFFIRMATIVE
+
+
+def request_wants_app_action(text: str) -> bool:
+    """True only when the user actually asked to open/launch/close/quit an app."""
+    return bool(_APP_ACTION.search(text or ""))
 
 
 # Local generation caps: a tool call needs far fewer tokens than the 512 default, and a
@@ -192,6 +200,8 @@ class AgentLoop:
         tool_rounds = 0
         last_tool: tuple[str, dict[str, Any]] | None = None
         local_tool_round_cap = 3 if self.config.backend == "local" else None
+        # Set when the model proposed an app action nobody asked for: answer without tools.
+        suppress_tools = False
         try:
             while steps < self.config.max_steps:
                 while not self._pause_event.wait(0.2):
@@ -213,7 +223,7 @@ class AgentLoop:
                     f"[Step {steps}/{self.config.max_steps}] Thinking ({self.config.current_model}{thinking_note})..."
                 )
 
-                if dry_run:
+                if dry_run or suppress_tools:
                     tools_payload = None
                 elif local_tool_round_cap is not None and tool_rounds >= local_tool_round_cap:
                     tools_payload = None  # small local model: force a final answer after 3 tool rounds
@@ -253,8 +263,12 @@ class AgentLoop:
 
                 # Never guess an action the user did not say: run no tool and ask instead.
                 mute_overrides: dict[int, bool] = {}
+                unrequested_app_calls: set[int] = set()
                 for index, call in enumerate(fn_calls):
                     call_name = call.name or ""
+                    if call_name in ("open_app", "close_app") and not request_wants_app_action(request_text):
+                        unrequested_app_calls.add(index)
+                        continue
                     if call_name == "set_volume":
                         wanted = dict(call.args or {}).get("percent", 50)
                         if not percent_is_mentioned(wanted, request_text):
@@ -276,6 +290,22 @@ class AgentLoop:
                 for call_index, call in enumerate(fn_calls):
                     fn_name = call.name or ""
                     fn_args = dict(call.args or {})
+                    if call_index in unrequested_app_calls:
+                        # The user asked a question, not for an app action. Refuse the call
+                        # and force a plain answer on the next turn (no tools).
+                        suppress_tools = True
+                        self.step_callback(f"No app action requested; skipping {fn_name}.")
+                        part = types.Part.from_function_response(
+                            name=fn_name,
+                            response={"ok": False, "error": "No app action was requested."},
+                        )
+                        if getattr(call, "id", None) and getattr(part, "function_response", None):
+                            try:
+                                part.function_response.id = call.id
+                            except Exception:
+                                pass
+                        resp_parts.append(part)
+                        continue
                     if call_index in mute_overrides:
                         fn_args["muted"] = mute_overrides[call_index]
                     self.step_callback(f"[Step {steps}/{self.config.max_steps}] Running {fn_name}...")

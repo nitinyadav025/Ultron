@@ -206,6 +206,59 @@ class MuteAdapter:
         return types.GenerateContentResponse(candidates=[types.Candidate(content=content)]), TokenUsageStats()
 
 
+OPEN_APP_CALLS = {"n": 0}
+
+
+@tool(risk_level="safe", read_only=False, name="open_app")
+def dummy_open_app(app_name: str) -> dict:
+    """Test-only app launcher that must not run for a question."""
+    OPEN_APP_CALLS["n"] += 1
+    return {"ok": True, "app_name": app_name}
+
+
+class QuestionAppAdapter:
+    """Calls open_app on a question, then answers with text once tools are removed."""
+
+    is_local = True
+    usage_meter = LocalUsageMeter()
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tools_seen: list[Any] = []
+
+    def select_model(self, role: str = "main") -> str:
+        return "fake-local"
+
+    def generate_turn(
+        self,
+        contents: object,
+        system_instruction: str,
+        tools: list[dict[str, Any]] | None = None,
+        role: str = "main",
+        thinking_level: str | None = None,
+        max_retries: int = 1,
+        max_output_tokens: int | None = None,
+    ) -> tuple[types.GenerateContentResponse, TokenUsageStats]:
+        self.calls += 1
+        self.tools_seen.append(tools)
+        if self.calls == 1:
+            content = types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            name="open_app", args={"app_name": "firefox"}, id="app1"
+                        )
+                    )
+                ],
+            )
+        else:
+            content = types.Content(
+                role="model", parts=[types.Part.from_text(text="I am Ultron, ready to help.")]
+            )
+        return types.GenerateContentResponse(candidates=[types.Candidate(content=content)]), TokenUsageStats()
+
+
 class NeverAdapter:
     """Fails the test if the LLM is called at all."""
 
@@ -260,6 +313,26 @@ def test_ambiguous_mute_and_unmute_asks_and_runs_nothing() -> None:
     assert result.reply == WHAT_MUTE_REPLY
     assert MUTE_CALLS["n"] == 0
     assert adapter.calls == 1  # only the model turn that proposed the call
+
+
+def test_open_app_is_never_run_for_a_conversational_question() -> None:
+    OPEN_APP_CALLS["n"] = 0
+    cfg = load_config()
+    cfg.backend = "local"
+    gate = PermissionGate(config=cfg, mode="auto-safe", confirm_callback=lambda _d, _t: "yes")
+    registry = ToolRegistry(config=cfg, gate=gate)
+    registry.register(dummy_open_app)
+    watchdog = WatchdogMonitor(cfg.max_steps, cfg.wall_clock_timeout_sec, cfg.idle_standdown_sec)
+    adapter = QuestionAppAdapter()
+    loop = AgentLoop(cfg, adapter, registry, watchdog)  # type: ignore[arg-type]
+
+    result = loop.run_task("how are you?")
+
+    assert result.ok is True
+    assert "Ultron" in result.reply
+    assert OPEN_APP_CALLS["n"] == 0  # the model's app call was refused
+    assert adapter.calls == 2  # one refused tool turn, then a plain answer with no tools
+    assert adapter.tools_seen[-1] is None
 
 
 def test_timed_mute_asks_honestly_without_the_llm() -> None:

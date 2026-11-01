@@ -131,8 +131,9 @@ def test_learned_alias_alone_opens_the_window(alias: str) -> None:
     assert spoken == ["Yes?"]
 
 
-@pytest.mark.parametrize("alias", LEARNED)
+@pytest.mark.parametrize("alias", [name for name in LEARNED if name != "outron"])
 def test_learned_alias_with_unknown_text_is_ignored(alias: str) -> None:
+    # "outron" is a built-in wake alias now, so anything after it is a real command.
     listener, commands, spoken, _prints = _listener(f"{alias} what is the weather")
 
     listener.run()
@@ -195,5 +196,5 @@ def test_wake_train_saves_clips_and_writes_alias_counts(tmp_path: Path) -> None:
     assert any("No default was changed" in line for line in lines)
     # Three production variants per clip; small.en is not installed.
     assert len(ears.calls) == 16 * 3
-    assert any(call.get("hotwords") == "Ultron" for call in ears.calls)
+    assert any(call.get("hotwords") == load_config().whisper_wake_hotwords for call in ears.calls)
     assert any(call.get("vad_filter") is False for call in ears.calls)

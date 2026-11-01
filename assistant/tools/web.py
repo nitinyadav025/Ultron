@@ -35,7 +35,8 @@ SEARCH_ENGINES = {
 }
 DEFAULT_ENGINE = "duckduckgo"
 FIRST_RESULT_METHODS = ("ducky", "google", "search")
-DEFAULT_FIRST_RESULT_METHOD = "ducky"
+# The user confirmed the Google "I'm feeling lucky" redirect works on this machine.
+DEFAULT_FIRST_RESULT_METHOD = "google"
 DUCKY_URL = "https://duckduckgo.com/?q=!ducky+"
 GOOGLE_LUCKY_URL = "https://www.google.com/search?q="
 FIRST_RESULT_URL = "https://html.duckduckgo.com/html/?q="
