@@ -14,8 +14,10 @@ until his own live test; `WAKE_ALIASES` exists to extend the list without code c
 from __future__ import annotations
 
 import difflib
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_ALIASES = ("ultra", "hey ultron")
 RATIO = 0.75
@@ -27,6 +29,7 @@ class WakeMatch:
     command: str = ""
     ratio: float = 0.0
     target: str = ""
+    learned: bool = False
 
 
 def _tokens(text: str) -> list[str]:
@@ -42,39 +45,76 @@ def _alias_list(wake_word: str, aliases: str | tuple[str, ...] | list[str] = "")
     return [w for w in dict.fromkeys(words) if w]
 
 
-def aliases_for(wake_word: str = "ultron", aliases: str | tuple[str, ...] | list[str] = "") -> list[str]:
-    """Every wake spelling currently tried (wake word, built-ins, configured extra)."""
-    return _alias_list(wake_word, aliases)
+def load_learned_aliases(path: Path | str | None) -> list[str]:
+    """Read workspace/wake_aliases.json (written by `main.py wake-train`).
+
+    Accepts {"aliases": {"ultron": 12, ...}} or {"aliases": ["ultron", ...]}.
+    A missing or broken file means "no learned aliases", never an error.
+    """
+    if not path:
+        return []
+    target = Path(path).expanduser()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    raw = data.get("aliases", data) if isinstance(data, dict) else data
+    names: list[str] = []
+    if isinstance(raw, dict):
+        names = [str(key) for key, count in raw.items() if count]
+    elif isinstance(raw, list):
+        names = [str(item.get("text") if isinstance(item, dict) else item) for item in raw]
+    cleaned = [" ".join(str(name).lower().split()) for name in names]
+    return [name for name in dict.fromkeys(cleaned) if name]
+
+
+def aliases_for(
+    wake_word: str = "ultron",
+    aliases: str | tuple[str, ...] | list[str] = "",
+    learned: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """Every wake spelling currently tried (wake word, built-ins, configured, learned)."""
+    return _alias_list(wake_word, aliases) + [name for name in learned if name not in _alias_list(wake_word, aliases)]
 
 
 def wake_match(
-    text: str, wake_word: str = "ultron", aliases: str | tuple[str, ...] | list[str] = ""
+    text: str,
+    wake_word: str = "ultron",
+    aliases: str | tuple[str, ...] | list[str] = "",
+    learned_aliases: list[str] | tuple[str, ...] = (),
 ) -> WakeMatch:
-    """Return the best wake-word match, including its score and target (for debug output)."""
+    """Return the best wake-word match, including its score and target (for debug output).
+
+    Built-in/configured spellings may be one or two words; learned spellings up to three.
+    On a tie the shorter match wins so a real command word is not swallowed.
+    """
     tokens = _tokens(text)
     if not tokens:
         return WakeMatch(False)
-    targets = _alias_list(wake_word, aliases)
-    best: tuple[float, int, str] | None = None  # (ratio, words_consumed, target)
+    builtin = _alias_list(wake_word, aliases)
+    learned = [" ".join(str(item).lower().split()) for item in learned_aliases if str(item).strip()]
+    targets: list[tuple[str, bool]] = [(name, False) for name in builtin]
+    targets += [(name, True) for name in learned if name not in builtin]
+    best: tuple[float, int, str, bool] | None = None  # (ratio, words_consumed, target, learned)
 
-    # The shortest match wins a tie: Whisper can join "Ultron open" into "Ultra-open", and
-    # taking only "Ultra" then leaves the real command word "open" in place.
-    for count in (1, 2):
+    for count in (1, 2, 3):
         if len(tokens) < count:
             continue
         candidate = " ".join(tokens[:count])
-        for target in targets:
+        for target, is_learned in targets:
             if len(target.split()) != count:
+                continue
+            if is_learned and count > 3:
                 continue
             ratio = difflib.SequenceMatcher(None, candidate, target).ratio()
             if ratio < RATIO:
                 continue
             if best is None or ratio > best[0] + 1e-9:
-                best = (ratio, count, target)
+                best = (ratio, count, target, is_learned)
     if best is None:
         return WakeMatch(False)
-    ratio, consumed, target = best
-    return WakeMatch(True, " ".join(tokens[consumed:]).strip(), ratio, target)
+    ratio, consumed, target, is_learned = best
+    return WakeMatch(True, " ".join(tokens[consumed:]).strip(), ratio, target, is_learned)
 
 
 def split_wake_word(

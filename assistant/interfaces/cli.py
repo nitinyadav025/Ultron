@@ -55,6 +55,15 @@ def is_unknown_command(line: str) -> bool:
     return bool(name) and name not in KNOWN_COMMANDS
 
 
+def show_and_speak_outcome(voice: VoiceController, message: str) -> None:
+    """Show a voice outcome and speak it exactly once (Ctrl+C stops only the speech)."""
+    print(f"Voice: {message}\n")
+    try:
+        voice.speak_sync(message)
+    except KeyboardInterrupt:
+        voice.stop_speaking()
+
+
 def show_privacy_notice_once(config: AssistantConfig) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     if PRIVACY_ACK_FILE.exists():
@@ -158,18 +167,20 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         if name == "/voice":
             ok_rec, rec_msg = voice.record()
             if not ok_rec:
-                print(f"Voice: {rec_msg}\n")
+                if rec_msg == NOTHING_HEARD:
+                    # "Nothing heard" is an outcome too: show it AND speak it.
+                    show_and_speak_outcome(voice, rec_msg)
+                else:
+                    print(f"Voice: {rec_msg}\n")
                 continue
             print("  -> Transcribing...")
             ok_tr, transcript = voice.transcribe_audio()
             if not ok_tr:
-                print(f"Voice: {transcript}\n")
                 # Voice-only failures are spoken so the user is never left without feedback.
                 if transcript in (UNCLEAR_SPEECH, NOTHING_HEARD):
-                    try:
-                        voice.speak_sync(transcript)
-                    except KeyboardInterrupt:
-                        voice.stop_speaking()
+                    show_and_speak_outcome(voice, transcript)
+                else:
+                    print(f"Voice: {transcript}\n")
                 continue
             print(
                 f"  -> Mic level: peak {voice.last_peak_before} rms {voice.last_rms_before} "
@@ -198,7 +209,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             print(f"\n{config.assistant_name}: {res.reply}")
             u: TokenUsageStats = res.usage
             print(f"  [Usage] Task={u.total_tokens} tok | Today={u.daily_total}/{u.daily_cap} ({u.cap_percent}%)\n")
-            if is_voice_turn and res.ok and res.reply:
+            if is_voice_turn and res.reply:
                 try:
                     ok_s, msg_s = voice.speak_sync(res.reply)
                     if not ok_s:

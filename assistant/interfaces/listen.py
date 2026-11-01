@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from assistant.brain.fast_path import match_fast_command
 from assistant.config import AssistantConfig
 from assistant.speech.ears import NO_SPEECH
 from assistant.speech.recorder import (
@@ -48,7 +49,7 @@ from assistant.speech.recorder import (
     samples_to_pcm16,
     write_pcm16_wav,
 )
-from assistant.speech.wake import aliases_for, first_word, sentence_is_complete, wake_match
+from assistant.speech.wake import aliases_for, first_word, load_learned_aliases, sentence_is_complete, wake_match
 from assistant.tools.registry import ToolRegistry
 
 logger = logging.getLogger("ultron.listen")
@@ -396,6 +397,7 @@ class HandsFreeListener:
             early_ms=getattr(config, "listen_early_check_ms", 800),
             max_seconds=getattr(config, "voice_max_seconds", 30.0),
         )
+        self.learned_aliases = load_learned_aliases(getattr(config, "wake_aliases_file", None))
         self.ignored = 0
         self.commands_run = 0
         self.stop_requested = False
@@ -546,13 +548,18 @@ class HandsFreeListener:
         wake_text = transcript.raw or transcript.text
         wake_word = getattr(self.config, "wake_word", "ultron")
         wake_aliases = getattr(self.config, "wake_aliases", "")
-        match = wake_match(wake_text, wake_word, wake_aliases)
+        match = wake_match(wake_text, wake_word, wake_aliases, self.learned_aliases)
         self._debug(
-            f"wake score={match.ratio:.2f} target={match.target or '-'} "
-            f"aliases={','.join(aliases_for(wake_word, wake_aliases))}"
+            f"wake score={match.ratio:.2f} target={match.target or '-'} learned={match.learned} "
+            f"aliases={','.join(aliases_for(wake_word, wake_aliases, self.learned_aliases))}"
         )
         wake_found = match.found
         command = match.command
+        if wake_found and match.learned and command and match_fast_command(command) is None:
+            # A learned spelling (for example "I'll turn") is only trusted when the rest
+            # of the sentence is a known fast-path command. Otherwise it is ordinary talk.
+            wake_found = False
+            command = ""
         used_followup = False
         if not wake_found and in_followup:
             wake_found = True

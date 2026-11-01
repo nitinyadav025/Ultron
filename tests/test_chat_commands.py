@@ -10,6 +10,8 @@ import pytest
 from assistant.brain.agent_loop import AgentTaskResult
 from assistant.config import load_config
 from assistant.interfaces import cli
+from assistant.interfaces.voice import NOTHING_HEARD
+from assistant.speech.ears import UNCLEAR_SPEECH
 from assistant.interfaces.cli import (
     UNKNOWN_COMMAND_MESSAGE,
     command_name,
@@ -99,3 +101,74 @@ def test_unknown_command_never_reaches_the_llm_and_double_slash_voice_works(
     assert FakeLoop.instances[0].calls == ["hello"]  # /nonsense never reached run_task
     assert "Chat input: '//voice'" in caplog.text
     assert "Chat input: '/nonsense'" in caplog.text
+
+
+class OutcomeVoice:
+    """Voice double whose record/transcribe outcomes are chosen by the test."""
+
+    ears = None
+    mouth = None
+    last_peak_before = 0
+    last_rms_before = 0
+    last_peak = 0
+    last_rms = 0
+
+    def __init__(self, record_outcome, transcribe_outcome=(True, "hello")):
+        self.record_outcome = record_outcome
+        self.transcribe_outcome = transcribe_outcome
+        self.spoken: list[str] = []
+        self.record_calls = 0
+
+    def record(self):
+        self.record_calls += 1
+        return self.record_outcome
+
+    def transcribe_audio(self):
+        return self.transcribe_outcome
+
+    def speak_sync(self, text):
+        self.spoken.append(text)
+        return True, "fake"
+
+    def stop_speaking(self):
+        return None
+
+
+def _run_with_voice(monkeypatch, voice, inputs):
+    monkeypatch.setattr(cli, "show_privacy_notice_once", lambda _config: None)
+    monkeypatch.setattr(cli, "register_gnome_kill_hotkey", lambda _binding: None)
+    monkeypatch.setattr(cli, "apply_mic_source_volume", lambda _value: (False, ""))
+    monkeypatch.setattr(cli, "build_adapter", lambda _config: object())
+    monkeypatch.setattr(cli, "VoiceController", lambda **_kwargs: voice)
+    monkeypatch.setattr(cli, "AgentLoop", FakeLoop)
+    stream = iter(inputs)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(stream))
+    return run_cli_chat(load_config())
+
+
+def test_nothing_heard_is_shown_and_spoken_once(monkeypatch, capsys) -> None:
+    voice = OutcomeVoice((False, NOTHING_HEARD))
+
+    assert _run_with_voice(monkeypatch, voice, ["/voice", "/quit"]) == 0
+
+    out = capsys.readouterr().out
+    assert f"Voice: {NOTHING_HEARD}" in out
+    assert voice.spoken == [NOTHING_HEARD]
+
+
+def test_guard_rejection_is_shown_and_spoken_once(monkeypatch, capsys) -> None:
+    voice = OutcomeVoice((True, "fake.wav"), (False, UNCLEAR_SPEECH))
+
+    assert _run_with_voice(monkeypatch, voice, ["/voice", "/quit"]) == 0
+
+    out = capsys.readouterr().out
+    assert f"Voice: {UNCLEAR_SPEECH}" in out
+    assert voice.spoken == [UNCLEAR_SPEECH]
+
+
+def test_tool_reply_is_spoken_once(monkeypatch) -> None:
+    voice = OutcomeVoice((True, "fake.wav"))
+
+    assert _run_with_voice(monkeypatch, voice, ["/voice", "/quit"]) == 0
+
+    assert voice.spoken == ["Done."]

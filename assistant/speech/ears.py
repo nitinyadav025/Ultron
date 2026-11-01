@@ -236,7 +236,14 @@ class WhisperEars:
             return False, str(exc)
         return self._transcribe_array(audio)
 
-    def transcribe_samples(self, samples: np.ndarray, *, log_text: bool = True) -> tuple[bool, str]:
+    def transcribe_samples(
+        self,
+        samples: np.ndarray,
+        *,
+        log_text: bool = True,
+        hotwords: str | None = None,
+        vad_filter: bool | None = None,
+    ) -> tuple[bool, str]:
         """Transcribe a float32 mono array at 16 kHz (used by hands-free mode).
 
         No file is written, so audio that did not contain the wake word is never saved.
@@ -249,9 +256,16 @@ class WhisperEars:
             logger.error("Ears unavailable: %s", redact_secrets(str(exc)))
             return False, str(exc)
         audio = np.ascontiguousarray(samples.astype(np.float32, copy=False))
-        return self._transcribe_array(audio, log_text=log_text)
+        return self._transcribe_array(audio, log_text=log_text, hotwords=hotwords, vad_filter=vad_filter)
 
-    def _transcribe_array(self, audio: np.ndarray, *, log_text: bool = True) -> tuple[bool, str]:
+    def _transcribe_array(
+        self,
+        audio: np.ndarray,
+        *,
+        log_text: bool = True,
+        hotwords: str | None = None,
+        vad_filter: bool | None = None,
+    ) -> tuple[bool, str]:
         """Run faster-whisper on a float32 array and apply the confidence guard."""
         if audio.size == 0:
             logger.info("Ears: empty recording.")
@@ -267,7 +281,12 @@ class WhisperEars:
         }
         # No hotwords/initial_prompt by default: the decoder echoed the comma-separated
         # word list back into the transcript on unclear audio. Opt in explicitly only.
-        if self.config.whisper_hotwords:
+        if vad_filter is not None:
+            decode_options["vad_filter"] = bool(vad_filter)
+        if hotwords is not None:
+            if hotwords:
+                decode_options["hotwords"] = hotwords
+        elif self.config.whisper_hotwords:
             decode_options["hotwords"] = self.config.whisper_hotwords
         try:
             model = self.load()

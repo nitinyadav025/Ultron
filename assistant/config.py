@@ -97,6 +97,7 @@ class AssistantConfig:
     voice_denoise_strength: float = 0.0
     wake_word: str = "ultron"
     wake_aliases: str = ""
+    wake_aliases_file: Path = WORKSPACE_DIR / "wake_aliases.json"
     listen_followup_s: float = 6.0
     listen_early_check_ms: int = 800
     listen_after_speech_ms: int = 300
@@ -289,6 +290,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         voice_denoise_strength = 0.0
     wake_word = (merged.get("WAKE_WORD") or "ultron").strip().lower() or "ultron"
     wake_aliases = (merged.get("WAKE_ALIASES") or "").strip()
+    wake_aliases_file = Path(os.path.expanduser(merged.get("WAKE_ALIASES_FILE") or str(WORKSPACE_DIR / "wake_aliases.json")))
     listen_followup_s = _positive_float("LISTEN_FOLLOWUP_S", 6.0, 0.0, 60.0)
     listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 800, 200, 5000)
     listen_after_speech_ms = _positive_int("LISTEN_AFTER_SPEECH_MS", 300, 0, 5000)
@@ -370,6 +372,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         voice_denoise_strength=voice_denoise_strength,
         wake_word=wake_word,
         wake_aliases=wake_aliases,
+        wake_aliases_file=wake_aliases_file,
         listen_followup_s=listen_followup_s,
         listen_early_check_ms=listen_early_check_ms,
         listen_after_speech_ms=listen_after_speech_ms,

@@ -34,6 +34,10 @@ SEARCH_ENGINES = {
     "bing": "https://www.bing.com/search?q=",
 }
 DEFAULT_ENGINE = "duckduckgo"
+FIRST_RESULT_METHODS = ("ducky", "google", "search")
+DEFAULT_FIRST_RESULT_METHOD = "ducky"
+DUCKY_URL = "https://duckduckgo.com/?q=!ducky+"
+GOOGLE_LUCKY_URL = "https://www.google.com/search?q="
 FIRST_RESULT_URL = "https://html.duckduckgo.com/html/?q="
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) Ultron/1.0"
 MAX_QUERY = 200
@@ -162,27 +166,32 @@ def web_search(query: str, browser: str | None = None) -> dict[str, Any]:
     }
 
 
+def first_result_url(query: str, method: str | None = None) -> tuple[str, str]:
+    """Return (url, method). No scraping: the browser follows the redirect."""
+    chosen = (method or os.environ.get("FIRST_RESULT_METHOD") or DEFAULT_FIRST_RESULT_METHOD).lower()
+    if chosen not in FIRST_RESULT_METHODS:
+        chosen = DEFAULT_FIRST_RESULT_METHOD
+    encoded = urllib.parse.quote_plus(clean_query(query))
+    if chosen == "ducky":
+        return DUCKY_URL + encoded, chosen
+    if chosen == "google":
+        return GOOGLE_LUCKY_URL + encoded + "&btnI=1", chosen
+    return search_url(query), chosen
+
+
 @tool(risk_level="safe", read_only=False)
 def open_first_result(query: str) -> dict[str, Any]:
     """Search the web and open the first result."""
     cleaned = clean_query(query)
     if not cleaned:
         return {"ok": False, "error": "The search text was empty."}
-    result_url = fetch_first_result(cleaned)
-    if not result_url:
-        opened = open_url(search_url(cleaned))
-        return {
-            "ok": False,
-            "query": cleaned,
-            "fell_back_to_search": bool(opened.get("ok")),
-            "reply": FIRST_RESULT_FAILED_REPLY,
-        }
-    opened = open_url(result_url)
+    url, method = first_result_url(cleaned)
+    opened = open_url(url)
     if not opened.get("ok"):
         return {"ok": False, "query": cleaned, "error": opened.get("error")}
-    return {
-        "ok": True,
-        "query": cleaned,
-        "url": result_url,
-        "domain": domain_of(result_url),
-    }
+    reply = (
+        f"Opening the search results for {cleaned}."
+        if method == "search"
+        else f"Opening the first result for {cleaned}."
+    )
+    return {"ok": True, "query": cleaned, "url": url, "method": method, "reply": reply}

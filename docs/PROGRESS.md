@@ -13,9 +13,9 @@ pushed). This section supersedes every section below it.
 | 2 | Make `listen` visible; fix text leaks of ignored speech | DONE |
 | 3 | Offline replay: why no command after "Yes?" | DONE |
 | 4 | Adaptive warm-up; SNR thresholds from real clips | DONE |
-| 5 | `main.py wake-train` + learned aliases, with safety rule | TODO |
-| 6 | Speak every /voice outcome ("I didn't hear anything.") | TODO |
-| 7 | First-result method without scraping (if usage remains) | TODO |
+| 5 | `main.py wake-train` + learned aliases, with safety rule | DONE (not run on his voice) |
+| 6 | Speak every /voice outcome ("I didn't hear anything.") | DONE |
+| 7 | First-result method without scraping | DONE |
 | 8 | Docs, full pytest, commits | TODO |
 
 ### Live facts reported by the user (UNVERIFIED by me)
@@ -245,13 +245,90 @@ quietest real clip has ~11.9 dB of margin above the 10 dB gate.
   `tests/test_warmup_snr.py`, `tests/test_listening_reliability.py`,
   `docs/PROGRESS.md`.
 
-### Open problems
+### Part 5 result — a wake word for his voice
 
-- None confirmed yet; audit is first.
+- `assistant/interfaces/wake_train.py` (new) + `main.py wake-train`: one stream, waits for
+  the adaptive warm-up, then asks for 8 × "Ultron", 4 × "Ultron open firefox", 4 ×
+  "Hey Ultron". Each clip is saved in `workspace/wake_clips/` (because the user starts it)
+  and transcribed four ways: base.en plain, base.en with `hotwords="Ultron"`, base.en with
+  `vad_filter=False`, and small.en plain **only if** `models/faster-whisper-small.en`
+  exists. It prints a table and the average seconds per variant.
+- It writes `workspace/wake_aliases.json` with the first 1–3 words Whisper produced and
+  their counts. It changes **no default**.
+- `WAKE_ALIASES_FILE` (default `workspace/wake_aliases.json`) is loaded in addition to
+  `WAKE_ALIASES`; matching tries the first one to three words, normalised.
+- Safety rule: a built-in fuzzy match (`ultron`, `hey ultron`) works as before. A match to
+  a **learned** alias is accepted only when the rest of the sentence is empty or matches a
+  fast-path command; otherwise it is ignored silently. This stops "I'll turn" from running
+  random talk.
+- Tests: `tests/test_wake_train.py` (22) include the exact learned strings `outron.`,
+  `I'm drawn.`, `I draw`, `I'll do it.`, `I'll turn.` each with a fast-path remainder
+  (runs), alone (says "Yes?"), and with unknown text (ignored), plus ordinary sentences.
+- **The aliases from his own voice are UNVERIFIED**: I cannot run `wake-train`. The built-in
+  aliases are still only Piper-derived.
 
-### NEXT STEP
+### Part 6 result — every /voice outcome is spoken
 
-Finish Part 1 (settings table, permissions proof, close capability).
+Root cause: `assistant/interfaces/cli.py` only spoke when **transcription** failed. A
+10-second silence returns `(False, "I didn't hear anything.")` from `voice.record()`
+earlier, and that branch only printed. B1 commit `ce9c67a` ("speak the no-hear message on a
+voice turn") added `speak_sync` in the transcription branch, so it never ran for silence.
+Fix: `show_and_speak_outcome()` prints and speaks exactly once, used for the record-failure
+and transcription-failure paths; tool replies are spoken even when the task result is not
+`ok`. Listening never restarts while Piper talks (the call is synchronous). Tests:
+`tests/test_chat_commands.py` (nothing heard, guard rejection, tool reply → exact text
+spoken once).
+
+### Part 7 result — first result without scraping
+
+`FIRST_RESULT_METHOD` = `ducky` (default) | `google` | `search`:
+- ducky: `https://duckduckgo.com/?q=!ducky+<query>`
+- google: `https://www.google.com/search?q=<query>&btnI=1`
+- search: the normal search URL.
+No HTTP request and no parser: the browser follows the redirect. Replies in code:
+"Opening the first result for <query>." (ducky/google) and "Opening the search results for
+<query>." (search). argv lists only, http/https only, query ≤ 200 chars. The old scraping
+parser/fixtures are kept and tested, but the tool no longer calls them. **Whether the
+browser lands on the first result is UNVERIFIED** (only the user can try it).
+
+### Open problems (B3)
+
+- Every B3 fix is offline-tested only; the live microphone and speakers are UNVERIFIED.
+- `wake-train` has not been run on his voice; learned aliases do not exist yet.
+- `ducky`/`google` first-result depend on the browser following the redirect; UNVERIFIED.
+- The loud take `134409` has a real floor of ~4510 (reported, not forced below 1000).
+- `.env` does not set `WAKE_ALIASES_FILE`, `LISTEN_DEBUG` or the new warm-up max; defaults
+  apply (`workspace/wake_aliases.json`, 0, 1500 ms).
+
+### Head state (B3)
+
+- Branch `phase5-b3-work` (from `phase5-b2-work` @ `71c4985`), local only, nothing pushed.
+- Commits: `763628d` checkpoint, `4ce734e` part 1, `0e9bb74` part 2, `a7819ed` parts 3–4.
+- Latest pytest: **299 passed, 0 skipped**. No llama-server (`ss -ltnp | grep 9931` empty).
+- Working tree clean; `.env` untouched and not committed.
+
+### NEXT STEP — live tests (the coding tool cannot use the mic/speakers)
+
+Run these in order and report each result.
+
+1. `.venv/bin/python main.py wake-train` → 16 cues (8 × "Ultron", 4 × "Ultron open
+   firefox", 4 × "Hey Ultron"). Expected: one table with plain/hotwords/no-vad/small.en
+   and the average seconds; `workspace/wake_aliases.json` created. **Review the table and
+   choose an alias yourself; no default was changed.**
+2. `LISTEN_DEBUG=1 .venv/bin/python main.py listen`. Expected ready lines (Mic/Ears/Mouth),
+   then `Listening. Say 'Ultron, <command>'. Ctrl+C to stop.` after the pop. Say
+   **"Ultron"** → screen shows `· wake word heard`, `· waiting for your command (6 s)`, and
+   Ultron says "Yes?". Then say **"open firefox"** within 6 s → Firefox opens. Debug lines
+   show what Whisper heard, the score and the aliases.
+3. In the same session say **"Ultron open firefox and search for github"** → Firefox opens
+   the search page and Ultron says "Searching for github in Firefox." (or, for "open the
+   first result for github", "Opening the first result for github.").
+4. `.venv/bin/python main.py chat` → `/voice`, **10 s silence, hands off the keyboard,
+   speaker audible**. Expected: the screen shows `Voice: I didn't hear anything.` **and
+   Piper speaks it once**.
+5. Repeat step 2–4 with the fan **ON** and **OFF**. Expected: the fan alone never wakes it
+   (no line, no command); a normal sentence still works. Report the `Utterance:` log lines
+   (duration, floor, snr, result) if anything is missed.
 
 ---
 
@@ -259,7 +336,7 @@ Finish Part 1 (settings table, permissions proof, close capability).
 
 Last updated: 2026-11-01 (Phase 5 B2 finished; live tests pending)
 
-## Phase 5 B2 (Nov 1) — CURRENT
+## Phase 5 B2 (Nov 1) — HISTORY (superseded by B3 above)
 
 Work branch: `phase5-b2-work` (local only, nothing pushed). This section is the current
 state; every section below it is older history and is kept only as a record. Baseline

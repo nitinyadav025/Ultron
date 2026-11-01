@@ -146,9 +146,10 @@ def open_first_result_reply(result: dict[str, Any]) -> str | None:
         raw = result
     if not result.get("ok", False):
         return str(raw.get("reply") or "I couldn't pick the first result, so I opened the search results.")
+    if raw.get("reply"):
+        return str(raw["reply"])
     query = str(raw.get("query") or "").strip()
-    domain = str(raw.get("domain") or "").strip()
-    return f"Opened the first result for {query}: {domain}."
+    return f"Opening the first result for {query}."
 
 
 def is_lead_in(text: str) -> bool:

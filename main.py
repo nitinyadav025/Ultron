@@ -55,6 +55,10 @@ def _dispatch(args: argparse.Namespace, config: AssistantConfig) -> int:
         from assistant.interfaces.listen import run_listen
 
         return run_listen(config)
+    if args.command == "wake-train":
+        from assistant.interfaces.wake_train import run_wake_train
+
+        return run_wake_train(config)
     if args.command == "logs":
         for item in read_audit_logs(30):
             print(item)
@@ -70,7 +74,7 @@ def main() -> int:
         "command",
         nargs="?",
         default="chat",
-        choices=["chat", "gui", "listen", "doctor", "self-test", "voice-test", "logs", "stop", "download-models"],
+        choices=["chat", "gui", "listen", "wake-train", "doctor", "self-test", "voice-test", "logs", "stop", "download-models"],
     )
     parser.add_argument("--mode", choices=["ask", "auto-safe", "human-only"], default=None)
     parser.add_argument("--dry-run", action="store_true")

@@ -134,5 +134,5 @@ def test_replies_are_built_in_code() -> None:
     )
     assert try_fast_path(registry, "open firefox and search for github") == "Searching for github in Firefox."
     assert try_fast_path(registry, "open the first result for github") == (
-        "Opened the first result for github: github.com."
+        "Opening the first result for github."
     )
