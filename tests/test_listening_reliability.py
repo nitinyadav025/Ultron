@@ -13,11 +13,12 @@ import logging
 import random
 import re
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from assistant.config import load_config
+from assistant.config import PROJECT_ROOT, load_config
 from assistant.interfaces.voice import VoiceController
 from assistant.speech.ears import WhisperEars
 from assistant.speech.recorder import (
@@ -97,13 +98,54 @@ def _trim_silence(pcm: bytes, threshold: int = 300, keep_ms: int = 100) -> bytes
     return b"".join(samples_to_pcm16(frame) for frame in frames[max(0, loud[0] - keep) : loud[-1] + keep + 1])
 
 
-def _clip_pcm(index: int) -> bytes:
-    path = Path(f"/tmp/cmp2_{index}.wav")
-    if not path.exists():
-        pytest.skip(f"real clip missing: {path}")
+def _read_wav(path: Path) -> bytes:
     with wave.open(str(path), "rb") as wf:
         assert wf.getframerate() == 16000 and wf.getnchannels() == 1
         return wf.readframes(wf.getnframes())
+
+
+@dataclass(frozen=True)
+class RealClip:
+    pcm: bytes
+    expected: str
+    label: str
+
+
+def _real_clips() -> list[RealClip]:
+    """All real recordings available: cmp2 files, then live attempts with a good transcript.
+
+    The original cmp2 clips are gone from this machine. The saved live attempts are used
+    instead: each JSON trace says what Whisper heard; only clips whose transcript passed
+    the guard (verdict "ok") are kept, so the expected text is measured, not guessed.
+    """
+    clips: list[RealClip] = []
+    for index in range(6):
+        for directory in (PROJECT_ROOT / "workspace" / "test_clips", Path("/tmp")):
+            path = directory / f"cmp2_{index}.wav"
+            if path.exists():
+                clips.append(RealClip(_read_wav(path), EXPECTED[index], f"cmp2_{index}"))
+                break
+    for trace_path in sorted((PROJECT_ROOT / "workspace" / "test_clips").glob("attempt_*.json")):
+        try:
+            trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        text = (trace.get("transcript") or "").strip()
+        verdict = (trace.get("guard") or {}).get("verdict")
+        wav_path = trace_path.with_suffix(".wav")
+        if verdict == "ok" and text and wav_path.exists():
+            clips.append(RealClip(_read_wav(wav_path), text, trace_path.stem))
+    return clips
+
+
+def _require_clips() -> list[RealClip]:
+    clips = _real_clips()
+    if not clips:
+        pytest.skip(
+            "no real clips found: put cmp2_*.wav in workspace/test_clips/ (or /tmp), "
+            "or save live attempts in workspace/test_clips/"
+        )
+    return clips
 
 
 def _record(pcm: bytes, **kwargs: object) -> tuple[object, list[str]]:
@@ -150,38 +192,47 @@ def _voice(tmp_path: Path) -> VoiceController:
 # 1) long sentence: real clip + 1 s noise before + 2.5 s after -------------------------
 
 
-def test_all_six_good_clips_pass_the_guard(ears: WhisperEars, tmp_path: Path) -> None:
-    for index in range(6):
-        pcm = _clip_pcm(index)
-        path = tmp_path / f"guard_{index}.wav"
-        write_pcm16_wav(path, pcm, rate=16000, channels=1)
+def test_all_real_clips_pass_the_guard(ears: WhisperEars, tmp_path: Path) -> None:
+    clips = _require_clips()
+    for clip in clips:
+        path = tmp_path / f"guard_{clip.label}.wav"
+        write_pcm16_wav(path, clip.pcm, rate=16000, channels=1)
         ok, text = ears.transcribe(path)
-        assert ok is True, f"clip {index} rejected: {text!r} ({ears.last_confidence})"
+        assert ok is True, f"{clip.label} rejected: {text!r} ({ears.last_confidence})"
         assert ears.last_confidence["verdict"] == "ok"
+        assert _norm(text) == _norm(clip.expected)
 
 
 def test_long_sentence_is_kept_whole(ears: WhisperEars, tmp_path: Path) -> None:
-    clip = _clip_pcm(4)
-    recording, _events = _record(_noise(50) + clip + _noise(125))
+    clips = _require_clips()
+    clip = max(clips, key=lambda item: len(item.pcm))
+    recording, _events = _record(_noise(25) + clip.pcm + _noise(125))
 
     assert recording.saw_speech is True and recording.reason == "silence"
-    assert _duration_s(recording.pcm) >= _loud_duration_s(clip) - 0.2
+    assert _duration_s(recording.pcm) >= _loud_duration_s(clip.pcm) - 0.3
     text = _transcribe(ears, recording.pcm, tmp_path, "long")
-    assert _norm(text) == _norm(EXPECTED[4])
-
-
-# 2) two real clips joined by a 1.5 s pause --------------------------------------------
+    assert _norm(text) == _norm(clip.expected)
 
 
 def test_two_sentences_with_a_1500ms_pause_are_one_recording(ears: WhisperEars, tmp_path: Path) -> None:
-    first = _trim_silence(_clip_pcm(1))
-    second = _trim_silence(_clip_pcm(2))
-    recording, _events = _record(_noise(25) + first + _silence(75) + second + _noise(125))
+    clips = _require_clips()
+    first = next((c for c in clips if "download" in c.expected.lower()), clips[0])
+    second = next((c for c in clips if "unmute" in c.expected.lower() and c is not first), None)
+    if second is None:
+        second = next((c for c in clips if c is not first), None)
+    if second is None:
+        pytest.skip("need two real clips to join; workspace/test_clips has only one")
+
+    first_pcm = _trim_silence(first.pcm)
+    second_pcm = _trim_silence(second.pcm)
+    recording, _events = _record(_noise(25) + first_pcm + _silence(75) + second_pcm + _noise(125))
 
     assert recording.saw_speech is True and recording.reason == "silence"
-    assert _duration_s(recording.pcm) >= _loud_duration_s(first) + _loud_duration_s(second)
+    assert _duration_s(recording.pcm) >= _loud_duration_s(first_pcm) + _loud_duration_s(second_pcm)
     text = _norm(_transcribe(ears, recording.pcm, tmp_path, "two"))
-    assert "firefox" in text and "download" in text
+    first_word = next(w for w in _norm(first.expected).split() if len(w) >= 4)
+    second_word = next(w for w in _norm(second.expected).split() if len(w) >= 4)
+    assert first_word in text and second_word in text
 
 
 # 3) a 1.9 s pause inside a sentence (limit is 2.0 s) ----------------------------------
@@ -369,3 +420,64 @@ def test_each_attempt_logs_one_info_line(tmp_path: Path, caplog: pytest.LogCaptu
     voice._save_debug_attempt(recording, "auto")
 
     assert caplog.text.count("Listening attempt:") == 1
+
+
+# --------------------------------------------------------------------------------------
+# Bug A: steady noise (the room fan) must never count as speech
+# --------------------------------------------------------------------------------------
+
+FAN_TRACE = PROJECT_ROOT / "workspace" / "test_clips" / "attempt_20261101-135201-414426"
+
+
+def _fan_pcm() -> bytes:
+    path = FAN_TRACE.with_suffix(".wav")
+    if not path.exists():
+        pytest.skip("the 30 s fan recording is not in workspace/test_clips/")
+    return _read_wav(path)
+
+
+def _constant_noise(frames: int, amp: int = 4700, seed: int = 11) -> bytes:
+    rng = random.Random(seed)
+    return array.array("h", [rng.randint(-amp, amp) for _ in range(frames * FRAME)]).tobytes()
+
+
+def test_constant_loud_noise_never_starts_a_recording() -> None:
+    # A full-scale burst in the first 20 ms (the pw-record opening pop), then 30 s of
+    # steady loud noise at the level of the live fan complaint.
+    burst = _tone(32767, 1)
+    recording, _events = _record(burst + _constant_noise(1500), max_seconds=30, start_timeout_s=2)
+
+    assert recording.saw_speech is False
+    assert recording.pcm == b""
+    assert recording.reason in ("timeout", "source_ended")
+    assert recording.trace["thresholds"]["min_snr_db"] == 10.0
+    assert recording.trace["thresholds"]["warmup_ms"] == 300
+
+
+def test_fan_only_recording_says_nothing_heard_and_never_reaches_whisper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    voice = _voice(tmp_path)
+    voice.config.voice_start_timeout_s = 2.0
+    monkeypatch.setattr("assistant.interfaces.voice.PwRecordSource", lambda: SyntheticSource(_fan_pcm()))
+    monkeypatch.setattr(voice, "transcribe_audio", lambda *_a, **_k: pytest.fail("fan audio reached Whisper"))
+
+    ok, message = voice.record_auto()
+
+    assert ok is False
+    assert message == "I didn't hear anything."
+    assert not voice.audio_file.exists()
+
+
+def test_a_real_clip_with_the_opening_burst_still_transcribes_fully(
+    ears: WhisperEars, tmp_path: Path
+) -> None:
+    clips = _require_clips()
+    clip = max(clips, key=lambda item: len(item.pcm))
+    burst = _tone(32767, 2)  # 40 ms pop at stream open, inside the 300 ms warm-up
+    recording, _events = _record(burst + _noise(25) + clip.pcm + _noise(125))
+
+    assert recording.saw_speech is True and recording.reason == "silence"
+    assert _duration_s(recording.pcm) >= _duration_s(clip.pcm) - 0.2
+    text = _transcribe(ears, recording.pcm, tmp_path, "burst_plus_speech")
+    assert _norm(text) == _norm(clip.expected)

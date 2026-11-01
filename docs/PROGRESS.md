@@ -10,14 +10,100 @@ tests whose `/tmp/cmp2_*.wav` files are gone; see Part 1).
 
 | Part | What | Status |
 |------|------|--------|
-| 1 | Evidence + test hygiene (tmp logs, real-log guard, real clips) | IN PROGRESS |
-| 2 | Fix Bug A: recorder warm-up, SNR start, "nothing heard" | TODO |
-| 2B | Noise robustness (fan analysis, SNR, denoise A/B, noise plan) | TODO |
+| 1 | Evidence + test hygiene (tmp logs, real-log guard, real clips) | DONE |
+| 2 | Fix Bug A: recorder warm-up, SNR start, "nothing heard" | DONE (code + tests) |
+| 2B | Noise robustness (fan analysis, SNR, denoise A/B, noise plan) | IN PROGRESS |
 | 3 | Hands-free `main.py listen` (wake word, early endpoint, follow-up) | TODO |
 | 4 | Fast path for simple commands | TODO |
 | 5 | Web tools (`web_search`, `open_first_result`) | TODO |
 | 6 | Typing detection report (`docs/TYPING_PLAN.md`) | TODO |
 | 7 | Docs, full pytest, commits | TODO |
+
+### Part 1 result — evidence and test hygiene
+
+- Added `tests/conftest.py`: before any test module imports `assistant.config`, it sets
+  `ULTRON_LOGS_DIR` and `ULTRON_WORKSPACE_DIR` to a session temp folder. An autouse
+  fixture snapshots the real `logs/assistant.log` and `logs/audit.jsonl` before/after
+  every test and fails the test if either changed.
+- `assistant/config.py`: `LOGS_DIR` and `WORKSPACE_DIR` can be redirected by those two
+  env vars (normal runs use the project folders, so production behaviour is unchanged).
+- `tests/test_log_hygiene.py`: proves the redirect is active and that a real tool call is
+  logged in the temp file, never in the real log.
+- `tests/test_listening_reliability.py`: real clips are looked up in
+  `workspace/test_clips/` first and `/tmp` second. The three previously skipped tests now
+  run from the saved live attempts (expected text read from each JSON trace, only
+  `verdict == "ok"` clips). The two-clip test joins the real "download" and "unmute"
+  attempts. All 17 tests in the file pass, 0 skipped.
+- `workspace/test_clips/` did not exist; it now contains copies (no deletions) of the
+  10 saved attempts. They are git-ignored.
+
+### Part 2 result — Bug A
+
+**Which level pattern made 29.4 s count as speech:** replaying
+`attempt_20261101-135201-414426` (the 30 s fan take) through the unchanged recorder
+reproduces `reason=max_length, duration=30.0 s, speech=3.9 s` exactly. The trace has
+`noise_floor=23186`, `start=500`, `end=41734`.
+
+**Why the end-of-speech rule never fired:** the first 200 ms calibration picked up the
+stream-opening burst, so the noise floor became 23186. The start threshold is capped at
+500, but the end threshold is `max(140, 1.8 × noise_floor, …)` = 41734, which is above the
+int16 maximum. The hysteresis band therefore collapsed: every ordinary fan frame is
+"silence", but any fan gust ≥500 is "speech" and resets the 2 s silence counter. In the
+30 s file, 40 of 300 100 ms windows are ≥500 and they occur less than 2 s apart, so
+`silence_run` never reaches 2000 ms and only the 30 s cap stops it. Saving the file from
+the detected "speech start" is why the first 29.4 s looked like speech.
+
+**Start-of-stream burst table** (RMS per 50 ms for the first 600 ms of every saved attempt):
+
+| Attempt | 0–50 | 50–100 | 100–150 | 150–200 | 200–250 | 250–300 | Burst? |
+|---|---|---|---|---|---|---|---|
+| 134409 | 5991 | 6048 | 6618 | 5933 | 5875 | 5274 | no (loud room) |
+| 134437 | 320 | 340 | 338 | 308 | 294 | 303 | no |
+| 134518 | 30016 | 32768 | 32768 | 32768 | 32456 | 25361 | **yes** |
+| 134532 | 335 | 289 | 307 | 401 | 458 | 348 | no |
+| 134543 | 315 | 312 | 351 | 292 | 328 | 388 | no |
+| 134606 | 477 | 418 | 321 | 319 | 281 | 316 | no |
+| 134642 | 418 | 560 | 492 | 517 | 566 | 389 | no |
+| 134700 | 351 | 349 | 334 | 302 | 381 | 385 | no |
+| 135201 | 32750 | 32625 | 29351 | 22650 | 16937 | 12515 | **yes** |
+| 135223 | 30428 | 32768 | 32768 | 32768 | 31274 | 22960 | **yes** |
+
+A start-of-stream burst is **CONFIRMED in the saved audio** (3 of 10 takes start at or
+near full scale and decay over ~300–400 ms). Its cause (pw-record opening the stream) is
+**UNCONFIRMED**: the recorder log cannot see the device, only the samples.
+
+**Fix (smallest change that works):**
+
+- `assistant/speech/recorder.py`: the first `warmup_ms` (default **300**, config
+  `RECORDER_WARMUP_MS`) of every stream is ignored entirely — no noise-floor calibration,
+  no start detection, no saved audio.
+- Start requires **both** the old capped level **and** `level ≥ noise_floor × 3.16`
+  (10 dB, config `VOICE_MIN_SNR_DB`). Steady fan noise defines the floor, so it can never
+  pass, however loud it is.
+- A perfectly steady level for 8 s (CV < 0.06) is abandoned as noise (`constant_noise`).
+- `assistant/interfaces/voice.py`: any capture with no real speech now returns
+  **"I didn't hear anything."** (timeout, steady noise, max_length without a voice).
+- `assistant/speech/ears.py`: a transcript with no real word is "nothing heard", not
+  "say it again". `UNCLEAR_SPEECH` is kept only for real words with bad confidence.
+- `has_speech_energy()` (fixed mode) now ignores clipped bursts and uses a 10th-percentile
+  floor; `trim_leading_transient()` no longer eats speech in short windows.
+
+**Verified:** 30 s of constant noise at rms 4700 with a loud burst in the first 20 ms →
+no speech, nothing sent to Whisper. The 30 s fan take → timeout, nothing sent. All 8 live
+attempts with a correct transcript are still detected. 17 listening tests pass.
+
+### Files changed so far
+
+- `assistant/config.py`, `assistant/speech/recorder.py`, `assistant/speech/ears.py`,
+  `assistant/interfaces/voice.py`
+- `tests/conftest.py` (new), `tests/test_log_hygiene.py` (new),
+  `tests/test_listening_reliability.py`, `tests/test_voice_auto.py`
+- `docs/PROGRESS.md`
+
+### Open problems
+
+- The two attempts named in the task are pruned; `135201` is the preserved equivalent.
+- The fan/noise rules are proven offline only; the live microphone is still UNVERIFIED.
 
 ### Evidence checked so far
 

@@ -41,8 +41,12 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 320 samples = 20 ms
 FRAME_BYTES = FRAME_SAMPLES * SAMPLE_WIDTH
 
 # The HDA mic emits a short full-scale thump (~250-350 ms) when its PipeWire node wakes
-# from suspend. It is not the user, so it must never count as speech start.
+# from suspend. It is not the user, so it must never count as speech start. Every new
+# pw-record stream also opens with a loud pop that decays over ~300-400 ms (measured in
+# the saved live attempts), so the first RECORDER_WARMUP_MS of the stream is ignored
+# completely: it is not used for the noise floor, start detection or the saved audio.
 WARMUP_MS = 400
+DEFAULT_WARMUP_MS = 300
 # Noise floor measured from the first frames (clipped frames excluded).
 CALIBRATION_MS = 200
 PRE_ROLL_MS = 400  # keep the first word safe
@@ -55,6 +59,14 @@ MAX_START_RMS = 500
 START_NOISE_MULTIPLIER = 2.5
 DEFAULT_NOISE_FLOOR = 60.0
 MIN_NOISE_FLOOR = 40.0
+# A frame is speech only when it is also clearly above the *running* noise floor. Steady
+# room noise (the fan) defines that floor, so it can never pass this test no matter how
+# loud it is. 10 dB = x3.16.
+MIN_SNR_DB = 10.0
+# Perfectly steady loud sound is not a voice. Speech changes level between syllables;
+# after 8 s without any change the capture is abandoned as noise.
+STEADY_SPEECH_LIMIT_MS = 8000
+STEADY_LEVEL_CV = 0.06
 
 # End detection: hysteresis (clearly lower than the start threshold) and relative to the
 # speaker's own level in this recording. A pause of up to ~1.8 s must not end the capture.
@@ -320,8 +332,16 @@ def _is_clipped_burst(level: int, peak: int) -> bool:
     return peak >= CLIP_LEVEL and level * CLIPPED_BURST_CREST > peak
 
 
-def _start_threshold(noise_floor: float) -> float:
-    return max(float(ABS_START_RMS), min(noise_floor * START_NOISE_MULTIPLIER, float(MAX_START_RMS)))
+def _snr_ratio(min_snr_db: float) -> float:
+    return 10.0 ** (float(min_snr_db) / 20.0)
+
+
+def _start_threshold(noise_floor: float, min_snr_db: float = MIN_SNR_DB) -> float:
+    return max(
+        float(ABS_START_RMS),
+        min(noise_floor * START_NOISE_MULTIPLIER, float(MAX_START_RMS)),
+        noise_floor * _snr_ratio(min_snr_db),
+    )
 
 
 def _end_threshold(noise_floor: float, start_threshold: float, speaker_level: float) -> float:
@@ -360,13 +380,18 @@ def record_until_silence(
     status: Callable[[str], None] | None = None,
     stop_on_enter: bool = True,
     enter_pressed: Callable[[], bool] | None = None,
+    warmup_ms: int = DEFAULT_WARMUP_MS,
+    min_snr_db: float = MIN_SNR_DB,
 ) -> Recording:
     """Capture speech until ``silence_ms`` of continuous quiet after it started.
 
-    Start detection uses a low capped threshold (soft starts are heard). End detection
-    uses hysteresis: a frame only counts as silence below a much lower threshold that
-    follows the speaker's own level in this recording, so a short pause never cuts the
-    sentence. Timing is measured in *audio* time, so synthetic tests run at full speed.
+    The first ``warmup_ms`` of a new stream is discarded (the mic/pw-record opening pop).
+    Start detection needs a level that is both above the low capped threshold and at least
+    ``min_snr_db`` above the running noise floor, so steady loud noise (a fan) never
+    starts a recording. End detection uses hysteresis: a frame only counts as silence
+    below a much lower threshold that follows the speaker's own level, so a short pause
+    never cuts the sentence. Timing is measured in *audio* time, so synthetic tests run
+    at full speed.
 
     ``stop_on_enter`` lets a real terminal finish the capture immediately; Enter before
     any speech cancels it. The newline is consumed, never left for the chat prompt.
@@ -377,6 +402,7 @@ def record_until_silence(
     pre_roll_frames = max(1, (pre_roll_ms + min_speech_ms) // FRAME_MS)
     pre_roll: list[array.array] = []
     collected: list[array.array] = []
+    speech_levels: list[int] = []
     calibration: list[int] = []
     trace_levels: list[dict[str, Any]] = []
     bucket: list[tuple[int, int, bool]] = []
@@ -384,13 +410,15 @@ def record_until_silence(
     noise_floor = DEFAULT_NOISE_FLOOR
     calibrated = False
     in_speech = False
+    constant_noise = False
+    steady_checked = False
     speech_run = 0
     silence_run = 0
     speech_frames = 0
     audio_ms = 0
     speech_start_ms = 0
     speaker_level = 0.0
-    start_threshold = _start_threshold(noise_floor)
+    start_threshold = _start_threshold(noise_floor, min_snr_db)
     end_threshold = _end_threshold(noise_floor, start_threshold, speaker_level)
     empty_reads = 0
     carry = b""
@@ -426,16 +454,20 @@ def record_until_silence(
                 peak = frame_peak(frame)
                 burst = _is_clipped_burst(level, peak)
 
+                # Never calibrate or record the stream-opening pop.
+                if audio_ms <= warmup_ms:
+                    continue
+
                 # --- noise floor: 25th percentile of the first 200 ms, bursts ignored ---
                 if not calibrated:
-                    if not burst and level > 0:
-                        calibration.append(level)
-                    if audio_ms >= CALIBRATION_MS:
+                    if not burst:
+                        calibration.append(level)  # digital zeros count as a very quiet room
+                    if audio_ms >= warmup_ms + CALIBRATION_MS:
                         estimate = float(percentile(calibration, 0.25)) if calibration else DEFAULT_NOISE_FLOOR
                         noise_floor = max(MIN_NOISE_FLOOR, estimate)
                         calibrated = True
 
-                start_threshold = _start_threshold(noise_floor)
+                start_threshold = _start_threshold(noise_floor, min_snr_db)
                 end_threshold = _end_threshold(noise_floor, start_threshold, speaker_level)
                 is_speech = level >= start_threshold and not burst
 
@@ -464,6 +496,7 @@ def record_until_silence(
                         break
                 else:
                     collected.append(frame)
+                    speech_levels.append(level)
                     speech_like = level >= start_threshold and not burst
                     if speech_like:
                         silence_run = 0
@@ -484,6 +517,16 @@ def record_until_silence(
                     if audio_ms >= int(max_seconds * 1000):
                         reason = "max_length"
                         break
+                    if not steady_checked and audio_ms - speech_start_ms >= STEADY_SPEECH_LIMIT_MS:
+                        steady_checked = True
+                        mean = sum(speech_levels) / len(speech_levels)
+                        if mean > 0:
+                            variance = sum((item - mean) ** 2 for item in speech_levels) / len(speech_levels)
+                            if math.sqrt(variance) / mean < STEADY_LEVEL_CV:
+                                # A perfectly steady level is a fan/engine, not a voice.
+                                constant_noise = True
+                                reason = "constant_noise"
+                                break
 
                 bucket.append((level, peak, frame_active))
                 if audio_ms - (trace_levels[-1]["t_ms"] if trace_levels else 0) >= LEVEL_TRACE_MS:
@@ -520,6 +563,8 @@ def record_until_silence(
             "noise_floor": round(noise_floor, 1),
             "start": int(start_threshold),
             "end": int(end_threshold),
+            "min_snr_db": round(float(min_snr_db), 1),
+            "warmup_ms": int(warmup_ms),
             "silence_ms": silence_ms,
             "start_timeout_s": start_timeout_s,
             "pre_roll_ms": pre_roll_ms,
@@ -529,8 +574,8 @@ def record_until_silence(
         "levels": trace_levels,
     }
 
-    if not in_speech:
-        debug_pcm = b"".join(samples_to_pcm16(frame) for frame in pre_roll)
+    if not in_speech or constant_noise:
+        debug_pcm = b"" if constant_noise else b"".join(samples_to_pcm16(frame) for frame in pre_roll)
         return Recording(
             pcm=b"",
             saw_speech=False,
@@ -625,14 +670,22 @@ def has_speech_energy(
     pcm: bytes,
     *,
     min_speech_ms: int = MIN_SPEECH_MS,
-    start_skip_ms: int = WARMUP_MS,
+    start_skip_ms: int = 0,
 ) -> bool:
-    """Offline check used by fixed-window mode: does this buffer contain real speech?"""
+    """Offline check used by fixed-window mode: does this buffer contain real speech?
+
+    A clipped wake-up pop is excluded frame by frame (burst rule), so no fixed lead-in is
+    needed. The 10th-percentile floor ignores speech itself.
+    """
     frames = split_frames(pcm)
+    skip = max(0, start_skip_ms // FRAME_MS)
+    frames = frames[skip:]
     if not frames:
         return False
     levels = [frame_rms(frame) for frame in frames]
-    floor = max(MIN_NOISE_FLOOR, float(percentile(levels, 0.25) or DEFAULT_NOISE_FLOOR))
+    # The 10th percentile ignores speech itself, so a window that is mostly voice still
+    # gets a low floor (a short fixed window can contain more speech than silence).
+    floor = max(MIN_NOISE_FLOOR, float(percentile(levels, 0.10) or DEFAULT_NOISE_FLOOR))
     threshold = _start_threshold(floor)
     run = 0
     for index, level in enumerate(levels):
@@ -664,7 +717,14 @@ def trim_leading_transient(pcm: bytes, *, max_ms: int = 700) -> tuple[bytes, int
         return pcm, 0
     limit = min(len(frames), max(1, max_ms // FRAME_MS))
     levels = [frame_rms(frame) for frame in frames]
-    rest_median = median(levels[limit:]) or MIN_NOISE_FLOOR
+
+    # Compare the leading run with what comes *after* it. A very short window used to
+    # give rest_median 0 and then drop every loud frame, including the speech.
+    first_clean = 0
+    while first_clean < limit and frame_peak(frames[first_clean]) >= CLIP_LEVEL:
+        first_clean += 1
+    rest_levels = levels[first_clean:] or levels
+    rest_median = median(rest_levels) or MIN_NOISE_FLOOR
 
     dropped = 0
     for frame in frames[:limit]:

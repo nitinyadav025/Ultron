@@ -84,7 +84,8 @@ def test_pause_inside_a_sentence_does_not_end_the_recording() -> None:
 
 
 def test_stops_after_the_configured_silence() -> None:
-    pcm = _silence(20) + _tone(4000, 25) + _silence(300)
+    # 800 ms of lead-in keeps the first 300 ms of the stream (the warm-up) away from speech.
+    pcm = _silence(40) + _tone(4000, 25) + _silence(300)
 
     recording, _events, _source = _record(pcm, silence_ms=600)
 
@@ -97,7 +98,7 @@ def test_stops_after_the_configured_silence() -> None:
 
 
 def test_hard_cap_stops_a_never_ending_speaker() -> None:
-    pcm = _silence(10) + _tone(4000, 400)  # 8 s of continuous "speech"
+    pcm = _silence(30) + _tone(4000, 400)  # 600 ms lead-in, then 8 s of continuous "speech"
 
     recording, _events, _source = _record(pcm, max_seconds=3.0)
 

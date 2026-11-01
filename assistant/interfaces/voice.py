@@ -262,6 +262,8 @@ class VoiceController:
         self._clipping_warned: bool = False
         self._last_debug_json: Path | None = None
         self._last_debug_trace: dict = {}
+        self.last_record_reason: str = ""
+        self.last_noise_floor: float = 0.0
         self.debug_dir: Path = WORKSPACE_DIR / "voice_debug"
         self.active_tts_engine: str = ""
         self._announced_engine: str = ""
@@ -326,6 +328,8 @@ class VoiceController:
                 start_timeout_s=getattr(self.config, "voice_start_timeout_s", 10.0),
                 silence_ms=getattr(self.config, "voice_silence_ms", 2000),
                 max_seconds=getattr(self.config, "voice_max_seconds", 30.0),
+                warmup_ms=getattr(self.config, "recorder_warmup_ms", 300),
+                min_snr_db=getattr(self.config, "voice_min_snr_db", 10.0),
                 status=self.status_callback,
             )
         except KeyboardInterrupt:
@@ -354,16 +358,19 @@ class VoiceController:
             if recording.reason == "cancelled":
                 self.status_callback("Cancelled.")
                 return False, "cancelled"
-            if recording.reason == "timeout":
-                return False, NOTHING_HEARD
             if recording.reason == "no_audio":
                 return False, "Microphone produced no audio."
-            return False, "I didn't catch that."
+            # Silence, a fan, or a capped recording with no voice: nothing was said.
+            return False, NOTHING_HEARD
         if recording.speech_ms < MIN_SPEECH_MS:
-            return False, "I didn't catch that."
-        return self._finish_recording(recording.pcm, 16000, 1, has_speech=True)
+            return False, NOTHING_HEARD
+        self.last_record_reason = recording.reason
+        noise_floor = float((recording.trace.get("thresholds") or {}).get("noise_floor") or 0.0)
+        return self._finish_recording(recording.pcm, 16000, 1, has_speech=True, noise_floor=noise_floor)
 
-    def _finish_recording(self, pcm: bytes, rate: int, channels: int, *, has_speech: bool) -> tuple[bool, str]:
+    def _finish_recording(
+        self, pcm: bytes, rate: int, channels: int, *, has_speech: bool, noise_floor: float = 0.0
+    ) -> tuple[bool, str]:
         """Drop the mic wake-up thump, normalise on a robust level, save the WAV, log levels."""
         trimmed_pcm, dropped_ms = trim_leading_transient(pcm)
         if dropped_ms:
@@ -392,14 +399,21 @@ class VoiceController:
                 "wpctl get-volume @DEFAULT_AUDIO_SOURCE@",
                 info.clipping_samples,
             )
+        self.last_noise_floor = noise_floor
+        snr_db = 0.0
+        if noise_floor > 0 and info.speech_level > 0:
+            snr_db = 20.0 * math.log10(info.speech_level / noise_floor)
         logger.info(
-            "Mic level: before peak=%d rms=%d -> after peak=%d rms=%d (speech level %d, gain %.2fx%s)",
+            "Mic level: before peak=%d rms=%d -> after peak=%d rms=%d "
+            "(speech level %d, gain %.2fx, noise floor %d, snr %.1f dB%s)",
             info.before_peak,
             info.before_rms,
             info.after_peak,
             info.after_rms,
             info.speech_level,
             info.gain,
+            int(noise_floor),
+            snr_db,
             ", no speech" if not has_speech else "",
         )
         return True, str(self.audio_file)

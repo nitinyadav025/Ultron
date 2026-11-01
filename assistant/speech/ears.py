@@ -31,7 +31,7 @@ logger = logging.getLogger("ultron.ears")
 
 SAMPLE_RATE = 16000
 BEAM_SIZE = 1
-NO_SPEECH = "I didn't catch that"
+NO_SPEECH = "I didn't hear anything."
 UNCLEAR_SPEECH = "I didn't catch that, please say it again."
 _BLANK_TRANSCRIPTS = {"", "[blank_audio]", "(silence)", "[silence]", "[no speech]", "[no_speech]"}
 
@@ -279,6 +279,11 @@ class WhisperEars:
 
         if text.strip().lower() in _BLANK_TRANSCRIPTS:
             logger.info("Ears: VAD/model reported no speech.")
+            return False, NO_SPEECH
+        if reason == "no_real_word":
+            # A capped recording (a fan, room noise) decoded as punctuation only: the user
+            # did not say anything, so this is "nothing heard", not "say it again".
+            logger.info("Ears: no real word in the transcript; treating it as silence.")
             return False, NO_SPEECH
         if reason:
             logger.info("Ears: transcript rejected by the say-it-again guard (%s).", reason)

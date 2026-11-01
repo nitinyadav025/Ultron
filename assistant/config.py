@@ -12,8 +12,10 @@ import yaml
 from dotenv import dotenv_values, load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOGS_DIR = PROJECT_ROOT / "logs"
-WORKSPACE_DIR = PROJECT_ROOT / "workspace"
+# The test suite points these two at a temporary folder so no test writes into the real
+# logs/ or workspace/ (see tests/conftest.py). Normal runs use the project folders.
+LOGS_DIR = Path(os.environ.get("ULTRON_LOGS_DIR") or (PROJECT_ROOT / "logs"))
+WORKSPACE_DIR = Path(os.environ.get("ULTRON_WORKSPACE_DIR") or (PROJECT_ROOT / "workspace"))
 BACKUPS_DIR = PROJECT_ROOT / ".backups"
 MODELS_DIR = PROJECT_ROOT / "models"
 
@@ -85,6 +87,16 @@ class AssistantConfig:
     voice_max_seconds: float = 30.0
     voice_fixed_seconds: float = 5.0
     voice_debug: bool = False
+    recorder_warmup_ms: int = 300
+    voice_min_snr_db: float = 10.0
+    voice_highpass_hz: float = 100.0
+    voice_denoise_strength: float = 0.6
+    wake_word: str = "ultron"
+    wake_aliases: str = ""
+    listen_followup_s: float = 6.0
+    listen_early_check_ms: int = 800
+    listen_after_speech_ms: int = 600
+    listen_log_ignored: bool = False
     daily_token_cap: int = 500000
     save_screenshots: bool = False
     default_mode: str = "auto-safe"
@@ -262,6 +274,19 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     voice_max_seconds = _positive_float("VOICE_MAX_SECONDS", 30.0, 3.0, 120.0)
     voice_fixed_seconds = _positive_float("VOICE_FIXED_SECONDS", 5.0, 1.0, 60.0)
     voice_debug = merged.get("VOICE_DEBUG", "false").lower() == "true"
+    recorder_warmup_ms = _positive_int("RECORDER_WARMUP_MS", 300, 0, 2000)
+    voice_min_snr_db = _positive_float("VOICE_MIN_SNR_DB", 10.0, 0.0, 30.0)
+    voice_highpass_hz = _positive_float("VOICE_HIGHPASS_HZ", 100.0, 0.0, 800.0)
+    try:
+        voice_denoise_strength = max(0.0, min(0.8, float(merged.get("VOICE_DENOISE_STRENGTH") or "0.6")))
+    except (TypeError, ValueError):
+        voice_denoise_strength = 0.6
+    wake_word = (merged.get("WAKE_WORD") or "ultron").strip().lower() or "ultron"
+    wake_aliases = (merged.get("WAKE_ALIASES") or "").strip()
+    listen_followup_s = _positive_float("LISTEN_FOLLOWUP_S", 6.0, 0.0, 60.0)
+    listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 800, 200, 5000)
+    listen_after_speech_ms = _positive_int("LISTEN_AFTER_SPEECH_MS", 600, 0, 5000)
+    listen_log_ignored = merged.get("LISTEN_LOG_IGNORED", "0").strip().lower() in ("1", "true", "yes")
 
     backend = (merged.get("BACKEND") or "local").strip().lower()
     if backend not in ("local", "gemini"):
@@ -330,6 +355,16 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         voice_max_seconds=voice_max_seconds,
         voice_fixed_seconds=voice_fixed_seconds,
         voice_debug=voice_debug,
+        recorder_warmup_ms=recorder_warmup_ms,
+        voice_min_snr_db=voice_min_snr_db,
+        voice_highpass_hz=voice_highpass_hz,
+        voice_denoise_strength=voice_denoise_strength,
+        wake_word=wake_word,
+        wake_aliases=wake_aliases,
+        listen_followup_s=listen_followup_s,
+        listen_early_check_ms=listen_early_check_ms,
+        listen_after_speech_ms=listen_after_speech_ms,
+        listen_log_ignored=listen_log_ignored,
         daily_token_cap=int(merged.get("DAILY_TOKEN_CAP", "500000")),
         save_screenshots=merged.get("SAVE_SCREENSHOTS", "false").lower() == "true",
         default_mode=ast_cfg.get("default_mode", "auto-safe"),
