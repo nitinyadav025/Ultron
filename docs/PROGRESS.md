@@ -12,7 +12,7 @@ or rejected by the "say it again" guard.
 | Part 1 | Evidence from `logs/assistant.log`, `logs/audit.jsonl` and the newest `workspace/voice_input.wav` | DONE (see below) |
 | Part 2 | Robust listening: 2 s end silence, hysteresis, adaptive levels, Enter-to-finish, 10 s start timeout, 400 ms pre-roll, streaming fixed mode, debug captures | DONE (code + tests) |
 | Part 3 | Guard: log scores, reject only on 2 bad signals or 1 extreme, configurable limits | DONE (code + tests) |
-| Part 4 | Offline tests for 9 listening cases | NOT STARTED |
+| Part 4 | Offline tests for 9 listening cases | DONE (10 tests + debug, 150 total pytest) |
 
 ### Part 1 evidence (live session 11:04–11:10, today)
 
@@ -97,6 +97,52 @@ Which causes the evidence supports:
   Old rule rejected it (single signal past `-1.0`).
 - `.env.example`: `WHISPER_MIN_AVG_LOGPROB`, `WHISPER_MAX_NO_SPEECH_PROB`,
   `WHISPER_MAX_COMPRESSION_RATIO`, `WHISPER_EXTREME_*`.
+
+### Part 4 result (offline listening tests)
+
+`tests/test_listening_reliability.py` adds 10 tests: the 9 required cases plus the debug
+capture. Real-clip tests skip with a clear message when `/tmp/cmp2_*.wav` is missing; the
+other cases use synthetic speech-like audio. Measured before/after by loading the old
+recorder module from commit `c509c62` and replaying the same inputs:
+
+| # | Case | Before (old build) | After (new build) |
+|---|------|--------------------|-------------------|
+| 1 | long sentence (clip 4 + noise) | 1 recording, 6.94 s, text correct | 1 recording, 7.98 s, text correct |
+| 2 | `cmp2_1` + 1.5 s + `cmp2_2` | saved 5.54 s, **second sentence cut** | saved 12.08 s, **both sentences** transcribed |
+| 3 | 1.9 s pause inside a sentence | old 1 s default: saved 1.8 s, second half lost | 2 s default: saved 5.0 s, both halves kept |
+| 4 | soft start (0.8 s at 0.2x) | threshold 660 > 600: start delayed to the loud part | detected at 0.5 s (`speech_start_ms=500`), full soft part kept |
+| 5 | low room noise before/after | detected | detected; noise ≈90, start threshold 280 |
+| 6 | 100 ms full-scale click first | ignored (warmup) | ignored (burst rule); speech start ≥ 1.1 s |
+| 7 | noise only for the start timeout | timeout 1 s, nothing sent | timeout 1 s, "I didn't hear anything.", nothing sent |
+| 8 | Enter mid-speech | no Enter support: recorded until source end (6.3 s) | ends on Enter (~2.4 s), keeps speech; hint printed once |
+| 9 | fixed 2.5 s window | old file+SIGINT path could keep only the first word | streams 2.5 s and keeps the last 0.5 s loud content |
+
+Debug captures are also tested: the JSON gets transcript + guard scores, only the newest
+10 attempts are kept, and each attempt writes exactly one INFO line.
+
+## Head state (listening fix)
+
+- Branch `phase5-b1-work`; commits: Part 2 `f4d15e9`, Part 3 `228c1c2`, Part 4 committed
+  after this file. Nothing pushed; the remote and git config were not touched.
+- Latest pytest: `150 passed`. No llama-server running (`ss -ltnp | grep 9931` empty).
+- To catch up: read this file, `git switch phase5-b1-work`, run
+  `.venv/bin/python -m pytest -q`.
+
+## NEXT STEP (listening fix)
+
+Live voice tests (the coding tool cannot speak into the mic). Run these and report the
+result of each:
+
+1. `.venv/bin/python main.py voice-test` — say "open firefox and list my downloads" normally;
+   it must capture the whole sentence and print the transcript. Press Enter to finish early.
+2. `.venv/bin/python main.py chat`, then `/voice`:
+   - "list files in my downloads folder" (pause ~1 s between words) → full transcript and a
+     real item count.
+   - Stay silent for 10 s → "I didn't hear anything." and nothing is sent to Whisper.
+   - Mumble → "I didn't catch that, please say it again." only if the evidence is really bad.
+3. If a command is still cut or missed, keep `workspace/voice_debug/attempt_*.json` and
+   `logs/assistant.log`; the JSON now records thresholds, levels, transcript and guard scores.
+
 
 
 

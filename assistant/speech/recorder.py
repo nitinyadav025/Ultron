@@ -451,6 +451,7 @@ def record_until_silence(
                         # Track slow room-noise drift from quiet frames only.
                         if calibrated and audio_ms > WARMUP_MS and level < start_threshold:
                             noise_floor = max(MIN_NOISE_FLOOR, 0.9 * noise_floor + 0.1 * level)
+                    frame_active = is_speech
                     if speech_run * FRAME_MS >= min_speech_ms:
                         in_speech = True
                         speech_start_ms = max(0, audio_ms - speech_run * FRAME_MS)
@@ -473,6 +474,7 @@ def record_until_silence(
                     else:
                         # In the hysteresis band: assume the word is fading, not finished.
                         silence_run = 0
+                    frame_active = level >= end_threshold
                     if (
                         silence_run * FRAME_MS >= silence_ms
                         and audio_ms - speech_start_ms >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS
@@ -483,7 +485,7 @@ def record_until_silence(
                         reason = "max_length"
                         break
 
-                bucket.append((level, peak, in_speech))
+                bucket.append((level, peak, frame_active))
                 if audio_ms - (trace_levels[-1]["t_ms"] if trace_levels else 0) >= LEVEL_TRACE_MS:
                     trace_levels.append(
                         {
@@ -604,13 +606,18 @@ def record_for_duration(
 
     pcm = b"".join(samples_to_pcm16(frame) for frame in frames)
     notify("Got it.")
+    levels = [
+        {"t_ms": (index + 1) * FRAME_MS, "rms": frame_rms(frame), "peak": frame_peak(frame)}
+        for index, frame in enumerate(frames)
+        if (index + 1) % (LEVEL_TRACE_MS // FRAME_MS) == 0
+    ]
     return Recording(
         pcm=pcm,
         saw_speech=has_speech_energy(pcm),
         reason="fixed",
         duration_ms=audio_ms,
         debug_pcm=pcm,
-        trace={"mode": "fixed", "target_ms": target_ms, "levels": []},
+        trace={"mode": "fixed", "target_ms": target_ms, "levels": levels},
     )
 
 

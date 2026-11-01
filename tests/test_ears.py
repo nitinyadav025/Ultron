@@ -266,6 +266,18 @@ def test_guard_limits_are_configurable(tmp_path: Path) -> None:
     assert ears.transcribe(_write_wav(tmp_path / "cfg2.wav", _tone())) == (False, UNCLEAR_SPEECH)
 
 
+def test_earlier_build_garbled_strings_are_still_rejected() -> None:
+    from assistant.speech.ears import guard_reason
+
+    cases = [
+        ("Turn, board, volume to, cut, triple, percent", _seg("x", avg_logprob=-1.4, compression_ratio=2.7)),
+        ("mute, mute, unmute", _seg("x", avg_logprob=-0.2)),
+        ("List files, see in my down download for 4-fold editor", _seg("x", avg_logprob=-1.4, no_speech_prob=0.7)),
+    ]
+    for text, segment in cases:
+        assert guard_reason(text, [segment]) != "", text
+
+
 def test_high_compression_ratio_is_rejected(tmp_path: Path) -> None:
     ears = _ears_with(tmp_path, [_seg("mute", compression_ratio=3.1)])
     assert ears.transcribe(_write_wav(tmp_path / "cr.wav", _tone())) == (False, UNCLEAR_SPEECH)
