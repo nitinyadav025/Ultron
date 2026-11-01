@@ -1,3 +1,52 @@
+# Ultron progress — Phase 5 Part B3
+
+Last updated: 2026-11-01 (B3 started: hands-free listen failed live)
+
+## Phase 5 B3 (Nov 1) — CURRENT
+
+Work branch: `phase5-b3-work` (from `phase5-b2-work` @ `71c4985`, local only, nothing
+pushed). This section supersedes every section below it.
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | Audit every setting; permissions diff; "close" capability | IN PROGRESS |
+| 2 | Make `listen` visible; fix text leaks of ignored speech | TODO |
+| 3 | Offline replay: why no command after "Yes?" | TODO |
+| 4 | Adaptive warm-up; SNR thresholds from real clips | TODO |
+| 5 | `main.py wake-train` + learned aliases, with safety rule | TODO |
+| 6 | Speak every /voice outcome ("I didn't hear anything.") | TODO |
+| 7 | First-result method without scraping (if usage remains) | TODO |
+| 8 | Docs, full pytest, commits | TODO |
+
+### Live facts reported by the user (UNVERIFIED by me)
+
+- Chat `/voice` + 10 s silence showed "I didn't hear anything." but nothing was spoken.
+- `voice-test` accepted a clip with logged `snr 8.6 dB`, below `VOICE_MIN_SNR_DB=10`.
+- `listen` showed only the start line; five transcripts in two minutes were his attempts
+  at "Ultron": `outron.`, `I'm drawn.`, `I draw`, `I'll do it.`, `I'll turn.`; only
+  `outron.` matched. No transcript after "Yes?".
+- Speech text that did not pass the wake word appeared in `logs/assistant.log`, although
+  the B2 report said it was not logged.
+- `.env` currently contains only these matching keys (read with the approved grep):
+  `WHISPER_MODEL`, `WHISPER_MODEL_DIR`, `WHISPER_HOTWORDS=`, `VOICE_REPLY_MAX_CHARS`,
+  `VOICE_FALLBACK_*`, `MIC_SOURCE_VOLUME=0.21`. **`LISTEN_LOG_IGNORED` is not set**, so
+  the "ignored" line could not appear (default 0).
+- Volumes right now: sink 1.00, source 0.21.
+
+### Files changed so far
+
+- `docs/PROGRESS.md` only.
+
+### Open problems
+
+- None confirmed yet; audit is first.
+
+### NEXT STEP
+
+Finish Part 1 (settings table, permissions proof, close capability).
+
+---
+
 # Ultron progress — Phase 5 Part B2
 
 Last updated: 2026-11-01 (Phase 5 B2 finished; live tests pending)
