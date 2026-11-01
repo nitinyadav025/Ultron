@@ -65,6 +65,7 @@ class AssistantConfig:
     whisper_max_no_speech_prob: float = 0.60
     whisper_max_compression_ratio: float = 2.4
     mic_source_volume: str = ""
+    mic_source_name: str = ""
     piper_voice_dir: Path = MODELS_DIR / "piper"
     piper_voice: str = "en_US-lessac-medium"
     api_key: str = ""
@@ -90,7 +91,9 @@ class AssistantConfig:
     recorder_warmup_ms: int = 300
     voice_min_snr_db: float = 10.0
     voice_highpass_hz: float = 100.0
-    voice_denoise_strength: float = 0.6
+    # OFF by default: the Nov 1 A/B showed no gain and one clean clip got worse.
+    # Set VOICE_DENOISE_STRENGTH=0.6 (max 0.8) to try it.
+    voice_denoise_strength: float = 0.0
     wake_word: str = "ultron"
     wake_aliases: str = ""
     listen_followup_s: float = 6.0
@@ -278,9 +281,9 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     voice_min_snr_db = _positive_float("VOICE_MIN_SNR_DB", 10.0, 0.0, 30.0)
     voice_highpass_hz = _positive_float("VOICE_HIGHPASS_HZ", 100.0, 0.0, 800.0)
     try:
-        voice_denoise_strength = max(0.0, min(0.8, float(merged.get("VOICE_DENOISE_STRENGTH") or "0.6")))
+        voice_denoise_strength = max(0.0, min(0.8, float(merged.get("VOICE_DENOISE_STRENGTH") or "0.0")))
     except (TypeError, ValueError):
-        voice_denoise_strength = 0.6
+        voice_denoise_strength = 0.0
     wake_word = (merged.get("WAKE_WORD") or "ultron").strip().lower() or "ultron"
     wake_aliases = (merged.get("WAKE_ALIASES") or "").strip()
     listen_followup_s = _positive_float("LISTEN_FOLLOWUP_S", 6.0, 0.0, 60.0)
@@ -336,6 +339,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         whisper_max_no_speech_prob=_float_value("WHISPER_MAX_NO_SPEECH_PROB", 0.60),
         whisper_max_compression_ratio=_float_value("WHISPER_MAX_COMPRESSION_RATIO", 2.4),
         mic_source_volume=(merged.get("MIC_SOURCE_VOLUME") or "").strip(),
+        mic_source_name=(merged.get("MIC_SOURCE_NAME") or "").strip(),
         piper_voice_dir=piper_voice_dir,
         piper_voice=piper_voice,
         api_key=merged.get("GEMINI_API_KEY", ""),

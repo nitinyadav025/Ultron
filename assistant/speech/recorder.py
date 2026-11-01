@@ -191,8 +191,9 @@ class Recording:
 class PwRecordSource:
     """Streams 16 kHz mono s16 PCM from ``pw-record`` (or ``arecord``) over a pipe."""
 
-    def __init__(self, rate: int = SAMPLE_RATE) -> None:
+    def __init__(self, rate: int = SAMPLE_RATE, target: str = "") -> None:
         self.rate = rate
+        self.target = (target or "").strip()
         self.error = ""
         self._proc: subprocess.Popen[bytes] | None = None
         self._reader: threading.Thread | None = None
@@ -200,22 +201,24 @@ class PwRecordSource:
         self._cmd: list[str] = []
 
     @staticmethod
-    def command(rate: int = SAMPLE_RATE) -> list[str]:
+    def command(rate: int = SAMPLE_RATE, target: str = "") -> list[str]:
         if shutil.which("pw-record"):
-            return [
+            cmd = [
                 "pw-record",
                 "--raw",
                 "--format=s16",
                 f"--rate={rate}",
                 "--channels=1",
-                "-",
             ]
+            if target:
+                cmd += ["--target", target]
+            return cmd + ["-"]
         if shutil.which("arecord"):
             return ["arecord", "-q", "-f", "S16_LE", "-r", str(rate), "-c", "1", "-t", "raw"]
         raise RecorderError("Neither pw-record (pipewire-utils) nor arecord (alsa-utils) is installed.")
 
     def start(self) -> None:
-        self._cmd = self.command(self.rate)
+        self._cmd = self.command(self.rate, self.target)
         try:
             self._proc = subprocess.Popen(
                 self._cmd,

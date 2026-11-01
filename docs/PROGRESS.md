@@ -12,7 +12,7 @@ tests whose `/tmp/cmp2_*.wav` files are gone; see Part 1).
 |------|------|--------|
 | 1 | Evidence + test hygiene (tmp logs, real-log guard, real clips) | DONE |
 | 2 | Fix Bug A: recorder warm-up, SNR start, "nothing heard" | DONE (code + tests) |
-| 2B | Noise robustness (fan analysis, SNR, denoise A/B, noise plan) | IN PROGRESS |
+| 2B | Noise robustness (fan analysis, SNR, denoise A/B, noise plan) | DONE (code + docs; live UNVERIFIED) |
 | 3 | Hands-free `main.py listen` (wake word, early endpoint, follow-up) | TODO |
 | 4 | Fast path for simple commands | TODO |
 | 5 | Web tools (`web_search`, `open_first_result`) | TODO |
@@ -91,6 +91,61 @@ near full scale and decay over ~300–400 ms). Its cause (pw-record opening the 
 **Verified:** 30 s of constant noise at rms 4700 with a loud burst in the first 20 ms →
 no speech, nothing sent to Whisper. The 30 s fan take → timeout, nothing sent. All 8 live
 attempts with a correct transcript are still detected. 17 listening tests pass.
+
+### Part 2B result — noise robustness (the fan)
+
+**Fan analysis** (`attempt_20261101-135201-414426.wav`, steady stretch 1.5–29.9 s, numpy
+FFT):
+
+| Measure | Value |
+|---|---|
+| RMS | ≈ 393 (int16 scale), ≈ −38 dBFS |
+| Sample peak | 4910 |
+| Energy below 100 Hz | **40.1 %** |
+| 100–300 Hz | 14.1 % |
+| 300–1000 Hz | 23.9 % |
+| above 1000 Hz | 21.9 % |
+| RMS per 100 ms (min / median / max) | 265 / 352 / 1025 |
+
+Meaning: mostly **low-frequency rumble** (fan/air vibration) plus a steady broadband
+hiss. It is steady (median 352, gusts up to 1025), not speech-like modulation. Top FFT
+bins are 1–3 Hz (very slow rumble), so a 100 Hz high-pass removes a large share.
+
+**SNR rule (implemented in Part 2):** a frame is speech only if its level is above the
+capped threshold **and** at least `VOICE_MIN_SNR_DB` (default **10**) above the running
+noise floor. Since steady noise defines that floor, a louder fan raises its own floor and
+can never pass. Measured: the 30 s fan take now ends as `timeout` with no speech; 30 s of
+constant synthetic noise at rms 4700 with a burst in the first 20 ms also gives nothing.
+
+**Denoise A/B** (production `WhisperEars`, 8 real clips with a correct transcript; fan
+mixed at 0/5/10 dB SNR; case/punctuation ignored; exact matches):
+
+| Version | 0 dB | 5 dB | 10 dB |
+|---|---|---|---|
+| clean + fan | 4/8 | 6/8 | 8/8 |
+| clean + fan + denoise | 4/8 | 6/8 | 8/8 |
+
+- Clean clips: **8/8** transcribed exactly.
+- Denoising the clean clips: **7/8** (`Can you unmute the voice please?` became
+  `Can you unmute your voice please?`).
+- Denoise never improved a noisy match and made two sentences shorter
+  (`Stay silent with me.` → `Stay silent.`).
+- Whisper time stayed ≈ 0.37–0.48 s per clip with and without denoise.
+
+**Decision: `VOICE_DENOISE_STRENGTH` ships OFF (default 0).** The rule requires the clean
+clips to stay exact and noisy matches to improve or stay equal; the clean clips got worse,
+so OFF is the honest choice. `assistant/speech/denoise.py` (numpy only, high-pass +
+stationary spectral gate from the quietest frames, max strength 0.8) is kept and tested so
+the user can try `VOICE_DENOISE_STRENGTH=0.6`. This is UNVERIFIED on his live voice.
+
+**Mic source:** `pw-record --help` supports `--target`, so `MIC_SOURCE_NAME` was added
+(blank = default source). The "Mic level:" log line now includes the noise floor and SNR.
+
+**Noise plan:** `docs/NOISE_PLAN.md`. Installed now: RNNoise package **not installed**;
+`/usr/lib/ladspa` and `/usr/lib64/ladspa` **do not exist**. One source exists:
+`Built-in Audio Analog Stereo`, `node.name=alsa_input.pci-0000_00_1f.3.analog-stereo`.
+The exact `sudo dnf install ladspa-noise-suppression-for-voice` + filter-chain steps are
+written there and marked UNVERIFIED (the coding tool ran no sudo/dnf).
 
 ### Files changed so far
 

@@ -30,6 +30,7 @@ from google.genai import types
 from assistant.brain.gemini_client import GeminiAdapter
 from assistant.config import WORKSPACE_DIR, AssistantConfig, clamp_voice_volume
 from assistant.safety.redact import redact_secrets
+from assistant.speech.denoise import denoise_pcm16
 from assistant.speech.ears import EarsError, WhisperEars
 from assistant.speech.mouth import MouthError, PiperMouth, split_sentences
 from assistant.speech.recorder import (
@@ -313,6 +314,11 @@ class VoiceController:
             return self.record_push_to_talk(seconds)
         return self.record_auto()
 
+    def _new_source(self) -> PwRecordSource:
+        """Build the mic source, using MIC_SOURCE_NAME (a PipeWire filter source) if set."""
+        name = (getattr(self.config, "mic_source_name", "") or "").strip()
+        return PwRecordSource(target=name) if name else PwRecordSource()
+
     def record_auto(self) -> tuple[bool, str]:
         """Wait for speech, keep a little pre-roll, stop on silence, and never send silence to Whisper."""
         self.stop_speaking()
@@ -321,7 +327,7 @@ class VoiceController:
         if self.audio_file.exists():
             self.audio_file.unlink(missing_ok=True)
 
-        source = PwRecordSource()
+        source = self._new_source()
         try:
             recording = record_until_silence(
                 source,
@@ -376,6 +382,12 @@ class VoiceController:
         if dropped_ms:
             logger.info("Dropped %d ms of mic wake-up thump at the start of the recording.", dropped_ms)
         pcm = trimmed_pcm
+
+        strength = float(getattr(self.config, "voice_denoise_strength", 0.0) or 0.0)
+        if has_speech and strength > 0:
+            highpass_hz = float(getattr(self.config, "voice_highpass_hz", 100.0) or 0.0)
+            pcm = denoise_pcm16(pcm, strength=strength, highpass_hz=highpass_hz, rate=rate)
+            logger.info("Denoise: high-pass %.0f Hz + gate strength %.2f", highpass_hz, strength)
 
         before_peak, before_rms = measure_peak_rms(pcm)
         self.last_peak_before, self.last_rms_before = before_peak, before_rms
@@ -518,7 +530,7 @@ class VoiceController:
 
         last_fail = "Recording failed."
         for attempt in (1, 2):
-            source = PwRecordSource()
+            source = self._new_source()
             try:
                 recording = record_for_duration(
                     source,
