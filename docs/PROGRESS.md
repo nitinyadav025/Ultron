@@ -306,13 +306,13 @@ browser lands on the first result is UNVERIFIED** (only the user can try it).
 
 - Branch `phase5-b3-work` (from `phase5-b2-work` @ `71c4985`), local only, nothing pushed.
 - Commits: `763628d` checkpoint, `4ce734e` part 1, `0e9bb74` part 2, `a7819ed` parts 3–4,
-  `91615b0` parts 5–7, and the final docs commit after it.
-- Latest pytest: **299 passed, 0 skipped**. No llama-server (`ss -ltnp | grep 9931` empty).
+  `91615b0` parts 5–7, `dee1123` listen normaliser, and the final docs commit after it.
+- Latest pytest: **300 passed, 0 skipped**. No llama-server (`ss -ltnp | grep 9931` empty).
 - Working tree clean; `.env` untouched and not committed; nothing pushed.
 
 ### Part 8 result
 
-Full `.venv/bin/python -m pytest -q` → **299 passed, 0 skipped**. No llama-server on 9931.
+Full `.venv/bin/python -m pytest -q` → **300 passed, 0 skipped**. No llama-server on 9931.
 Every file is committed locally on `phase5-b3-work`; nothing was pushed.
 
 ### NEXT STEP — live tests (the coding tool cannot use the mic/speakers)
