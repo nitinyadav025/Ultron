@@ -13,6 +13,14 @@ from assistant.tools.registry import tool
 # Spoken folder names: "my Downloads folder", "documents", "desktop".
 _SPOKEN_PREFIX = re.compile(r"(?i)^(?:my|the|in|from)\s+")
 _SPOKEN_SUFFIX = re.compile(r"(?i)\s+(?:folder|directory|dir)$")
+# Whisper often drops the plural: "download" must still mean ~/Downloads.
+_SPOKEN_ALIASES = {
+    "download": "Downloads",
+    "downloads": "Downloads",
+    "document": "Documents",
+    "documents": "Documents",
+    "desktop": "Desktop",
+}
 
 
 def resolve_user_directory(directory: str) -> Path:
@@ -23,22 +31,19 @@ def resolve_user_directory(directory: str) -> Path:
     PermissionGate decision (home is inside ALLOWED_ROOTS) is unchanged.
     """
     cleaned = (directory or ".").strip().strip('"').strip("'")
-    cleaned = _SPOKEN_PREFIX.sub("", cleaned)
+    for _ in range(2):  # "in my downloads folder" has two leading words to drop
+        cleaned = _SPOKEN_PREFIX.sub("", cleaned)
     cleaned = _SPOKEN_SUFFIX.sub("", cleaned).strip() or "."
+    lowered = cleaned.lower()
+    if lowered in ("home", "~"):
+        return Path.home()
     path = Path(cleaned).expanduser()
     if path.is_absolute() or cleaned.startswith(".") or "/" in cleaned:
         return path
-    candidate = Path.home() / path
-    return candidate if candidate.exists() else path
+    return Path.home() / _SPOKEN_ALIASES.get(lowered, path.name)
 
 
-@tool(risk_level="safe", read_only=True)
-def list_files(directory: str = ".", pattern: str = "*", recursive: bool = False) -> dict[str, Any]:
-    """List a folder's files and folders."""
-    target = resolve_user_directory(directory).resolve()
-    if not target.exists() or not target.is_dir():
-        return {"ok": False, "error": f"Directory not found: {target}"}
-
+def _collect_entries(target: Path, pattern: str, recursive: bool) -> list[dict[str, Any]]:
     iterator = target.rglob(pattern) if recursive else target.glob(pattern)
     items: list[dict[str, Any]] = []
     for entry in sorted(iterator, key=lambda p: (not p.is_dir(), p.name.lower())):
@@ -59,6 +64,21 @@ def list_files(directory: str = ".", pattern: str = "*", recursive: bool = False
             continue
         if len(items) >= 100:
             break
+    return items
+
+
+@tool(risk_level="safe", read_only=True)
+def list_files(directory: str = ".", pattern: str = "*", recursive: bool = False) -> dict[str, Any]:
+    """List a folder's files and folders."""
+    target = resolve_user_directory(directory).resolve()
+    if not target.exists() or not target.is_dir():
+        return {"ok": False, "error": f"Directory not found: {target}"}
+
+    items = _collect_entries(target, pattern, recursive)
+    # A pattern the local model invented ("*down*" for a garbled "download") used to make
+    # a full folder look empty. If the filter hides everything, list the folder itself.
+    if not items and pattern not in ("*", "", None):
+        items = _collect_entries(target, "*", False)
     return {"ok": True, "directory": str(target), "count": len(items), "items": items}
 
 

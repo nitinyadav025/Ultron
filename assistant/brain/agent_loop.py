@@ -16,7 +16,13 @@ from assistant.brain.local_client import LocalAdapter
 from assistant.brain.prompts import build_system_prompt
 from assistant.brain.reply_style import short_plain_reply
 from assistant.brain.tool_output import compact_tool_result
-from assistant.brain.tool_replies import code_reply_for_tool, fallback_reply, is_lead_in
+from assistant.brain.tool_replies import (
+    FOLDER_NOT_FOUND_REPLY,
+    claims_an_empty_folder,
+    code_reply_for_tool,
+    fallback_reply,
+    is_lead_in,
+)
 from assistant.config import AssistantConfig
 from assistant.safety.killswitch import WatchdogMonitor
 from assistant.safety.redact import redact_secrets
@@ -94,6 +100,10 @@ class AgentLoop:
             if built:
                 return built
         shaped = short_plain_reply(text, max_chars=self.config.voice_reply_max_chars)
+        # "There are no items..." is only allowed when code itself built it from a real,
+        # empty listing (handled above). A model worded claim here is never backed by data.
+        if claims_an_empty_folder(shaped):
+            return FOLDER_NOT_FOUND_REPLY
         if last_tool is not None and is_lead_in(shaped):
             return fallback_reply(last_tool[0])
         return shaped
@@ -202,8 +212,9 @@ class AgentLoop:
                     fn_args = dict(call.args or {})
                     self.step_callback(f"[Step {steps}/{self.config.max_steps}] Running {fn_name}...")
                     res = self.registry.execute(fn_name, fn_args, user_input, dry_run, self._preview(fn_name, fn_args))
-                    if res.get("ok", False):
-                        last_tool = (fn_name, res)
+                    # Remember every call, including failures: a failed list must never be
+                    # answered with the model's invented "no items" sentence.
+                    last_tool = (fn_name, res)
                     if not res.get("ok", False):
                         if res.get("human_only_instruction"):
                             human_notes.append(str(res["human_only_instruction"]))

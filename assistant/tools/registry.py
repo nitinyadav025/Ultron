@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, get_type_hints
@@ -13,6 +14,9 @@ from google.genai import types
 from assistant.config import AssistantConfig
 from assistant.safety.audit import log_audit_event
 from assistant.safety.permissions import PermissionGate
+from assistant.safety.redact import redact_secrets
+
+logger = logging.getLogger("ultron.tools")
 
 
 @dataclass
@@ -173,6 +177,12 @@ class ToolRegistry:
         action_preview: str | None = None,
     ) -> dict[str, Any]:
         start = time.perf_counter()
+        # One INFO line per call so a live bug can be traced to the exact arguments.
+        logger.info(
+            "Tool call: %s(%s)",
+            tool_name,
+            redact_secrets(json.dumps(arguments, ensure_ascii=False, default=str)),
+        )
         spec = self._tools.get(tool_name)
         if spec is None:
             return {"ok": False, "error": f"Unknown tool '{tool_name}'."}

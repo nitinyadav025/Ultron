@@ -21,9 +21,9 @@ Work branch: `phase5-b1-work`. Ignore the old NEXT STEP below; this section supe
 |------|------|--------|
 | Part 1 | Diagnose the garbled transcript: A/B the six /tmp/cmp2_*.wav files through plain Whisper, production ears, production normalisation, and record_until_silence | DONE (see findings below) |
 | Part 2 | Fix the root cause only + regression test, keep base.en | DONE (code + tests, commit pending) |
-| Part 3 | "Say it again" confidence guard + set_volume number guard | NOT STARTED |
-| Part 4 | list_files bug: log tool args, never claim "no items" wrongly, robust spoken folder names | NOT STARTED |
-| Part 5 | PyAV safety: no file paths to WhisperModel.transcribe, add guard test | NOT STARTED |
+| Part 3 | "Say it again" confidence guard + set_volume number guard | DONE (commit 434fcac) |
+| Part 4 | list_files bug: log tool args, never claim "no items" wrongly, robust spoken folder names | DONE (code + tests, commit pending) |
+| Part 5 | PyAV safety: no file paths to WhisperModel.transcribe, add guard test | DONE (code + tests, commit pending) |
 
 ### Part 1 findings (diagnosis only)
 
@@ -63,14 +63,68 @@ Work branch: `phase5-b1-work`. Ignore the old NEXT STEP below; this section supe
   correct (`30%` == `thirty percent`, `download` == `downloads`); the hotword fragments are
   gone. 113 tests passed.
 
+### Part 3 result ("say it again" + set_volume number guard)
+
+- `assistant/speech/ears.py`: `transcript_is_unreliable()` rejects a transcript when
+  `avg_logprob < -1.0`, `no_speech_prob > 0.60`, `compression_ratio > 2.4`, there is no real
+  word, or one word is at least half of a short transcript (repetition loop). The six good
+  clips measured -0.14..-0.65 / 0.01..0.07 / 0.38..0.81, so they pass with a wide margin.
+  Rejected transcripts return `UNCLEAR_SPEECH` and never reach the LLM or a tool.
+- `assistant/interfaces/cli.py`: on a voice turn the CLI now speaks the
+  "I didn't catch that, please say it again." message.
+- `assistant/tools/volume.py`: `numbers_in_text()`/`percent_is_mentioned()` read digits and
+  English number words (incl. "fifty-five", "one hundred").
+- `assistant/brain/agent_loop.py`: `set_volume` runs only if its exact percent appears in
+  the transcript; otherwise it returns "What volume should I set? Say a number from 0 to 100."
+  before executing any tool and without a second LLM turn.
+
+### Part 4 result (list_files false "no items")
+
+- Real live cause (from `logs/audit.jsonl` line 243): request
+  "List files, see in my down download for 4-fold editor", arguments
+  `{"directory": "~/Downloads", "pattern": "*down*"}`. The folder was fine; the model's
+  invented wildcard matched 0 of 43 items, so the tool returned `count: 0`.
+- `assistant/tools/files.py`: a non-default pattern that hides everything now falls back to
+  listing the folder itself; spoken aliases map download/downloads/documents/desktop/home and
+  "in my … folder"; bare names always resolve under `$HOME`.
+- `assistant/brain/tool_replies.py`: a failed list_files always speaks
+  "I couldn't find that folder."; "There are no items…" is only possible from a real empty
+  listing; `claims_an_empty_folder()` catches a model-worded empty claim.
+- `assistant/brain/agent_loop.py`: `last_tool` now records failed calls too, so the code reply
+  replaces invented wording.
+- `assistant/tools/registry.py`: one INFO log line per tool call with name + redacted args.
+
+### Part 5 result (PyAV safety)
+
+- `tests/test_ears.py::test_whisper_never_receives_a_file_path_or_file_object` asserts the
+  model gets a contiguous float32 1-D numpy array, never a `str`/`Path`. Production already
+  converts with `load_wav_16k_mono()`; no file path or file object reaches `transcribe()`.
+- Nothing was installed, upgraded or downgraded.
+
+### Final A/B (production `WhisperEars.transcribe`, after all fixes)
+
+| File | Transcript | Semantic match |
+|------|------------|----------------|
+| cmp2_0 | Turn volume to 30%. | yes |
+| cmp2_1 | list files in my download folder | yes |
+| cmp2_2 | Open Firefox. | yes |
+| cmp2_3 | Mute. | yes |
+| cmp2_4 | Open Firefox and list my downloads. | yes |
+| cmp2_5 | Turn the volume up | yes |
+
+Exact text ignoring case/punctuation is 4/6 only because Whisper writes `30%` instead of
+`thirty percent` and drops the plural in `download`; both are accepted as the same command.
+
+
 
 ## Head state
 
 - Local branch for this work: `phase5-b1-work` (from `main` @ 9d95911).
-- Task 4 commit: `96287de` "Phase 5 B1 Task 4: finish list_files reply and lead-in guard tests".
-- Working tree is clean after `2b7cd20`; nothing was pushed and the remote was not touched.
+- Follow-up commits (local only, nothing pushed): Part 2 `1fca0a2`, Part 3 `434fcac`,
+  Part 4 and Part 5 committed after this file was written.
+- Working tree is clean after the last follow-up commit; the remote was never touched.
 - To catch up: read this file, then `git switch phase5-b1-work` and run
-  `.venv/bin/python -m pytest -q` (expect 114 passed before the follow-up fixes).
+  `.venv/bin/python -m pytest -q` (expect 132 passed).
 
 ## Task 4 result
 
@@ -98,16 +152,31 @@ Work branch: `phase5-b1-work`. Ignore the old NEXT STEP below; this section supe
 
 ## Latest pytest
 
-`114 passed` (0 failed) before the follow-up fixes. Before that session: 110 passed.
+`132 passed` (0 failed) after the follow-up fixes. Before this session: 114 passed.
 
 ## Open problems
 
 - Tasks 1-4 have not been verified with a real microphone/speakers yet.
 - No code problems found in Tasks 1-3; nothing was changed there.
 - No llama-server is running now (`ss -ltnp | grep 9931` shows no listener).
+- Report only: normalising a quiet clip can boost up to 3x and hit full scale (cmp2_3
+  "mute" reached peak 32768 after gain 3.00) without hurting recognition. Live mic peaks are
+  already near clipping (24k-32k); lowering the mic input is still worth doing.
+- Report only: PyAV 19 breaks faster-whisper 1.2.1 when a file path is passed. Nothing was
+  pinned or downgraded; the user decides whether to pin av<19.
 
 ## NEXT STEP - how to resume
 
-Follow Part 1 in the follow-up table above: run the scratch A/B over the six
-`/tmp/cmp2_*.wav` files, then report which stage breaks accuracy. Do not run voice tests
-from the coding tool. Do not start Phase 5 Part C without the user's approval.
+Parts 1-5 are done. The next step is the user's live voice test (do not run interactive
+voice commands from the coding tool), then review the follow-up commits:
+
+1. `.venv/bin/python main.py voice-test` — say "list files in my downloads folder"; the
+   transcript must have no comma-separated word-list fragments.
+2. `.venv/bin/python main.py chat`, then `/voice`:
+   - "list files in my Downloads folder" → "There are N items in your Downloads folder."
+   - "list files in a folder that does not exist" → "I couldn't find that folder."
+   - "set the volume" (no number) → "What volume should I set? Say a number from 0 to 100."
+   - "turn volume to thirty percent" → the volume tool runs.
+3. Mumble or say a partial sentence and confirm "I didn't catch that, please say it again."
+   is spoken and no tool runs.
+4. Do not start Phase 5 Part C without the user's approval.

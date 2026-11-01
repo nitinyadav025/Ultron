@@ -170,7 +170,7 @@ def test_list_files_reply_uses_the_real_count_and_folder() -> None:
 
 
 def test_list_files_reply_is_skipped_for_a_failed_result() -> None:
-    assert list_files_reply({"ok": False, "error": "Directory not found"}) is None
+    assert list_files_reply({"ok": False, "error": "Directory not found"}) == "I couldn't find that folder."
 
 
 def test_bad_downloads_lead_in_is_replaced_by_a_code_reply() -> None:
