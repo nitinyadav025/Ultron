@@ -16,7 +16,7 @@ pushed). This section supersedes every section below it.
 | 5 | `main.py wake-train` + learned aliases, with safety rule | DONE (not run on his voice) |
 | 6 | Speak every /voice outcome ("I didn't hear anything.") | DONE |
 | 7 | First-result method without scraping | DONE |
-| 8 | Docs, full pytest, commits | TODO |
+| 8 | Docs, full pytest, commits | DONE |
 
 ### Live facts reported by the user (UNVERIFIED by me)
 
@@ -303,9 +303,15 @@ browser lands on the first result is UNVERIFIED** (only the user can try it).
 ### Head state (B3)
 
 - Branch `phase5-b3-work` (from `phase5-b2-work` @ `71c4985`), local only, nothing pushed.
-- Commits: `763628d` checkpoint, `4ce734e` part 1, `0e9bb74` part 2, `a7819ed` parts 3–4.
+- Commits: `763628d` checkpoint, `4ce734e` part 1, `0e9bb74` part 2, `a7819ed` parts 3–4,
+  `91615b0` parts 5–7, and the final docs commit after it.
 - Latest pytest: **299 passed, 0 skipped**. No llama-server (`ss -ltnp | grep 9931` empty).
-- Working tree clean; `.env` untouched and not committed.
+- Working tree clean; `.env` untouched and not committed; nothing pushed.
+
+### Part 8 result
+
+Full `.venv/bin/python -m pytest -q` → **299 passed, 0 skipped**. No llama-server on 9931.
+Every file is committed locally on `phase5-b3-work`; nothing was pushed.
 
 ### NEXT STEP — live tests (the coding tool cannot use the mic/speakers)
 
