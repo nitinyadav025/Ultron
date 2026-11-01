@@ -49,10 +49,32 @@ def test_final_text_reply_and_sampling_params() -> None:
     assert body["messages"][1] == {"role": "user", "content": "hi"}
     assert body["temperature"] == 0.1
     assert body["top_k"] == 50
-    assert body["repeat_penalty"] == 1.1
+    assert body["repeat_penalty"] == 1.15
+    assert body["stop"] == ["<|im_end|>", "<|im_start|>", "<|endoftext|>", "<|startoftext|>"]
     assert body["stream"] is False
     assert stats.total_tokens == 14
     assert stats.daily_cap == 0  # no Gemini-style token cap on the local backend
+
+
+def test_special_tokens_and_repeated_sentences_are_cleaned() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_completion(
+                {
+                    "role": "assistant",
+                    "content": "I am Ultron.< name is Ultron, the voice assistant. Done. Done.",
+                }
+            ),
+        )
+
+    adapter = _adapter(handler)
+    resp, _ = adapter.generate_turn(_user_turn("what is your name?"), "sys")
+
+    assert "<" not in resp.text
+    assert "Done. Done." not in resp.text
+    assert resp.text.startswith("I am Ultron. name is Ultron")
+    assert resp.text.endswith("Done.")
 
 
 def test_tool_call_parsing_round_trip() -> None:

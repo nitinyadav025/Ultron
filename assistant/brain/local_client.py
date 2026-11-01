@@ -17,6 +17,7 @@ import httpx
 from google.genai import types
 
 from assistant.brain.gemini_client import TokenUsageStats
+from assistant.brain.reply_style import clean_model_text
 from assistant.config import AssistantConfig
 from assistant.safety.redact import redact_secrets
 
@@ -26,6 +27,11 @@ JSON_CORRECTION_PROMPT = (
     "ERROR: the previous tool call arguments were not valid JSON. "
     "Repeat the same tool call with arguments as a valid JSON object string."
 )
+
+# LFM3's chat template (confirmed in the GGUF): stop before any control token leaks
+# into the visible answer. llama-server itself keeps its launch flags unchanged.
+LOCAL_STOP_SEQUENCES = ("<|im_end|>", "<|im_start|>", "<|endoftext|>", "<|startoftext|>")
+REPEAT_PENALTY = 1.15
 
 
 class _MalformedToolJSON(Exception):
@@ -159,7 +165,8 @@ class LocalAdapter:
             "messages": messages,
             "temperature": 0.1,
             "top_k": 50,
-            "repeat_penalty": 1.1,
+            "repeat_penalty": REPEAT_PENALTY,
+            "stop": list(LOCAL_STOP_SEQUENCES),
             "stream": False,
             "max_tokens": max_tokens,
         }
@@ -177,7 +184,7 @@ class LocalAdapter:
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("Local LLM server returned an unexpected response shape.") from exc
 
-        text = str(message.get("content") or "").strip()
+        text = clean_model_text(str(message.get("content") or "").strip())
         usage = data.get("usage") or {}
         calls: list[dict[str, Any]] = []
         for index, raw_call in enumerate(message.get("tool_calls") or []):

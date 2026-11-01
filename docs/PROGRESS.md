@@ -14,7 +14,7 @@ template fragments, and the over-loosened guard.
 | Part 2 | Optional `MIC_SOURCE_VOLUME` applied at chat / voice-test start | DONE (code + tests; `.env` set to 0.21) |
 | Part 3 | Slash commands never reach the LLM; raw-line logging | DONE (code + tests) |
 | Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | DONE (code + tests) |
-| Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | NOT STARTED |
+| Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | DONE (code + tests) |
 | Part 6 | Restore the strict one-signal guard | NOT STARTED |
 | Part 7 | Full pytest, docs, commits | NOT STARTED |
 
@@ -108,6 +108,22 @@ template fragments, and the over-loosened guard.
 - Exact replies: "mute" → "Audio is now muted."; "unmute" → "Audio is now unmuted.";
   "mute unmute" → "Do you want to mute or unmute?"; "stay silent for 10 seconds" →
   "I can mute the audio, but I can't unmute it automatically after a time. Should I mute it now?"
+
+### Part 5 result (garbled chat replies)
+
+- The LFM3 GGUF uses `<|im_start|>`, `<|im_end|>`, `<|endoftext|>`, `<|startoftext|>`.
+  `assistant/brain/local_client.py` now sends `stop` with those four sequences and raises
+  `repeat_penalty` to 1.15. llama-server launch flags are untouched.
+- `assistant/brain/reply_style.py`: `clean_model_text()` removes `<|...|>` tokens,
+  unterminated `<|...`, `</s>`/`<s>`, and stray `<` fragments, collapses an immediately
+  repeated sentence, and is applied in `local_client._extract` and `plain_text`.
+- Why the live reply looked broken: the model emitted 29 completion tokens (not a max-token
+  cut), but `Ultron.< name` had no space after the period, so the sentence splitter kept both
+  sentences. Removing the `<` lets the existing one-sentence shaper drop the repetition.
+- Exact cleaned reply for the live bad string:
+  "I am Fedora GNOME voice assistant, Ultron."
+- Tests: `tests/test_reply_style.py`, `tests/test_local_client.py` (stop sequences, penalty,
+  exact bad name string, special tokens, repeated sentence).
 
 
 ## Listening fix (Nov 1)

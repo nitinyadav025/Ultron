@@ -10,7 +10,7 @@ from assistant.brain.agent_loop import LOCAL_MAX_TOKENS_FIRST, LOCAL_MAX_TOKENS_
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.brain.local_client import LocalUsageMeter
 from assistant.brain.prompts import build_system_prompt
-from assistant.brain.reply_style import plain_text, short_plain_reply
+from assistant.brain.reply_style import clean_model_text, plain_text, short_plain_reply
 from assistant.brain.tool_output import compact_tool_result
 from assistant.brain.tool_replies import (
     code_reply_for_tool,
@@ -39,6 +39,25 @@ def _listing(count: int = 60) -> dict[str, Any]:
         for i in range(count)
     ]
     return {"ok": True, "directory": "/home/nitin/Downloads", "count": count, "items": items}
+
+
+BAD_NAME_REPLY = (
+    "I am Fedora GNOME voice assistant, Ultron."
+    "< name is Ultron, the Fedora GNOME voice assistant."
+)
+
+
+def test_garbled_name_reply_loses_the_stray_fragment_and_repetition() -> None:
+    cleaned = clean_model_text(BAD_NAME_REPLY)
+
+    assert "<" not in cleaned
+    assert short_plain_reply(BAD_NAME_REPLY) == "I am Fedora GNOME voice assistant, Ultron."
+
+
+def test_special_tokens_and_immediately_repeated_sentences_are_removed() -> None:
+    assert clean_model_text("Hello <|im_end|> world") == "Hello world"
+    assert clean_model_text("Use </s> tags") == "Use tags"
+    assert clean_model_text("Done. Done.") == "Done."
 
 
 def test_plain_text_strips_markdown_lists_and_sizes() -> None:

@@ -12,6 +12,34 @@ _TRAILING_FILLER = re.compile(
     r"(?i)[,;: ]+(?:and|or|plus|with|of|the|a|an|such as|like|including|containing|which|that)\s*$"
 )
 _TERMINAL = (".", "!", "?")
+_SPECIAL_TOKEN = re.compile(r"<\|[^>\n]*\|>")
+_UNTERMINATED_TOKEN = re.compile(r"<\|[A-Za-z0-9_]*")
+_LLAMA_TAG = re.compile(r"</?s>")
+_STRAY_ANGLE = re.compile(r"(?<!\w)<(?=\s|[A-Za-z])")
+
+
+def _sentence_key(sentence: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", sentence.lower()).strip()
+
+
+def clean_model_text(text: str) -> str:
+    """Remove stray special-token fragments and collapse an immediately repeated sentence."""
+    if not text:
+        return ""
+    cleaned = _SPECIAL_TOKEN.sub(" ", text)
+    cleaned = _UNTERMINATED_TOKEN.sub(" ", cleaned)
+    cleaned = _LLAMA_TAG.sub(" ", cleaned)
+    cleaned = _STRAY_ANGLE.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    kept: list[str] = []
+    for sentence in sentences:
+        key = _sentence_key(sentence)
+        if kept and key and key == _sentence_key(kept[-1]):
+            continue
+        kept.append(sentence)
+    return " ".join(kept).strip()
 
 
 def plain_text(text: str) -> str:
@@ -31,7 +59,7 @@ def plain_text(text: str) -> str:
     cleaned = re.sub(r"(?:~|\.{0,2}/)[A-Za-z0-9_\-./]*", " ", cleaned)
     cleaned = _SIZE_PATTERN.sub(" ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;:-")
-    return cleaned
+    return clean_model_text(cleaned)
 
 
 def short_plain_reply(text: str, max_words: int = 20, max_chars: int = 120) -> str:
