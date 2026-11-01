@@ -13,8 +13,10 @@ from assistant.config import load_config
 from assistant.safety.killswitch import WatchdogMonitor
 from assistant.safety.permissions import PermissionGate
 from assistant.tools.registry import ToolRegistry, tool
+from assistant.tools.volume import WHAT_VOLUME_REPLY
 
 EXEC_COUNT = {"n": 0}
+SET_VOLUME_COUNT = {"n": 0}
 
 
 @tool(risk_level="safe", read_only=False)
@@ -22,6 +24,13 @@ def dummy_ping(times: int = 1) -> dict:
     """Test-only tool that counts executions."""
     EXEC_COUNT["n"] += 1
     return {"ok": True, "times": times}
+
+
+@tool(risk_level="safe", read_only=False, name="set_volume")
+def dummy_set_volume(percent: int = 50) -> dict:
+    """Test-only absolute volume tool that counts executions."""
+    SET_VOLUME_COUNT["n"] += 1
+    return {"ok": True, "requested_percent": percent}
 
 
 class FakeLocalAdapter:
@@ -85,3 +94,66 @@ def test_local_backend_caps_tool_rounds_at_three() -> None:
     assert adapter.calls == 4
     # Local generation stays short: 128 tokens for the first call, 96 after a tool ran.
     assert adapter.max_output_tokens_seen == [128, 96, 96, 96]
+
+
+class SetVolumeAdapter:
+    """Calls set_volume(30) once, then answers with text."""
+
+    is_local = True
+    usage_meter = LocalUsageMeter()
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def select_model(self, role: str = "main") -> str:
+        return "fake-local"
+
+    def generate_turn(
+        self,
+        contents: object,
+        system_instruction: str,
+        tools: list[dict[str, Any]] | None = None,
+        role: str = "main",
+        thinking_level: str | None = None,
+        max_retries: int = 1,
+        max_output_tokens: int | None = None,
+    ) -> tuple[types.GenerateContentResponse, TokenUsageStats]:
+        self.calls += 1
+        if self.calls == 1:
+            content = types.Content(
+                role="model",
+                parts=[types.Part(function_call=types.FunctionCall(name="set_volume", args={"percent": 30}, id="v1"))],
+            )
+        else:
+            content = types.Content(role="model", parts=[types.Part.from_text(text="Done.")])
+        return types.GenerateContentResponse(candidates=[types.Candidate(content=content)]), TokenUsageStats()
+
+
+def _set_volume_loop(adapter: SetVolumeAdapter) -> AgentLoop:
+    cfg = load_config()
+    cfg.backend = "local"
+    gate = PermissionGate(config=cfg, mode="auto-safe", confirm_callback=lambda _d, _t: "yes")
+    registry = ToolRegistry(config=cfg, gate=gate)
+    registry.register(dummy_set_volume)
+    watchdog = WatchdogMonitor(cfg.max_steps, cfg.wall_clock_timeout_sec, cfg.idle_standdown_sec)
+    return AgentLoop(cfg, adapter, registry, watchdog)  # type: ignore[arg-type]
+
+
+def test_set_volume_without_a_spoken_number_runs_no_tool() -> None:
+    SET_VOLUME_COUNT["n"] = 0
+    adapter = SetVolumeAdapter()
+
+    result = _set_volume_loop(adapter).run_task("turn the volume up")
+
+    assert result.reply == WHAT_VOLUME_REPLY
+    assert SET_VOLUME_COUNT["n"] == 0  # nothing ran
+    assert adapter.calls == 1  # no second LLM turn either
+
+
+def test_set_volume_with_a_spoken_number_runs_the_tool() -> None:
+    SET_VOLUME_COUNT["n"] = 0
+    adapter = SetVolumeAdapter()
+
+    _set_volume_loop(adapter).run_task("turn volume to thirty percent")
+
+    assert SET_VOLUME_COUNT["n"] == 1

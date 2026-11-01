@@ -12,7 +12,14 @@ import pytest
 
 from assistant.config import load_config
 from assistant.interfaces.voice import VoiceController
-from assistant.speech.ears import NO_SPEECH, EarsError, WhisperEars, load_wav_16k_mono
+from assistant.speech.ears import (
+    NO_SPEECH,
+    UNCLEAR_SPEECH,
+    EarsError,
+    WhisperEars,
+    load_wav_16k_mono,
+    transcript_is_unreliable,
+)
 
 
 def _write_wav(path: Path, pcm: bytes, rate: int = 16000, channels: int = 1) -> Path:
@@ -157,6 +164,76 @@ def test_silence_and_blank_tokens_are_not_speech(tmp_path: Path) -> None:
 def test_missing_audio_file_is_reported(tmp_path: Path) -> None:
     ears = WhisperEars(_cfg(tmp_path), model_factory=lambda _d: FakeModel([]))
     assert ears.transcribe(tmp_path / "nope.wav") == (False, "Audio file missing.")
+
+
+# --------------------------------------------------------------------------------------
+# "Say it again" guard (faster-whisper confidence + plain text rules)
+# --------------------------------------------------------------------------------------
+
+
+def _seg(text: str, avg_logprob: float = -0.2, no_speech_prob: float = 0.05, compression_ratio: float = 0.7) -> Any:
+    return SimpleNamespace(
+        text=text,
+        avg_logprob=avg_logprob,
+        no_speech_prob=no_speech_prob,
+        compression_ratio=compression_ratio,
+    )
+
+
+class ConfidenceModel:
+    def __init__(self, rows: list[Any]) -> None:
+        self.rows = rows
+        self.calls: list[dict[str, Any]] = []
+
+    def transcribe(self, audio: Any, **kwargs: Any) -> tuple[Any, Any]:
+        self.calls.append({"audio": audio, **kwargs})
+        return iter(self.rows), SimpleNamespace(language="en")
+
+
+def _ears_with(tmp_path: Path, rows: list[Any]) -> WhisperEars:
+    model = ConfidenceModel(rows)
+    return WhisperEars(_cfg(tmp_path), model_factory=lambda _d: model)
+
+
+def test_clean_clip_confidence_is_accepted(tmp_path: Path) -> None:
+    # Worst values measured on the six good /tmp/cmp2 clips.
+    ears = _ears_with(
+        tmp_path,
+        [_seg("list files in my download folder", avg_logprob=-0.65, no_speech_prob=0.066, compression_ratio=0.81)],
+    )
+    ok, text = ears.transcribe(_write_wav(tmp_path / "good.wav", _tone()))
+    assert ok is True
+    assert text == "list files in my download folder"
+
+
+def test_garbled_low_confidence_asks_to_say_it_again(tmp_path: Path) -> None:
+    ears = _ears_with(
+        tmp_path,
+        [_seg("Turn, board, volume to, cut, triple, percent", avg_logprob=-1.4)],
+    )
+    assert ears.transcribe(_write_wav(tmp_path / "bad.wav", _tone())) == (False, UNCLEAR_SPEECH)
+
+
+def test_high_no_speech_probability_is_rejected(tmp_path: Path) -> None:
+    ears = _ears_with(tmp_path, [_seg("mute", no_speech_prob=0.85)])
+    assert ears.transcribe(_write_wav(tmp_path / "ns.wav", _tone())) == (False, UNCLEAR_SPEECH)
+
+
+def test_high_compression_ratio_is_rejected(tmp_path: Path) -> None:
+    ears = _ears_with(tmp_path, [_seg("mute", compression_ratio=3.1)])
+    assert ears.transcribe(_write_wav(tmp_path / "cr.wav", _tone())) == (False, UNCLEAR_SPEECH)
+
+
+def test_repeated_word_loop_is_rejected_even_with_good_confidence(tmp_path: Path) -> None:
+    ears = _ears_with(tmp_path, [_seg("mute, mute, unmute")])
+    assert ears.transcribe(_write_wav(tmp_path / "loop.wav", _tone())) == (False, UNCLEAR_SPEECH)
+
+
+def test_transcript_without_a_real_word_is_rejected(tmp_path: Path) -> None:
+    assert transcript_is_unreliable(", ,", []) is True
+    assert transcript_is_unreliable("a", []) is True
+    assert transcript_is_unreliable("mute", []) is False
+
 
 
 def test_local_voice_controller_uses_ears_and_never_the_cloud(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from assistant.interfaces.voice import VoiceController
 from assistant.safety.audit import read_audit_logs
 from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey, trigger_kill_switch
 from assistant.safety.permissions import PermissionGate
+from assistant.speech.ears import UNCLEAR_SPEECH
 from assistant.tools.apps import open_app
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
@@ -118,6 +119,12 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             ok_tr, transcript = voice.transcribe_audio()
             if not ok_tr:
                 print(f"Voice: {transcript}\n")
+                # The garbled-transcript guard must actually be spoken on a voice turn.
+                if transcript == UNCLEAR_SPEECH:
+                    try:
+                        voice.speak_sync(transcript)
+                    except KeyboardInterrupt:
+                        voice.stop_speaking()
                 continue
             print(
                 f"  -> Mic level: peak {voice.last_peak_before} rms {voice.last_rms_before} "

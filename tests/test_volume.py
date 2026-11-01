@@ -10,9 +10,12 @@ from assistant.safety.permissions import PermissionGate
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import (
     MAX_STEP_PERCENT,
+    WHAT_VOLUME_REPLY,
     clamp_percent,
     clamp_step,
     mute_audio,
+    numbers_in_text,
+    percent_is_mentioned,
     set_volume,
     volume_down,
     volume_up,
@@ -78,6 +81,25 @@ def test_set_volume_clamps_to_0_100() -> None:
     assert clamp_percent(-5) == 0
     assert clamp_percent(150) == 100
     assert clamp_percent("loud") == 50
+
+
+def test_numbers_are_read_from_digits_and_number_words() -> None:
+    assert numbers_in_text("turn volume to thirty percent") == {30}
+    assert numbers_in_text("turn volume to 30%") == {30}
+    assert numbers_in_text("set the volume to fifty") == {50}
+    assert 55 in numbers_in_text("set it to fifty-five")
+    assert 25 in numbers_in_text("set it to twenty five")
+    assert 100 in numbers_in_text("one hundred percent")
+    assert numbers_in_text("turn the volume up") == set()
+
+
+def test_percent_must_appear_in_the_transcript() -> None:
+    assert percent_is_mentioned(30, "turn volume to thirty percent") is True
+    assert percent_is_mentioned(30, "turn volume to 30") is True
+    assert percent_is_mentioned(50, "fifty percent please") is True
+    assert percent_is_mentioned(30, "turn the volume up") is False
+    assert percent_is_mentioned(30, "turn volume to fifty percent") is False
+    assert WHAT_VOLUME_REPLY == "What volume should I set? Say a number from 0 to 100."
 
 
 def test_set_volume_uses_wpctl_absolute_target(monkeypatch: Any) -> None:

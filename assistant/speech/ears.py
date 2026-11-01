@@ -13,9 +13,11 @@ for file paths, which `av` 19.x no longer accepts. Arrays skip that code path en
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import wave
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,7 +31,50 @@ logger = logging.getLogger("ultron.ears")
 SAMPLE_RATE = 16000
 BEAM_SIZE = 1
 NO_SPEECH = "I didn't catch that"
+UNCLEAR_SPEECH = "I didn't catch that, please say it again."
 _BLANK_TRANSCRIPTS = {"", "[blank_audio]", "(silence)", "[silence]", "[no speech]", "[no_speech]"}
+
+# "Say it again" guard. The six clean /tmp/cmp2 clips score avg_logprob -0.14..-0.65,
+# no_speech_prob 0.01..0.07 and compression_ratio 0.38..0.81, so these bounds leave a
+# wide margin for real speech while rejecting confident-looking garbage.
+MIN_AVG_LOGPROB = -1.0
+MAX_NO_SPEECH_PROB = 0.60
+MAX_COMPRESSION_RATIO = 2.4
+_WORD = re.compile(r"[a-z']+")
+
+
+def has_real_word(text: str) -> bool:
+    """True when the transcript contains at least one alphabetic word (not just noise)."""
+    return any(len(word.strip("'")) >= 2 for word in _WORD.findall((text or "").lower()))
+
+
+def looks_like_repetition_loop(text: str) -> bool:
+    """True for decoder loops such as "mute mute unmute" or "list list".
+
+    A normal command never has one word making up half of a short transcript.
+    """
+    words = _WORD.findall((text or "").lower())
+    if len(words) < 2:
+        return False
+    top = Counter(words).most_common(1)[0][1]
+    return top >= 2 and top / len(words) >= 0.5
+
+
+def transcript_is_unreliable(text: str, segments: list[Any]) -> bool:
+    """Use faster-whisper's own confidence plus plain text rules to reject bad decodes."""
+    if not has_real_word(text) or looks_like_repetition_loop(text):
+        return True
+    for segment in segments:
+        avg_logprob = getattr(segment, "avg_logprob", None)
+        no_speech = getattr(segment, "no_speech_prob", None)
+        compression = getattr(segment, "compression_ratio", None)
+        if avg_logprob is not None and avg_logprob < MIN_AVG_LOGPROB:
+            return True
+        if no_speech is not None and no_speech > MAX_NO_SPEECH_PROB:
+            return True
+        if compression is not None and compression > MAX_COMPRESSION_RATIO:
+            return True
+    return False
 
 
 class EarsError(RuntimeError):
@@ -165,7 +210,8 @@ class WhisperEars:
             decode_options["hotwords"] = self.config.whisper_hotwords
         try:
             segments, info = model.transcribe(audio, **decode_options)
-            text = " ".join(segment.text.strip() for segment in segments).strip()
+            rows = list(segments)
+            text = " ".join(segment.text.strip() for segment in rows).strip()
         except Exception as exc:
             err = f"Local transcription failed: {type(exc).__name__}: {exc}"
             logger.error(redact_secrets(err))
@@ -178,4 +224,7 @@ class WhisperEars:
         if text.strip().lower() in _BLANK_TRANSCRIPTS:
             logger.info("Ears: VAD/model reported no speech.")
             return False, NO_SPEECH
+        if transcript_is_unreliable(text, rows):
+            logger.info("Ears: transcript looks unreliable; asking the user to repeat.")
+            return False, UNCLEAR_SPEECH
         return True, text.strip()

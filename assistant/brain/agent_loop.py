@@ -22,6 +22,7 @@ from assistant.safety.killswitch import WatchdogMonitor
 from assistant.safety.redact import redact_secrets
 from assistant.tools.apps import resolve_app_launch_command
 from assistant.tools.registry import ToolRegistry
+from assistant.tools.volume import WHAT_VOLUME_REPLY, percent_is_mentioned
 
 # Local generation caps: a tool call needs far fewer tokens than the 512 default, and a
 # follow-up turn must stay a one-sentence answer (long paragraphs were the 20 s reply).
@@ -184,6 +185,14 @@ class AgentLoop:
                         usage_acc,
                         dry_run=dry_run,
                     )
+
+                # Never guess a volume the user did not say: run no tool and ask instead.
+                for call in fn_calls:
+                    if (call.name or "") == "set_volume":
+                        wanted = dict(call.args or {}).get("percent", 50)
+                        if not percent_is_mentioned(wanted, cleaned):
+                            self.step_callback("set_volume without a spoken number; asking.")
+                            return AgentTaskResult(True, WHAT_VOLUME_REPLY, steps, usage_acc, dry_run=dry_run)
 
                 resp_parts: list[types.Part] = []
                 human_notes: list[str] = []

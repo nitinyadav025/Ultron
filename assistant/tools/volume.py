@@ -14,6 +14,86 @@ MAX_STEP_PERCENT = 20
 MIN_VOLUME_PERCENT = 0
 MAX_VOLUME_PERCENT = 100
 MAX_VOLUME = 1.0
+WHAT_VOLUME_REPLY = "What volume should I set? Say a number from 0 to 100."
+
+_ONES = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+}
+_TEENS = {
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+}
+_TENS = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+
+
+def _number_words(tokens: list[str]) -> list[int]:
+    """Turn a token run such as 'thirty' / 'twenty five' / 'one hundred' into numbers."""
+    values: list[int] = []
+    current = 0
+    seen = False
+    for token in tokens:
+        if token in _ONES:
+            current += _ONES[token]
+            seen = True
+        elif token in _TEENS:
+            current += _TEENS[token]
+            seen = True
+        elif token in _TENS:
+            current += _TENS[token]
+            seen = True
+        elif token == "hundred":
+            current = (current or 1) * 100
+            seen = True
+        elif seen:
+            values.append(current)
+            current = 0
+            seen = False
+    if seen:
+        values.append(current)
+    return values
+
+
+def numbers_in_text(text: str) -> set[int]:
+    """Return every number the user said, as digits or English number words."""
+    tokens = re.findall(r"[a-z]+|\d+", (text or "").lower().replace("-", " "))
+    numbers = {int(token) for token in tokens if token.isdigit()}
+    numbers.update(_number_words(tokens))
+    return numbers
+
+
+def percent_is_mentioned(percent: object, text: str) -> bool:
+    """True only when the exact percent value appears in the user's own transcript."""
+    try:
+        wanted = int(round(float(percent)))
+    except (TypeError, ValueError):
+        return False
+    return wanted in numbers_in_text(text)
 
 
 def clamp_step(step_percent: int) -> int:
