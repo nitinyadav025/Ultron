@@ -1,6 +1,58 @@
 # Ultron progress — Phase 5 Part B1
 
-Last updated: 2026-11-01 (listening reliability fix)
+Last updated: 2026-11-01 (polish after live tests)
+
+## Polish after live tests (Nov 1)
+
+Work branch: `phase5-b1-work`. Live listening now transcribes every turn correctly; the
+remaining problems are output clipping, accidental LLM commands, wrong mute replies, stray
+template fragments, and the over-loosened guard.
+
+| Part | What | Status |
+|------|------|--------|
+| Part 1 | Normaliser never clips: cap gain by the true raw peak | DONE (code + tests) |
+| Part 2 | Optional `MIC_SOURCE_VOLUME` applied at chat / voice-test start | NOT STARTED |
+| Part 3 | Slash commands never reach the LLM; raw-line logging | NOT STARTED |
+| Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | NOT STARTED |
+| Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | NOT STARTED |
+| Part 6 | Restore the strict one-signal guard | NOT STARTED |
+| Part 7 | Full pytest, docs, commits | NOT STARTED |
+
+### Live facts (12:24–12:31 session, mic source volume 0.21)
+
+- 8 voice turns transcribed correctly; guard scores: avg -0.089…-0.343, no_speech ≤ 0.10,
+  compression ≤ 1.233.
+- Raw peaks before normalisation: 9630, 11988, 13460, 13473, 16950, 21189, 24392, 27616 —
+  no clipping. Yet 7 of 8 logged `after peak=32767/32768`, e.g.
+  `before peak=24392 rms=1565 -> after peak=32767 rms=3269 (speech level 973, gain 2.10x)`.
+  The gain cap used the 95th-percentile frame peak instead of the true peak.
+- `//voice` (stray slash) was sent to the LLM, which answered "Voice is active at the
+  current volume setting."; there is no unknown-command guard.
+- "Stay silent for 10 seconds." → mute_audio(true) → "Audio is muted for 10 seconds."
+  (no timer exists). "mute unmute" → mute_audio(false) → "Audio is now unmuted."
+- "What is your name? What is your name?" → reply with `Ultron.< name is ...` and a
+  repeated sentence (106 chars, 29 completion tokens — not a max-token cut).
+
+### Part 1 result (normaliser never clips)
+
+- `assistant/speech/recorder.py`: the gain is now capped by the TRUE raw peak:
+  `gain = min(level_gain, 3.0, 0.9 * 32767 / peak)`. A non-clipping recording is never
+  attenuated (`gain >= 1.0`); only input above 0.9 full scale is scaled down to 0.9.
+  `SAFE_OUTPUT_PEAK` is now 29490 (0.9 FS), and the 95th-percentile peak cap was removed.
+- `assistant/interfaces/voice.py`: the clipping warning now says to lower the mic input
+  slightly (about 20% below the current value) and shows `wpctl get-volume @DEFAULT_AUDIO_SOURCE@`.
+- Exact output on the five requested peaks (speech body RMS 973, as in the live log):
+
+| Raw peak | Output peak | Gain | Clipping |
+|----------|-------------|------|----------|
+| 9630 | 28890 | 3.000 | no |
+| 21189 | 29490 | 1.392 | no |
+| 27616 | 29490 | 1.068 | no |
+| 32768 (clipped burst) | 29490 | 0.900 | yes |
+| 3000 | 9000 | 3.000 | no |
+
+- Tests: `tests/test_mic_level.py` (five peak cases, loud-but-not-clipping stays at gain 1.0).
+
 
 ## Listening fix (Nov 1)
 

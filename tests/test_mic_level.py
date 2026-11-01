@@ -18,7 +18,6 @@ from assistant.config import load_config
 from assistant.interfaces.voice import VoiceController, compute_pcm16_peak_rms
 from assistant.speech.recorder import (
     SAFE_OUTPUT_PEAK,
-    TARGET_SPEECH_RMS,
     SyntheticSource,
     normalise_mic_level,
     trim_leading_transient,
@@ -43,14 +42,17 @@ def _speech_like(level: int, cycles: int = 10) -> bytes:
 # --------------------------------------------------------------------------------------
 
 
-def test_click_does_not_turn_the_whole_recording_down() -> None:
+def test_click_only_applies_the_small_safety_attenuation() -> None:
     pcm = _tone(32767, 1) + _speech_like(3000)
 
     out, info = normalise_mic_level(pcm, has_speech=True)
 
-    assert info.gain > 1.0  # old peak-based code used gain = 0.7 here
-    assert info.after_rms > info.before_rms
+    # A true full-scale sample now caps the gain at 0.9 (the old code used 0.7 for the
+    # whole recording). The speech level itself is untouched.
+    assert info.gain == pytest.approx(0.9, abs=0.01)
+    assert info.after_peak <= 29500
     assert info.speech_level == 3000
+    assert compute_pcm16_peak_rms(out)[0] <= 29500
 
 
 def test_quiet_speech_is_boosted_no_more_than_three_times() -> None:
@@ -72,14 +74,49 @@ def test_silence_is_never_boosted() -> None:
     assert info.before_peak == info.after_peak
 
 
-def test_loud_speech_is_turned_down_to_a_healthy_level() -> None:
+def test_loud_but_not_clipping_speech_is_not_turned_down() -> None:
     pcm = _speech_like(20000)
 
     _out, info = normalise_mic_level(pcm, has_speech=True)
 
-    assert info.gain < 1.0
+    # The new rule: only input already above 0.9 full scale is attenuated.
+    assert info.gain == 1.0
+    assert info.after_peak == 20000
     assert info.after_peak <= SAFE_OUTPUT_PEAK
-    assert abs(info.after_peak - TARGET_SPEECH_RMS) <= 60
+
+
+@pytest.mark.parametrize(
+    ("peak", "expected_gain", "expected_after"),
+    [
+        (9630, 3.0, 28890),
+        (21189, 29490 / 21189, 29490),
+        (27616, 29490 / 27616, 29490),
+        (32768, 29490 / 32768, 29490),
+        (3000, 3.0, 9000),
+    ],
+)
+def test_normaliser_never_exceeds_the_safe_peak(peak: int, expected_gain: float, expected_after: int) -> None:
+    # Speech-like body at RMS 973 (the live "speech level 973" case) plus one true peak.
+    samples = array.array("h", [973 if i % 2 == 0 else -973 for _ in range(60) for i in range(FRAME)])
+    if peak >= 32768:
+        samples[100:200] = array.array("h", [-32768] * 100)  # a real clipped burst
+    else:
+        samples[100] = peak
+    pcm = samples.tobytes()
+
+    out, info = normalise_mic_level(pcm, has_speech=True)
+
+    assert info.before_peak == peak
+    assert info.gain == pytest.approx(expected_gain, rel=1e-3)
+    assert info.after_peak == pytest.approx(expected_after, abs=2)
+    assert info.after_peak <= 29500
+    if peak <= SAFE_OUTPUT_PEAK:
+        assert info.gain >= 1.0
+        assert info.clipping is False
+    else:
+        assert info.gain < 1.0
+        assert info.clipping is True
+    assert compute_pcm16_peak_rms(out)[0] <= 29500
 
 
 def test_boost_never_pushes_normal_speech_into_clipping() -> None:

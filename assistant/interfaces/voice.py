@@ -387,8 +387,9 @@ class VoiceController:
         if info.clipping and not self._clipping_warned:
             self._clipping_warned = True
             logger.warning(
-                "Mic is clipping: %d samples at full scale. Lower the input with: "
-                "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.25",
+                "Mic is clipping: %d samples at full scale. Lower the mic input slightly, "
+                "about 20 percent lower than the current value. Check the current value with: "
+                "wpctl get-volume @DEFAULT_AUDIO_SOURCE@",
                 info.clipping_samples,
             )
         logger.info(

@@ -681,7 +681,9 @@ def trim_leading_transient(pcm: bytes, *, max_ms: int = 700) -> tuple[bytes, int
 
 TARGET_SPEECH_RMS = int(32767 * 0.12)  # healthy speech level for Whisper (~-18 dBFS)
 MAX_BOOST = 3.0
-SAFE_OUTPUT_PEAK = int(32767 * 0.7)
+# Hard output ceiling: never let normalisation push the recording above ~0.9 full scale.
+SAFE_OUTPUT_RATIO = 0.9
+SAFE_OUTPUT_PEAK = int(32767 * SAFE_OUTPUT_RATIO)  # 29490
 CLIPPING_SAMPLE_RATIO = 0.005  # >0.5% of samples at full scale = the mic is clipping
 
 
@@ -712,14 +714,13 @@ def normalise_mic_level(
     target_rms: int = TARGET_SPEECH_RMS,
     max_boost: float = MAX_BOOST,
 ) -> tuple[bytes, LevelInfo]:
-    """Even out the recording on a *robust* level instead of the single loudest sample.
+    """Even out the recording on a *robust* level, and never let the output clip.
 
-    Old behaviour: gain = target / max_sample. One click (or the mic wake-up thump) made
-    the whole recording quiet, and quiet room noise was amplified up to 8x.
-
-    New behaviour: the level is the 75th percentile of the 20 ms frame RMS values, so a
-    few bad frames cannot set the gain. Loud audio is turned down, quiet speech is boosted
-    at most 3x, audio with no speech is never boosted, and the result never clips.
+    The level is the 75th percentile of the 20 ms frame RMS values, so a few bad frames
+    cannot set the gain. The gain is then capped by the TRUE raw peak (not a percentile):
+    the result can never exceed ~0.9 full scale. A non-clipping recording is never turned
+    down; only input already above 0.9 full scale is scaled down. Quiet speech is boosted
+    at most 3x, and audio with no speech is never boosted.
     """
     samples = pcm16_samples(pcm)
     info = LevelInfo()
@@ -733,7 +734,6 @@ def normalise_mic_level(
     info.clipping = clipped > max(20, int(len(samples) * CLIPPING_SAMPLE_RATIO))
 
     levels = [frame_rms(samples[i : i + FRAME_SAMPLES]) for i in range(0, len(samples), FRAME_SAMPLES)]
-    peaks = [frame_peak(samples[i : i + FRAME_SAMPLES]) for i in range(0, len(samples), FRAME_SAMPLES)]
     info.speech_level = percentile(levels, 0.75)
 
     if info.speech_level <= 0 or info.before_peak <= 0:
@@ -746,12 +746,16 @@ def normalise_mic_level(
         info.notes.append("no speech in buffer; not boosting")
     gain = min(gain, max_boost)
 
-    # Protect the *body* of the speech, not a single stray click: the 95th percentile of
-    # frame peaks ignores one bad frame, so a click cannot turn the whole recording down.
-    if gain > 1.0:
-        robust_peak = percentile(peaks, 0.95) or info.before_peak
-        gain = min(gain, float(SAFE_OUTPUT_PEAK) / float(robust_peak))
-    if abs(gain - 1.0) < 0.02:
+    # Hard ceiling from the real maximum sample. The old code used the 95th-percentile
+    # frame peak, so one loud frame could still be pushed to 32768 and clip.
+    peak_cap = float(SAFE_OUTPUT_PEAK) / float(info.before_peak)
+    gain = min(gain, peak_cap)
+    if info.before_peak <= SAFE_OUTPUT_PEAK:
+        gain = max(gain, 1.0)  # never attenuate a recording that is not clipping
+    else:
+        info.notes.append("input above 0.9 full scale; scaled down to 0.9")
+
+    if abs(gain - 1.0) < 0.02 and info.before_peak <= SAFE_OUTPUT_PEAK:
         info.gain = 1.0
         info.after_peak, info.after_rms = info.before_peak, info.before_rms
         return pcm, info
