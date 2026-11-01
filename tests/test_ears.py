@@ -166,6 +166,21 @@ def test_missing_audio_file_is_reported(tmp_path: Path) -> None:
     assert ears.transcribe(tmp_path / "nope.wav") == (False, "Audio file missing.")
 
 
+def test_whisper_never_receives_a_file_path_or_file_object(tmp_path: Path) -> None:
+    """PyAV 19 breaks faster-whisper 1.2.1 on file paths: only float32 arrays are allowed."""
+    model = FakeModel(["mute"])
+    ears = WhisperEars(_cfg(tmp_path), model_factory=lambda _d: model)
+
+    ears.transcribe(_write_wav(tmp_path / "array.wav", _tone()))
+
+    audio = model.calls[0]["audio"]
+    assert not isinstance(audio, (str, Path)), "a file path would hit the broken av.open call"
+    assert isinstance(audio, np.ndarray)
+    assert audio.dtype == np.float32
+    assert audio.ndim == 1
+    assert audio.flags["C_CONTIGUOUS"]
+
+
 # --------------------------------------------------------------------------------------
 # "Say it again" guard (faster-whisper confidence + plain text rules)
 # --------------------------------------------------------------------------------------
