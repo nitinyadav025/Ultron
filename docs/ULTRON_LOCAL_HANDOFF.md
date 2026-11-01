@@ -1,6 +1,10 @@
 # Ultron — Local Backend Handoff
 
 > No secrets in this document. Nothing from `.env` is copied here.
+>
+> **CURRENT STATE (2026-11-01):** read `docs/PROGRESS.md` → **"HANDOFF — CURRENT STATE
+> (read this first)"**. It records the branch (`phase5-b1-work`), latest local commits,
+> 177-test status, all current settings and the next live tests. Nothing has been pushed.
 
 ## a) GOAL and FIXED DECISIONS
 
