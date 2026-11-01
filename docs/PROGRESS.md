@@ -16,7 +16,7 @@ template fragments, and the over-loosened guard.
 | Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | DONE (code + tests) |
 | Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | DONE (code + tests) |
 | Part 6 | Restore the strict one-signal guard | DONE (code + tests) |
-| Part 7 | Full pytest, docs, commits | NOT STARTED |
+| Part 7 | Full pytest, docs, commits | DONE |
 
 ### Live facts (12:24–12:31 session, mic source volume 0.21)
 
@@ -98,7 +98,8 @@ template fragments, and the over-loosened guard.
   plus "I couldn't change the audio." / "I couldn't set the volume." on failure.
   `code_reply_for_tool` now covers mute_audio, set_volume, volume_up, volume_down.
 - `assistant/brain/agent_loop.py`:
-  - a timed mute request is answered before the LLM: no tool runs; the next "yes" mutes now;
+  - a timed mute request is answered before the LLM: no tool runs; the next "yes" mutes now
+    (directly, without relying on the model);
   - a mute_audio call with both/neither mute word asks "Do you want to mute or unmute?" and
     runs nothing;
   - the tool's `muted` argument is forced from the spoken word (mute → True, unmute → False),
@@ -141,7 +142,38 @@ template fragments, and the over-loosened guard.
   - "mute, mute, unmute" → rejected by the repetition loop;
   - "List files, see in my down download for 4-fold editor" (avg −1.4) → rejected.
 - Tests: `tests/test_ears.py` updated (strict default, configurable limits, good clips +
-  live scores accepted, MAS rejected).
+  live scores accepted, MMAS attempt rejected).
+
+## Head state (polish after live tests)
+
+- Branch `phase5-b1-work`, local commits only: Part 1 `5010879`, Part 2 `a2f7d0c`,
+  Part 3 `d699ffd`, Part 4 `5cd924f`, Part 5 `0a583ab`, Part 6 `021987e`,
+  Part 4 follow-up `b3019a9`, Part 7 docs commit after this file.
+- Latest pytest: **177 passed**. No llama-server running (`ss -ltnp | grep 9931` empty).
+- Working tree clean; nothing pushed; the remote and git config were not touched.
+- `.env` contains `MIC_SOURCE_VOLUME=0.21` (appended without reading/printing; not committed).
+- To catch up: read this file, `git switch phase5-b1-work`, run
+  `.venv/bin/python -m pytest -q`.
+
+## NEXT STEP (polish after live tests)
+
+Live tests (the coding tool cannot use the microphone). Run and report each:
+
+1. `.venv/bin/python voice-test` — expect `[Mic] Mic source volume set to 0.21`, then say
+   "open firefox and list my downloads"; the transcript must be complete.
+2. `.venv/bin/python main.py chat`:
+   - **REAL silence test**: `/voice`, then say nothing for 10 seconds. Expect the spoken
+     "I didn't hear anything.", no transcript, no tool call.
+   - `/voice` "mute" → "Audio is now muted."; "/voice" "unmute" → "Audio is now unmuted."
+   - `/voice` "mute unmute" → "Do you want to mute or unmute?" and no tool call.
+   - `/voice` "stay silent for 10 seconds" → the honest timer reply; say "yes" → it mutes
+     now (no timer, no automatic unmute).
+   - Type `//voice` → it must start listening, not answer as text.
+   - Type `/nonsense` → "Unknown command. Available: …" and nothing else.
+   - `/voice` "what is your name?" → one clean sentence, no "<" and no repeated sentence.
+   - `/voice` "turn volume to 30 percent" → "Volume is now set to 30 percent."
+   - Check `logs/assistant.log`: every `Mic level` line must show `after peak` ≤ ~29490.
+3. If anything fails, keep the newest `workspace/voice_debug/attempt_*.json` and the log tail.
 
 
 ## Listening fix (Nov 1)
