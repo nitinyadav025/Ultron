@@ -1,5 +1,55 @@
 # Ultron progress — Phase 5 Part B1
 
+Last updated: 2026-11-01 (Phase 5 B2 work in progress)
+
+## Phase 5 B2 (Nov 1)
+
+Work branch: `phase5-b2-work` (local only, nothing pushed). Baseline before any B2 edit:
+`.venv/bin/python -m pytest -q` → **174 passed, 3 skipped** (the 3 skips are the real-clip
+tests whose `/tmp/cmp2_*.wav` files are gone; see Part 1).
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | Evidence + test hygiene (tmp logs, real-log guard, real clips) | IN PROGRESS |
+| 2 | Fix Bug A: recorder warm-up, SNR start, "nothing heard" | TODO |
+| 2B | Noise robustness (fan analysis, SNR, denoise A/B, noise plan) | TODO |
+| 3 | Hands-free `main.py listen` (wake word, early endpoint, follow-up) | TODO |
+| 4 | Fast path for simple commands | TODO |
+| 5 | Web tools (`web_search`, `open_first_result`) | TODO |
+| 6 | Typing detection report (`docs/TYPING_PLAN.md`) | TODO |
+| 7 | Docs, full pytest, commits | TODO |
+
+### Evidence checked so far
+
+- `docs/phase5-b1-notes.md` named in the task does **not exist** (only
+  `docs/ULTRON_LOCAL_HANDOFF.md` and this file).
+- `workspace/test_clips/` did **not exist** at session start. It now holds copies (no
+  deletions) of all 10 saved `workspace/voice_debug/attempt_*` WAV+JSON pairs.
+- The two attempts named in the task (`134335-107538`, and the old 13:45 one) are no
+  longer in `voice_debug` — only the newest 10 attempts are kept. The equivalent 30 s
+  fan recording is `attempt_20261101-135201-414426` (reason `max_length`, duration
+  30.0 s, `speech_ms` 3900, text `''`, verdict `no_real_word`, `noise_floor=23186`,
+  `start=500`, `end=41734`).
+- Start-of-stream burst: 3 of 10 saved attempts start at near full scale and decay over
+  ~300-400 ms (`134518`, `135201`, `135223`). The other attempts start quiet.
+- `/tmp/cmp2_*.wav` are gone.
+
+### Files changed so far
+
+- `docs/PROGRESS.md` (this section). No code changed yet.
+
+### Open problems
+
+- Bug A root cause to be written up in Part 2 (replay of `135201` reproduces
+  `max_length` exactly).
+- The named `134335` attempt cannot be read: it was pruned. `135201` is used instead.
+
+### NEXT STEP
+
+Finish Part 1 (test log hygiene + real-clip tests), then Part 2.
+
+---
+
 Last updated: 2026-11-01 (full session handoff)
 
 ## HANDOFF — CURRENT STATE (read this first)
