@@ -245,6 +245,52 @@ sudo commands for the user and the risks are in the plan.
 
 - The two attempts named in the task are pruned; `135201` is the preserved equivalent.
 - The fan/noise rules are proven offline only; the live microphone is still UNVERIFIED.
+- The wake aliases come from Piper's synthesized voice, not the user's; UNVERIFIED live.
+- DuckDuckGo's HTML endpoint returned its bot challenge (HTTP 202), so the
+  first-result method could not be proven; the fallback path is what runs.
+- `close <app>` is recognised but there is no close tool, so it answers honestly instead
+  of acting.
+- One-off analysis scripts (A/B, Piper wake evidence) wrote `Ears`/`Piper` lines into the
+  real `logs/assistant.log` around 14:55. Tests themselves are now isolated and cannot do
+  this.
+
+### Head state
+
+- Branch `phase5-b2-work`, local commits only, **nothing pushed**, remote and git config
+  untouched:
+  - `994f85a` start checkpoint
+  - `9c9f90a` parts 1–2 (test log isolation, Bug A)
+  - `9eaf686` part 2B (fan SNR gate, optional denoise, noise plan)
+  - `c07e24b` parts 3–6 (hands-free listen, fast path, web tools, typing plan)
+- Latest pytest: **248 passed, 0 skipped**. `ss -ltnp | grep 9931` → **no llama-server**.
+- Working tree clean; `.env` untouched and not committed.
+
+### NEXT STEP — live tests (the coding tool cannot use the mic)
+
+Run these and report each result. Do not start Phase 5 Part C without approval.
+
+1. `.venv/bin/python main.py chat` → `/voice`, then **say nothing for 10 seconds with hands
+   off the keyboard**. Expected: **"I didn't hear anything."**, no transcript, no tool
+   call, no long 30 s recording. (This is the Bug A test.)
+2. With the fan **ON**: `.venv/bin/python voice-test`, say "open firefox and list my
+   downloads" normally. Then run `/voice` in chat and stay silent for 10 s with the fan on.
+   Expected: the sentence is transcribed; the silence says "I didn't hear anything."
+3. `.venv/bin/python main.py listen`. Expected start line exactly:
+   `Listening. Say 'Ultron, <command>'. Ctrl+C to stop.`
+   Say **"Ultron open firefox and search for github"**. Expected: Firefox opens the
+   DuckDuckGo results page and Ultron says "Searching for github in Firefox." (or, if the
+   first-result path is used, "Opened the first result for github: …").
+   Then say **"Ultron stop listening"**. Expected: it stops, the prompt returns, no
+   `pw-record` process and no llama-server are left.
+4. In `listen`, say only **"Ultron"**. Expected "Yes?"; then say **"open firefox"** without
+   the wake word and it must run. Wait 7 s and repeat "open firefox" without the wake word:
+   it must be ignored (no print, no tool).
+5. In `listen`, talk to someone else for a few seconds without "Ultron". Expected: silence,
+   no printed line, nothing saved in `workspace/voice_debug/`.
+6. Check `logs/assistant.log` for one `Latency:` line per accepted command and for
+   `Fast path: used` on "open firefox"/"mute"/"volume".
+7. If the wake word is missed, set `WAKE_ALIASES` in `.env` to the word Whisper heard
+   (for example `WAKE_ALIASES=ultra,computer`) and report the first word from the log.
 
 ### Evidence checked so far
 
