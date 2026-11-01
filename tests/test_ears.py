@@ -230,17 +230,41 @@ def test_garbled_low_confidence_asks_to_say_it_again(tmp_path: Path) -> None:
     assert ears.transcribe(_write_wav(tmp_path / "bad.wav", _tone())) == (False, UNCLEAR_SPEECH)
 
 
-def test_one_bad_signal_from_real_speech_is_accepted(tmp_path: Path) -> None:
-    # Exact scores of the genuine live attempt at 11:09:50 that the old guard rejected.
+def test_one_bad_signal_is_rejected_again(tmp_path: Path) -> None:
+    # With clean audio the limits are safe again, so one clear bad signal rejects.
+    # Exact scores of the old live attempt: -1.087 / 0.065 / 0.76.
     ears = _ears_with(
         tmp_path,
         [_seg("Where is the MMAS folder?", avg_logprob=-1.087, no_speech_prob=0.065, compression_ratio=0.76)],
     )
-    ok, text = ears.transcribe(_write_wav(tmp_path / "real.wav", _tone()))
-    assert ok is True
-    assert text == "Where is the MMAS folder?"
-    assert ears.last_confidence["verdict"] == "ok"
-    assert ears.last_confidence["min_avg_logprob"] == pytest.approx(-1.087)
+    assert ears.transcribe(_write_wav(tmp_path / "real.wav", _tone())) == (False, UNCLEAR_SPEECH)
+    assert ears.last_confidence["verdict"].startswith("avg_logprob=")
+
+
+def test_good_clip_and_live_scores_are_accepted() -> None:
+    from assistant.speech.ears import guard_reason
+
+    good_clips = [
+        (-0.141, 0.012, 0.704),
+        (-0.325, 0.066, 0.800),
+        (-0.227, 0.059, 0.619),
+        (-0.650, 0.052, 0.385),
+        (-0.166, 0.020, 0.814),
+        (-0.220, 0.042, 0.692),
+    ]
+    live_turns = [
+        (-0.089, 0.082, 1.233),
+        (-0.107, 0.018, 0.742),
+        (-0.129, 0.051, 0.771),
+        (-0.144, 0.022, 0.742),
+        (-0.150, 0.034, 0.814),
+        (-0.151, 0.026, 0.966),
+        (-0.224, 0.101, 0.805),
+        (-0.343, 0.065, 0.579),
+    ]
+    for avg, no_speech, compression in good_clips + live_turns:
+        segment = _seg("some real words", avg_logprob=avg, no_speech_prob=no_speech, compression_ratio=compression)
+        assert guard_reason("some real words", [segment]) == ""
 
 
 def test_high_no_speech_probability_is_rejected(tmp_path: Path) -> None:
@@ -259,11 +283,12 @@ def test_guard_limits_are_configurable(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     model = ConfidenceModel([_seg("mute", avg_logprob=-1.1)])
     ears = WhisperEars(cfg, model_factory=lambda _d: model)
-    assert ears.transcribe(_write_wav(tmp_path / "cfg1.wav", _tone()))[0] is True
+    # Strict default: -1.1 is below -1.0, so it is rejected.
+    assert ears.transcribe(_write_wav(tmp_path / "cfg1.wav", _tone())) == (False, UNCLEAR_SPEECH)
 
-    # Tighten the limit: the same score is now extreme.
-    ears._guard_limits = lambda: GuardLimits(min_avg_logprob=-1.15, extreme_avg_logprob=-1.05)
-    assert ears.transcribe(_write_wav(tmp_path / "cfg2.wav", _tone())) == (False, UNCLEAR_SPEECH)
+    # Loosen the limit: the same score is now accepted.
+    ears._guard_limits = lambda: GuardLimits(min_avg_logprob=-1.2)
+    assert ears.transcribe(_write_wav(tmp_path / "cfg2.wav", _tone()))[0] is True
 
 
 def test_earlier_build_garbled_strings_are_still_rejected() -> None:

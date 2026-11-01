@@ -15,7 +15,7 @@ template fragments, and the over-loosened guard.
 | Part 3 | Slash commands never reach the LLM; raw-line logging | DONE (code + tests) |
 | Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | DONE (code + tests) |
 | Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | DONE (code + tests) |
-| Part 6 | Restore the strict one-signal guard | NOT STARTED |
+| Part 6 | Restore the strict one-signal guard | DONE (code + tests) |
 | Part 7 | Full pytest, docs, commits | NOT STARTED |
 
 ### Live facts (12:24–12:31 session, mic source volume 0.21)
@@ -124,6 +124,24 @@ template fragments, and the over-loosened guard.
   "I am Fedora GNOME voice assistant, Ultron."
 - Tests: `tests/test_reply_style.py`, `tests/test_local_client.py` (stop sequences, penalty,
   exact bad name string, special tokens, repeated sentence).
+
+### Part 6 result (strict guard restored)
+
+- `assistant/speech/ears.py`: removed the two-signal/extreme logic. The guard now rejects on
+  **any one** of: `avg_logprob < -1.0`, `no_speech_prob > 0.60`, `compression_ratio > 2.4`,
+  plus the real-word and repetition-loop rules. This supersedes the loosened rule from the
+  previous session.
+- `assistant/config.py` / `.env.example`: only the three limits remain configurable
+  (`WHISPER_MIN_AVG_LOGPROB`, `WHISPER_MAX_NO_SPEECH_PROB`, `WHISPER_MAX_COMPRESSION_RATIO`).
+- Verdicts:
+  - six good clips (−0.141…−0.650 / 0.012…0.066 / 0.385…0.814) → accepted;
+  - eight live turns (−0.089…−0.343 / ≤0.101 / ≤1.233) → accepted;
+  - "Where is the MMAS folder?" (−1.087 / 0.065 / 0.76) → **REJECTED** (`avg_logprob=-1.09`);
+  - "Turn, board, volume to, cut, triple, percent" (avg −1.4) → rejected;
+  - "mute, mute, unmute" → rejected by the repetition loop;
+  - "List files, see in my down download for 4-fold editor" (avg −1.4) → rejected.
+- Tests: `tests/test_ears.py` updated (strict default, configurable limits, good clips +
+  live scores accepted, MAS rejected).
 
 
 ## Listening fix (Nov 1)

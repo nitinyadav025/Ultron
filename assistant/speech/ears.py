@@ -35,18 +35,14 @@ NO_SPEECH = "I didn't catch that"
 UNCLEAR_SPEECH = "I didn't catch that, please say it again."
 _BLANK_TRANSCRIPTS = {"", "[blank_audio]", "(silence)", "[silence]", "[no speech]", "[no_speech]"}
 
-# "Say it again" guard. The six clean /tmp/cmp2 clips score avg_logprob -0.14..-0.65,
-# no_speech_prob 0.01..0.07 and compression_ratio 0.38..0.81. A real live attempt scored
-# -1.087 / 0.065 / 0.76 — one bad signal must NOT reject speech. Reject only on two bad
-# signals or one extreme value, plus the plain text rules. All limits are configurable.
+# "Say it again" guard. With clean audio the real scores are far from these limits:
+# six good clips -0.14..-0.65 / 0.01..0.07 / 0.38..0.81, eight live turns
+# -0.089..-0.343 / <=0.10 / <=1.233. Any ONE bad signal rejects.
 @dataclass(frozen=True)
 class GuardLimits:
     min_avg_logprob: float = -1.0
     max_no_speech_prob: float = 0.60
     max_compression_ratio: float = 2.4
-    extreme_avg_logprob: float = -1.5
-    extreme_no_speech_prob: float = 0.85
-    extreme_compression_ratio: float = 3.0
 
 
 DEFAULT_LIMITS = GuardLimits()
@@ -101,23 +97,13 @@ def guard_reason(text: str, segments: list[Any], limits: GuardLimits | None = No
     avg = scores["min_avg_logprob"]
     no_speech = scores["max_no_speech_prob"]
     compression = scores["max_compression_ratio"]
-    bad: list[str] = []
-    if avg is not None:
-        if avg < limits.extreme_avg_logprob:
-            return f"extreme_avg_logprob={avg:.2f}"
-        if avg < limits.min_avg_logprob:
-            bad.append("avg_logprob")
-    if no_speech is not None:
-        if no_speech > limits.extreme_no_speech_prob:
-            return f"extreme_no_speech={no_speech:.2f}"
-        if no_speech > limits.max_no_speech_prob:
-            bad.append("no_speech")
-    if compression is not None:
-        if compression > limits.extreme_compression_ratio:
-            return f"extreme_compression={compression:.2f}"
-        if compression > limits.max_compression_ratio:
-            bad.append("compression")
-    return f"two_bad_signals:{'+'.join(bad)}" if len(bad) >= 2 else ""
+    if avg is not None and avg < limits.min_avg_logprob:
+        return f"avg_logprob={avg:.2f}"
+    if no_speech is not None and no_speech > limits.max_no_speech_prob:
+        return f"no_speech={no_speech:.2f}"
+    if compression is not None and compression > limits.max_compression_ratio:
+        return f"compression={compression:.2f}"
+    return ""
 
 
 def transcript_is_unreliable(text: str, segments: list[Any], limits: GuardLimits | None = None) -> bool:
@@ -202,9 +188,6 @@ class WhisperEars:
             min_avg_logprob=float(self.config.whisper_min_avg_logprob),
             max_no_speech_prob=float(self.config.whisper_max_no_speech_prob),
             max_compression_ratio=float(self.config.whisper_max_compression_ratio),
-            extreme_avg_logprob=float(self.config.whisper_extreme_avg_logprob),
-            extreme_no_speech_prob=float(self.config.whisper_extreme_no_speech_prob),
-            extreme_compression_ratio=float(self.config.whisper_extreme_compression_ratio),
         )
 
     @property
