@@ -6,7 +6,7 @@ from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.config import LOGS_DIR, AssistantConfig
-from assistant.interfaces.voice import VoiceController
+from assistant.interfaces.voice import NOTHING_HEARD, VoiceController
 from assistant.safety.audit import read_audit_logs
 from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey, trigger_kill_switch
 from assistant.safety.permissions import PermissionGate
@@ -119,8 +119,8 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             ok_tr, transcript = voice.transcribe_audio()
             if not ok_tr:
                 print(f"Voice: {transcript}\n")
-                # The garbled-transcript guard must actually be spoken on a voice turn.
-                if transcript == UNCLEAR_SPEECH:
+                # Voice-only failures are spoken so the user is never left without feedback.
+                if transcript in (UNCLEAR_SPEECH, NOTHING_HEARD):
                     try:
                         voice.speak_sync(transcript)
                     except KeyboardInterrupt:

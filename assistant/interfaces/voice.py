@@ -52,6 +52,8 @@ TRANSCRIBE_PROMPT = (
     "If there is no speech, output exactly [NO_SPEECH]."
 )
 
+NOTHING_HEARD = "I didn't hear anything."
+
 
 def extract_transcript_text(resp: types.GenerateContentResponse) -> str:
     """Extract transcript text, preferring explicit part accessors over resp.text.
@@ -353,7 +355,7 @@ class VoiceController:
                 self.status_callback("Cancelled.")
                 return False, "cancelled"
             if recording.reason == "timeout":
-                return False, "I didn't hear anything."
+                return False, NOTHING_HEARD
             if recording.reason == "no_audio":
                 return False, "Microphone produced no audio."
             return False, "I didn't catch that."
