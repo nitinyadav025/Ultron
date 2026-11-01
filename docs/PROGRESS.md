@@ -130,7 +130,8 @@ behaviour.
 
 - Branch `phase5-b4-work` (from `phase5-b3-work` @ `72a00f0`), local only, **nothing
   pushed**; remote and git config untouched.
-- Commit `dc6cbdf` contains every code, test and docs change in this section.
+- Commit `dc6cbdf` contains every code and test change plus the first docs update;
+  `8e67094` adds this head-state section.
 - Latest pytest: **328 passed, 0 skipped**.
 - `ss -ltnp | grep 9931` → **no llama-server**.
 - Working tree clean after the docs commit; `.env`, `models/`, `workspace/`, `logs/`,
