@@ -1,6 +1,145 @@
 # Ultron progress — Phase 5 Part B1
 
-Last updated: 2026-11-01 (polish after live tests)
+Last updated: 2026-11-01 (full session handoff)
+
+## HANDOFF — CURRENT STATE (read this first)
+
+### Project in one paragraph
+
+Ultron is a Fedora 44 voice-controlled laptop assistant (Python, venv `.venv`, folder
+`~/Downloads/assistant-project`). It runs fully locally: llama.cpp LFM3-1.7B brain at
+`http://127.0.0.1:9931/v1`, faster-whisper `base.en` ears on CPU, Piper mouth on CPU.
+`BACKEND=local` is the default and needs no API key; the Gemini cloud rollback
+(`BACKEND=gemini`) still exists. GTX 1650 (4 GB) is reserved for the LLM.
+
+### Where the work stands
+
+- Branch: **`phase5-b1-work`** (from `main` @ `9d95911`). **Nothing has been pushed.**
+  The user pushes himself when he says so. Remote/git config were never touched.
+- Phase 5 Part A is done. Phase 5 Part B1 is done, including the listening fix and the
+  polish after live tests. **Phase 5 Part C (15-command benchmark) has NOT started** —
+  do not start it without the user's approval.
+- Latest branch commit before this handoff doc: `4d35da1` (Part 7 docs). Full commit list
+  is in "Head state (polish after live tests)" below.
+- Latest pytest: **177 passed**. `ss -ltnp | grep 9931` shows **no llama-server running**.
+- Working tree is clean. `.env` was not committed.
+- Last live session (12:24–12:31) transcribed **8 of 8 voice turns correctly**; guard scores
+  were far from the limits (avg −0.089…−0.343, no_speech ≤ 0.10, compression ≤ 1.233).
+- Mic source volume is **0.21**; `.env` now contains `MIC_SOURCE_VOLUME=0.21` (appended
+  without reading/printing; it is applied once at `chat` and `voice-test` startup).
+
+### What works now
+
+- **Listening** (`assistant/speech/recorder.py`, `assistant/interfaces/voice.py`):
+  auto mode listens until 2 s of continuous silence, keeps 400 ms pre-roll, start timeout
+  10 s, hysteresis/adaptive start and end thresholds, ignores saturated wake-up thumps,
+  Enter finishes (and is consumed), Ctrl+C cancels only the listen. Fixed mode streams the
+  same way. Every attempt saves a raw WAV + JSON trace in `workspace/voice_debug/`
+  (newest 10) and writes one INFO line.
+- **Transcription** (`assistant/speech/ears.py`): faster-whisper `base.en`, CPU int8,
+  float32 numpy arrays only (never a path). Strict "say it again" guard: reject if any one
+  of `avg_logprob < -1.0`, `no_speech_prob > 0.60`, `compression_ratio > 2.4`, or the text
+  has no real word / is a repetition loop. Scores are logged for every transcript.
+- **Normalisation** (`assistant/speech/recorder.py`): gain is capped by the true raw peak
+  (`0.9 × 32767 / peak`), so output never clips; non-clipping input is never attenuated.
+- **Mic input level** (`assistant/speech/mic_input.py`): optional `MIC_SOURCE_VOLUME`
+  (0.05–0.6) applied once at chat/voice-test start via `wpctl`; failures only log.
+- **Commands** (`assistant/interfaces/cli.py`): trim + collapse leading slashes
+  (`//voice` → `/voice`); slash lines are always commands; unknown commands print
+  "Unknown command. Available: /model, /thinking, /voice, /mode, /dry-run, /logs, /quit"
+  and never reach the LLM; slash lines and bare `voice`/`quit`/`logs` are logged with repr.
+- **Local replies** (`assistant/brain/agent_loop.py`, `tool_replies.py`, `reply_style.py`,
+  `local_client.py`): code-built replies for list_files, mute_audio, set_volume,
+  volume_up/down; mute/unmute is forced from the spoken word and is idempotent; ambiguous
+  mute asks "Do you want to mute or unmute?"; timed mute gets an honest "no timer" answer
+  and the following "yes" mutes directly; set_volume requires the number in the transcript;
+  stop sequences + repeat penalty + a cleaner remove `<|...|>` fragments and repeated
+  sentences.
+- **Tools** (`assistant/tools/`): `list_files`, `read_file`, `open_app`, `volume_up`,
+  `volume_down`, `set_volume`, `mute_audio`; local runs cap at 3 tool rounds.
+- **Safety**: permission gate/modes, killswitch, audit log, redaction, sandbox helpers are
+  unchanged. Tool calls are logged at INFO with redacted arguments.
+
+### Key files
+
+| Area | File |
+|------|------|
+| Entry point | `main.py` (`chat`, `voice-test`, `doctor`, model download) |
+| CLI / voice loop | `assistant/interfaces/cli.py` |
+| Mic capture / level | `assistant/speech/recorder.py`, `assistant/interfaces/voice.py` |
+| Ears (Whisper) | `assistant/speech/ears.py` |
+| Mouth (Piper) | `assistant/speech/mouth.py` |
+| Mic startup level | `assistant/speech/mic_input.py` |
+| Agent loop | `assistant/brain/agent_loop.py` |
+| Local LLM client | `assistant/brain/local_client.py` |
+| Prompts / reply shaping | `assistant/brain/prompts.py`, `reply_style.py`, `tool_replies.py` |
+| Tools | `assistant/tools/files.py`, `apps.py`, `volume.py`, `registry.py` |
+| Config | `assistant/config.py`, `.env` (not committed), `.env.example` |
+| Voice diagnostics | `assistant/doctor.py` |
+| Tests | `tests/` (see `pytest.ini`) |
+| Debug captures | `workspace/voice_debug/` (git-ignored, newest 10) |
+| Runtime logs | `logs/assistant.log`, `logs/audit.jsonl`, `logs/llama-server.log` |
+
+### Configuration (non-secret)
+
+- `BACKEND=local`; `LLAMA_BASE_URL=http://127.0.0.1:9931/v1`; `WHISPER_MODEL=base.en`.
+- Voice: `VOICE_MODE=auto`, `VOICE_START_TIMEOUT_S=10`, `VOICE_SILENCE_MS=2000`,
+  `VOICE_MAX_SECONDS=30`, `VOICE_FIXED_SECONDS=5`, `VOICE_DEBUG=false`.
+- `MIC_SOURCE_VOLUME=0.21` (in `.env`; blank in `.env.example` means "do nothing").
+- Guard: `WHISPER_MIN_AVG_LOGPROB=-1.0`, `WHISPER_MAX_NO_SPEECH_PROB=0.60`,
+  `WHISPER_MAX_COMPRESSION_RATIO=2.4`. `WHISPER_HOTWORDS` stays blank/off.
+- `VOICE_REPLY_MAX_CHARS=160`; Piper voice `en_US-lessac-medium`.
+- Do not change llama-server launch flags, permission modes, Piper settings or the Gemini
+  rollback. Do not install/downgrade packages.
+
+### Known limitations / risks
+
+- The polish changes have **not yet been verified with the live microphone** (the coding
+  tool cannot use the mic). The next live test list is below.
+- PyAV 19 breaks faster-whisper 1.2.1 when a file path is passed; production always passes
+  float32 arrays, and a test enforces it. The user may later pin `av<19`.
+- There is no mute timer. Timed requests are refused honestly; only "yes" to the offer
+  mutes now.
+- The stop sequences are LFM3's ChatML tokens (`<|im_start|>` etc.); update them if the
+  model changes. `repeat_penalty` is 1.15.
+- Mic source is set to 0.21 at every chat/voice-test start, which will override a manual
+  change while the setting is in `.env`.
+- `workspace/voice_debug/` and logs contain speech transcripts; keep private.
+- The model can still mishear; the guard and intent checks reduce wrong actions but do not
+  make the local model perfect.
+
+### NEXT STEP — live tests (do these first)
+
+The coding tool must not run `main.py chat` or voice tests. Ask the user to run and report:
+
+1. `.venv/bin/python voice-test` — expect `[Mic] Mic source volume set to 0.21`, then say
+   "open firefox and list my downloads" and press Enter; expect a complete transcript.
+2. `.venv/bin/python main.py chat`:
+   - **REAL silence test**: `/voice`, say nothing for 10 seconds → hear
+     "I didn't hear anything.", no transcript, no tool call.
+   - `/voice` "mute" → "Audio is now muted."; `/voice` "unmute" → "Audio is now unmuted."
+   - `/voice` "mute unmute" → "Do you want to mute or unmute?" (no tool call).
+   - `/voice` "stay silent for 10 seconds" → honest timer reply; say "yes" → mutes now.
+   - Type `//voice` → starts listening (not sent to the LLM).
+   - Type `/nonsense` → unknown-command line, no LLM answer.
+   - `/voice` "what is your name?" → "I am Fedora GNOME voice assistant, Ultron."
+   - `/voice` "turn volume to 30 percent" → "Volume is now set to 30 percent."
+   - Check `logs/assistant.log`: every `Mic level` line has `after peak` ≤ ~29490.
+3. If anything fails, keep the newest `workspace/voice_debug/attempt_*.json` and the log
+   tail. If all pass, the next project step is Phase 5 Part C — only with the user's OK.
+
+### How to resume next session
+
+1. Read `AGENTS.md` (it points here) and this handoff section.
+2. `git switch phase5-b1-work`; run `git status` and `git log --oneline -10`.
+3. Run `.venv/bin/python -m pytest -q` (expect 177 passed).
+4. Continue from **NEXT STEP — live tests** above.
+5. Work rules: one part at a time, update this file before each part and after 2–3 edits,
+   run `.venv/bin/python -m pytest -q` after each change, commit locally by file name only,
+   never push, never commit `.env`/`models/`/`workspace/`/`logs/`/`.backups/`/`.venv/`,
+   never run sudo/dnf, and leave no llama-server running (`ss -ltnp | grep 9931`).
+
+---
 
 ## Polish after live tests (Nov 1)
 
