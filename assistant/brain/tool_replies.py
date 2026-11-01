@@ -83,6 +83,36 @@ def claims_an_empty_folder(text: str) -> bool:
     return bool(_EMPTY_CLAIM.search(text or ""))
 
 
+def mute_audio_reply(result: dict[str, Any]) -> str | None:
+    """Speak exactly what mute_audio did: muted, unmuted, or a failure."""
+    if not result.get("ok", False):
+        return "I couldn't change the audio."
+    raw = result.get("raw_summary")
+    if not isinstance(raw, dict):
+        raw = result
+    muted = raw.get("muted")
+    if muted is True:
+        return "Audio is now muted."
+    if muted is False:
+        return "Audio is now unmuted."
+    return None
+
+
+def volume_reply(result: dict[str, Any]) -> str | None:
+    """Speak the absolute volume the tool actually set."""
+    if not result.get("ok", False):
+        return "I couldn't set the volume."
+    raw = result.get("raw_summary")
+    if not isinstance(raw, dict):
+        raw = result
+    value = raw.get("requested_percent", raw.get("volume_percent"))
+    try:
+        percent = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return f"Volume is now set to {percent} percent."
+
+
 def is_lead_in(text: str) -> bool:
     """True for a contentless opener such as "Here are the first items in your folder".
 
@@ -104,6 +134,10 @@ def code_reply_for_tool(tool_name: str, result: dict[str, Any]) -> str | None:
     """Deterministic reply for tools whose answer is already known in code."""
     if tool_name == "list_files":
         return list_files_reply(result)
+    if tool_name == "mute_audio":
+        return mute_audio_reply(result)
+    if tool_name in ("set_volume", "volume_up", "volume_down"):
+        return volume_reply(result)
     return None
 
 

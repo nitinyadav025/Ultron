@@ -13,7 +13,7 @@ template fragments, and the over-loosened guard.
 | Part 1 | Normaliser never clips: cap gain by the true raw peak | DONE (code + tests) |
 | Part 2 | Optional `MIC_SOURCE_VOLUME` applied at chat / voice-test start | DONE (code + tests; `.env` set to 0.21) |
 | Part 3 | Slash commands never reach the LLM; raw-line logging | DONE (code + tests) |
-| Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | NOT STARTED |
+| Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | DONE (code + tests) |
 | Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | NOT STARTED |
 | Part 6 | Restore the strict one-signal guard | NOT STARTED |
 | Part 7 | Full pytest, docs, commits | NOT STARTED |
@@ -86,6 +86,28 @@ template fragments, and the over-loosened guard.
   with the new normalization a leading-slash line is always a command.
 - Tests: `tests/test_chat_commands.py` (normalization, dispatch, and an end-to-end CLI run
   proving `/nonsense` never reaches `run_task` and `//voice` starts listening).
+
+### Part 4 result (mute/unmute, timer honesty)
+
+- `assistant/tools/volume.py`: `mute_intent()` (mute / unmute / None),
+  `asks_for_timed_mute()` (duration + mute/silence words), and the exact replies
+  `WHAT_MUTE_REPLY` and `TIMED_MUTE_REPLY`. `mute_audio` itself was already explicit and
+  idempotent (`muted=true/false`), not a toggle.
+- `assistant/brain/tool_replies.py`: code-built replies from the real tool result:
+  "Audio is now muted.", "Audio is now unmuted.", "Volume is now set to N percent.",
+  plus "I couldn't change the audio." / "I couldn't set the volume." on failure.
+  `code_reply_for_tool` now covers mute_audio, set_volume, volume_up, volume_down.
+- `assistant/brain/agent_loop.py`:
+  - a timed mute request is answered before the LLM: no tool runs; the next "yes" mutes now;
+  - a mute_audio call with both/neither mute word asks "Do you want to mute or unmute?" and
+    runs nothing;
+  - the tool's `muted` argument is forced from the spoken word (mute → True, unmute → False),
+    so the reply always matches what was done.
+- Tests: `tests/test_volume.py` (intents/timer), `tests/test_reply_style.py` (code replies),
+  `tests/test_agent_rounds.py` (forced action, ambiguity, timed request, "yes" follow-up).
+- Exact replies: "mute" → "Audio is now muted."; "unmute" → "Audio is now unmuted.";
+  "mute unmute" → "Do you want to mute or unmute?"; "stay silent for 10 seconds" →
+  "I can mute the audio, but I can't unmute it automatically after a time. Should I mute it now?"
 
 
 ## Listening fix (Nov 1)

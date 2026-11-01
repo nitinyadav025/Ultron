@@ -10,10 +10,14 @@ from assistant.safety.permissions import PermissionGate
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import (
     MAX_STEP_PERCENT,
+    TIMED_MUTE_REPLY,
+    WHAT_MUTE_REPLY,
     WHAT_VOLUME_REPLY,
+    asks_for_timed_mute,
     clamp_percent,
     clamp_step,
     mute_audio,
+    mute_intent,
     numbers_in_text,
     percent_is_mentioned,
     set_volume,
@@ -100,6 +104,27 @@ def test_percent_must_appear_in_the_transcript() -> None:
     assert percent_is_mentioned(30, "turn the volume up") is False
     assert percent_is_mentioned(30, "turn volume to fifty percent") is False
     assert WHAT_VOLUME_REPLY == "What volume should I set? Say a number from 0 to 100."
+
+
+def test_mute_intent_is_explicit_or_ambiguous() -> None:
+    assert mute_intent("mute") == "mute"
+    assert mute_intent("Mute the audio.") == "mute"
+    assert mute_intent("unmute") == "unmute"
+    assert mute_intent("mute unmute") is None
+    assert mute_intent("turn the volume up") is None
+    assert mute_intent("stay silent for 10 seconds") is None
+    assert WHAT_MUTE_REPLY == "Do you want to mute or unmute?"
+
+
+def test_timed_mute_requests_are_detected() -> None:
+    assert asks_for_timed_mute("Stay silent for 10 seconds.") is True
+    assert asks_for_timed_mute("mute for a minute") is True
+    assert asks_for_timed_mute("mute") is False
+    assert asks_for_timed_mute("turn the volume up for 10 seconds") is False
+    assert TIMED_MUTE_REPLY == (
+        "I can mute the audio, but I can't unmute it automatically after a time. "
+        "Should I mute it now?"
+    )
 
 
 def test_set_volume_uses_wpctl_absolute_target(monkeypatch: Any) -> None:

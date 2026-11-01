@@ -15,6 +15,35 @@ MIN_VOLUME_PERCENT = 0
 MAX_VOLUME_PERCENT = 100
 MAX_VOLUME = 1.0
 WHAT_VOLUME_REPLY = "What volume should I set? Say a number from 0 to 100."
+WHAT_MUTE_REPLY = "Do you want to mute or unmute?"
+TIMED_MUTE_REPLY = (
+    "I can mute the audio, but I can't unmute it automatically after a time. Should I mute it now?"
+)
+
+_DURATION = re.compile(
+    r"(?i)\b(?:\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|sixty)"
+    r"\s*(?:seconds?|secs?|minutes?|mins?|hours?)\b"
+)
+_TIMED_ACTION = re.compile(r"(?i)\b(?:mute|unmute|silent|silence|quiet|quietly)\b")
+
+
+def mute_intent(text: str) -> str | None:
+    """Return "mute", "unmute", or None when the words do not clearly ask for one."""
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    wants_unmute = any(word.startswith("unmute") for word in words)
+    wants_mute = any(word.startswith("mute") for word in words)
+    if wants_unmute and not wants_mute:
+        return "unmute"
+    if wants_mute and not wants_unmute:
+        return "mute"
+    return None
+
+
+def asks_for_timed_mute(text: str) -> bool:
+    """True for "stay silent for 10 seconds" / "mute for a minute" (no timer exists)."""
+    lowered = text or ""
+    return bool(_DURATION.search(lowered)) and bool(_TIMED_ACTION.search(lowered))
+
 
 _ONES = {
     "zero": 0,

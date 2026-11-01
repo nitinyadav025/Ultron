@@ -12,7 +12,14 @@ from assistant.brain.local_client import LocalUsageMeter
 from assistant.brain.prompts import build_system_prompt
 from assistant.brain.reply_style import plain_text, short_plain_reply
 from assistant.brain.tool_output import compact_tool_result
-from assistant.brain.tool_replies import fallback_reply, is_lead_in, list_files_reply
+from assistant.brain.tool_replies import (
+    code_reply_for_tool,
+    fallback_reply,
+    is_lead_in,
+    list_files_reply,
+    mute_audio_reply,
+    volume_reply,
+)
 from assistant.config import load_config
 from assistant.safety.killswitch import WatchdogMonitor
 from assistant.safety.permissions import PermissionGate
@@ -196,6 +203,39 @@ def test_lead_in_fallback_is_a_plain_sentence_per_tool() -> None:
     assert fallback_reply("list_files") == "I listed the folder."
     assert fallback_reply("read_file") == "I read the file."
     assert fallback_reply("volume_up") == "Done."
+
+
+def test_mute_and_volume_replies_come_from_the_tool_result() -> None:
+    assert mute_audio_reply({"ok": True, "raw_summary": {"ok": True, "muted": True}}) == "Audio is now muted."
+    assert mute_audio_reply({"ok": True, "raw_summary": {"ok": True, "muted": False}}) == "Audio is now unmuted."
+    assert mute_audio_reply({"ok": False, "error": "wpctl failed"}) == "I couldn't change the audio."
+
+    assert volume_reply({"ok": True, "raw_summary": {"ok": True, "requested_percent": 30}}) == (
+        "Volume is now set to 30 percent."
+    )
+    assert volume_reply({"ok": True, "raw_summary": {"ok": True, "volume_percent": 80}}) == (
+        "Volume is now set to 80 percent."
+    )
+    assert volume_reply({"ok": False, "error": "wpctl failed"}) == "I couldn't set the volume."
+    assert code_reply_for_tool("mute_audio", {"ok": True, "raw_summary": {"muted": True}}) == (
+        "Audio is now muted."
+    )
+
+
+def test_live_timed_mute_reply_is_replaced_by_the_real_action() -> None:
+    cfg = load_config()
+    cfg.backend = "local"
+    gate = PermissionGate(config=cfg, mode="auto-safe", confirm_callback=lambda _d, _t: "no")
+    registry = ToolRegistry(config=cfg, gate=gate)
+    watchdog = WatchdogMonitor(cfg.max_steps, cfg.wall_clock_timeout_sec, cfg.idle_standdown_sec)
+    loop = AgentLoop(cfg, FakeLocalAdapter(), registry, watchdog)
+
+    # The live build said "Audio is muted for 10 seconds." although no timer exists.
+    reply = loop._finalize_reply(
+        "Audio is muted for 10 seconds.",
+        ("mute_audio", {"ok": True, "raw_summary": {"ok": True, "muted": True}}),
+    )
+    assert reply == "Audio is now muted."
 
 
 def test_local_prompt_is_short_and_static_prefix_comes_first() -> None:

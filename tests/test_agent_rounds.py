@@ -13,10 +13,11 @@ from assistant.config import load_config
 from assistant.safety.killswitch import WatchdogMonitor
 from assistant.safety.permissions import PermissionGate
 from assistant.tools.registry import ToolRegistry, tool
-from assistant.tools.volume import WHAT_VOLUME_REPLY
+from assistant.tools.volume import TIMED_MUTE_REPLY, WHAT_MUTE_REPLY, WHAT_VOLUME_REPLY
 
 EXEC_COUNT = {"n": 0}
 SET_VOLUME_COUNT = {"n": 0}
+MUTE_CALLS: dict[str, Any] = {"n": 0, "args": []}
 
 
 @tool(risk_level="safe", read_only=False)
@@ -31,6 +32,14 @@ def dummy_set_volume(percent: int = 50) -> dict:
     """Test-only absolute volume tool that counts executions."""
     SET_VOLUME_COUNT["n"] += 1
     return {"ok": True, "requested_percent": percent}
+
+
+@tool(risk_level="safe", read_only=False, name="mute_audio")
+def dummy_mute_audio(muted: bool = True) -> dict:
+    """Test-only mute tool that records the explicit action it was asked to do."""
+    MUTE_CALLS["n"] += 1
+    MUTE_CALLS["args"].append(bool(muted))
+    return {"ok": True, "muted": bool(muted)}
 
 
 class FakeLocalAdapter:
@@ -157,3 +166,121 @@ def test_set_volume_with_a_spoken_number_runs_the_tool() -> None:
     _set_volume_loop(adapter).run_task("turn volume to thirty percent")
 
     assert SET_VOLUME_COUNT["n"] == 1
+
+
+class MuteAdapter:
+    """Calls mute_audio with a chosen (possibly wrong) bool, then answers with text."""
+
+    is_local = True
+    usage_meter = LocalUsageMeter()
+
+    def __init__(self, muted: bool = True) -> None:
+        self.muted = muted
+        self.calls = 0
+
+    def select_model(self, role: str = "main") -> str:
+        return "fake-local"
+
+    def generate_turn(
+        self,
+        contents: object,
+        system_instruction: str,
+        tools: list[dict[str, Any]] | None = None,
+        role: str = "main",
+        thinking_level: str | None = None,
+        max_retries: int = 1,
+        max_output_tokens: int | None = None,
+    ) -> tuple[types.GenerateContentResponse, TokenUsageStats]:
+        self.calls += 1
+        if self.calls == 1:
+            content = types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(name="mute_audio", args={"muted": self.muted}, id="m1")
+                    )
+                ],
+            )
+        else:
+            content = types.Content(role="model", parts=[types.Part.from_text(text="Done.")])
+        return types.GenerateContentResponse(candidates=[types.Candidate(content=content)]), TokenUsageStats()
+
+
+class NeverAdapter:
+    """Fails the test if the LLM is called at all."""
+
+    is_local = True
+    usage_meter = LocalUsageMeter()
+    calls = 0
+
+    def select_model(self, role: str = "main") -> str:
+        return "fake-local"
+
+    def generate_turn(self, *_args: Any, **_kwargs: Any) -> tuple[Any, Any]:
+        NeverAdapter.calls += 1
+        raise AssertionError("the LLM must not be called for a timed mute request")
+
+
+def _mute_loop(adapter: Any) -> AgentLoop:
+    cfg = load_config()
+    cfg.backend = "local"
+    gate = PermissionGate(config=cfg, mode="auto-safe", confirm_callback=lambda _d, _t: "yes")
+    registry = ToolRegistry(config=cfg, gate=gate)
+    registry.register(dummy_mute_audio)
+    watchdog = WatchdogMonitor(cfg.max_steps, cfg.wall_clock_timeout_sec, cfg.idle_standdown_sec)
+    return AgentLoop(cfg, adapter, registry, watchdog)
+
+
+def _reset_mute() -> None:
+    MUTE_CALLS["n"] = 0
+    MUTE_CALLS["args"] = []
+
+
+def test_mute_word_forces_muted_true_even_if_the_model_asked_to_unmute() -> None:
+    _reset_mute()
+    result = _mute_loop(MuteAdapter(muted=False)).run_task("mute")
+
+    assert MUTE_CALLS == {"n": 1, "args": [True]}
+    assert result.reply == "Audio is now muted."
+
+
+def test_unmute_word_forces_muted_false_even_if_the_model_asked_to_mute() -> None:
+    _reset_mute()
+    result = _mute_loop(MuteAdapter(muted=True)).run_task("unmute")
+
+    assert MUTE_CALLS == {"n": 1, "args": [False]}
+    assert result.reply == "Audio is now unmuted."
+
+
+def test_ambiguous_mute_and_unmute_asks_and_runs_nothing() -> None:
+    _reset_mute()
+    adapter = MuteAdapter()
+    result = _mute_loop(adapter).run_task("mute unmute")
+
+    assert result.reply == WHAT_MUTE_REPLY
+    assert MUTE_CALLS["n"] == 0
+    assert adapter.calls == 1  # only the model turn that proposed the call
+
+
+def test_timed_mute_asks_honestly_without_the_llm() -> None:
+    _reset_mute()
+    NeverAdapter.calls = 0
+
+    result = _mute_loop(NeverAdapter()).run_task("Stay silent for 10 seconds.")
+
+    assert result.reply == TIMED_MUTE_REPLY
+    assert MUTE_CALLS["n"] == 0
+    assert NeverAdapter.calls == 0
+
+
+def test_yes_after_the_timed_mute_offer_mutes_now() -> None:
+    _reset_mute()
+    adapter = MuteAdapter(muted=False)
+    loop = _mute_loop(adapter)
+
+    first = loop.run_task("Stay silent for 10 seconds.")
+    assert first.reply == TIMED_MUTE_REPLY and MUTE_CALLS["n"] == 0
+
+    second = loop.run_task("yes")
+    assert MUTE_CALLS == {"n": 1, "args": [True]}
+    assert second.reply == "Audio is now muted."
