@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from assistant.config import PROJECT_ROOT, AssistantConfig
+from assistant.config import AssistantConfig
 from assistant.safety.redact import redact_secrets
 
 logger = logging.getLogger("ultron.ears")
@@ -30,38 +30,6 @@ SAMPLE_RATE = 16000
 BEAM_SIZE = 1
 NO_SPEECH = "I didn't catch that"
 _BLANK_TRANSCRIPTS = {"", "[blank_audio]", "(silence)", "[silence]", "[no speech]", "[no_speech]"}
-
-# Whisper mishears this project's short command words ("open firefox" came back as
-# "Open 5 box"). faster-whisper 1.2.1 supports `hotwords`, which biases the decoder
-# without feeding fake previous text (that is what `initial_prompt` would do).
-TOOL_WORDS = (
-    "Ultron, open, list files, read file, volume, volume up, volume down, set volume to, "
-    "mute, unmute, percent, Downloads, Documents, Desktop"
-)
-
-
-def load_app_names(apps_file: Path | None = None) -> list[str]:
-    """Read the app names Ultron can launch from config/apps.yaml (never raises)."""
-    path = apps_file or (PROJECT_ROOT / "config" / "apps.yaml")
-    try:
-        import yaml
-
-        catalog = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("apps", {})
-        return [str(name) for name in catalog]
-    except Exception:  # missing/broken YAML must never break the microphone path
-        return []
-
-
-def build_hotwords(apps_file: Path | None = None) -> str:
-    """Build the hotword hint from the real app names plus the tool trigger words."""
-    words: list[str] = []
-    seen: set[str] = set()
-    for word in [*load_app_names(apps_file), *TOOL_WORDS.split(",")]:
-        cleaned = word.strip()
-        if cleaned and cleaned.lower() not in seen:
-            seen.add(cleaned.lower())
-            words.append(cleaned)
-    return ", ".join(words)
 
 
 class EarsError(RuntimeError):
@@ -184,16 +152,19 @@ class WhisperEars:
             return False, NO_SPEECH
 
         started = time.monotonic()
+        decode_options: dict[str, Any] = {
+            "language": "en",
+            "beam_size": BEAM_SIZE,
+            "vad_filter": True,
+            "condition_on_previous_text": False,
+            "without_timestamps": True,
+        }
+        # No hotwords/initial_prompt by default: the decoder echoed the comma-separated
+        # word list back into the transcript on unclear audio. Opt in explicitly only.
+        if self.config.whisper_hotwords:
+            decode_options["hotwords"] = self.config.whisper_hotwords
         try:
-            segments, info = model.transcribe(
-                audio,
-                language="en",
-                beam_size=BEAM_SIZE,
-                vad_filter=True,
-                condition_on_previous_text=False,
-                without_timestamps=True,
-                hotwords=self.config.whisper_hotwords or build_hotwords(),
-            )
+            segments, info = model.transcribe(audio, **decode_options)
             text = " ".join(segment.text.strip() for segment in segments).strip()
         except Exception as exc:
             err = f"Local transcription failed: {type(exc).__name__}: {exc}"

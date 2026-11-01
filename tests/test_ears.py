@@ -115,24 +115,24 @@ def test_transcribe_passes_the_phase3_decode_settings(tmp_path: Path) -> None:
     assert call["beam_size"] == 1
     assert call["vad_filter"] is True
     assert call["condition_on_previous_text"] is False
+    # Regression: the old default hotword list leaked into the transcript. No prompt
+    # text of any kind may reach the decoder unless the user opts in.
+    assert "hotwords" not in call
+    assert "initial_prompt" not in call
+    assert "prompt" not in call
 
 
-def test_hotwords_hint_uses_real_app_names_and_tool_words(tmp_path: Path) -> None:
-    from assistant.speech.ears import build_hotwords, load_app_names
+def test_hotwords_are_off_by_default_even_with_apps_yaml(tmp_path: Path) -> None:
+    # config/apps.yaml exists and used to be turned into a hotword list automatically.
+    from assistant.config import PROJECT_ROOT
 
-    names = load_app_names()
-    assert "firefox" in names and "text editor" in names
-
-    hotwords = build_hotwords()
-    for word in ("firefox", "files", "terminal", "volume", "mute", "list files", "open"):
-        assert word in hotwords
-    # Kept small: faster-whisper truncates hints at half its max token length.
-    assert len(hotwords) < 400
+    assert (PROJECT_ROOT / "config" / "apps.yaml").is_file()
 
     model = FakeModel(["open firefox"])
     ears = WhisperEars(_cfg(tmp_path), model_factory=lambda _d: model)
     ears.transcribe(_write_wav(tmp_path / "e.wav", _tone()))
-    assert model.calls[0]["hotwords"] == hotwords
+
+    assert "hotwords" not in model.calls[0]
 
 
 def test_hotwords_can_be_overridden_by_config(tmp_path: Path) -> None:
@@ -142,13 +142,6 @@ def test_hotwords_can_be_overridden_by_config(tmp_path: Path) -> None:
     ears = WhisperEars(cfg, model_factory=lambda _d: model)
     ears.transcribe(_write_wav(tmp_path / "f.wav", _tone()))
     assert model.calls[0]["hotwords"] == "firefox, spotify"
-
-
-def test_missing_apps_yaml_never_breaks_transcription(tmp_path: Path) -> None:
-    from assistant.speech.ears import build_hotwords
-
-    hotwords = build_hotwords(tmp_path / "nope.yaml")
-    assert "volume" in hotwords  # falls back to the tool words
 
 
 def test_silence_and_blank_tokens_are_not_speech(tmp_path: Path) -> None:
