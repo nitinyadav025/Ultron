@@ -19,8 +19,8 @@ Ultron is a Fedora 44 voice-controlled laptop assistant (Python, venv `.venv`, f
 - Phase 5 Part A is done. Phase 5 Part B1 is done, including the listening fix and the
   polish after live tests. **Phase 5 Part C (15-command benchmark) has NOT started** —
   do not start it without the user's approval.
-- Latest branch commit before this handoff doc: `4d35da1` (Part 7 docs). Full commit list
-  is in "Head state (polish after live tests)" below.
+- Latest commit on the branch: **`0816c42`** (this handoff; the detailed work commit is
+  `6853561`). Full commit list is in "Head state (polish after live tests)" below.
 - Latest pytest: **177 passed**. `ss -ltnp | grep 9931` shows **no llama-server running**.
 - Working tree is clean. `.env` was not committed.
 - Last live session (12:24–12:31) transcribed **8 of 8 voice turns correctly**; guard scores
@@ -287,7 +287,7 @@ template fragments, and the over-loosened guard.
 
 - Branch `phase5-b1-work`, local commits only: Part 1 `5010879`, Part 2 `a2f7d0c`,
   Part 3 `d699ffd`, Part 4 `5cd924f`, Part 5 `0a583ab`, Part 6 `021987e`,
-  Part 4 follow-up `b3019a9`, Part 7 docs commit after this file.
+  Part 4 follow-up `b3019a9`, Part 7 `4d35da1`, handoff docs `6853561` and `0816c42`.
 - Latest pytest: **177 passed**. No llama-server running (`ss -ltnp | grep 9931` empty).
 - Working tree clean; nothing pushed; the remote and git config were not touched.
 - `.env` contains `MIC_SOURCE_VOLUME=0.21` (appended without reading/printing; not committed).
