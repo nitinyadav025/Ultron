@@ -129,7 +129,8 @@ Verified without sudo (`getfacl /dev/uinput`, `timeout 2 ydotoold …`, `command
 
 ### Head state (B5)
 
-- Branch `phase5-b5-full-control`, commit `d7903d0` (local only, nothing pushed).
+- Branch `phase5-b5-full-control`, commits `d7903d0` (B5 code), `a3e8fe2`
+  (head state) and `7094be3` (final phrases/context polish), local only, nothing pushed.
 - Final pytest **362 passed, 0 skipped**; benchmark **25/25** (mocked, average 1.519 ms).
 - No llama-server on port 9931; no `ydotoold` left running.
 - Working tree clean after the docs commit.
