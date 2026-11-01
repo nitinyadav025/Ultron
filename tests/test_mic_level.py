@@ -11,7 +11,6 @@ from __future__ import annotations
 import array
 import wave
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +19,7 @@ from assistant.interfaces.voice import VoiceController, compute_pcm16_peak_rms
 from assistant.speech.recorder import (
     SAFE_OUTPUT_PEAK,
     TARGET_SPEECH_RMS,
+    SyntheticSource,
     normalise_mic_level,
     trim_leading_transient,
 )
@@ -141,44 +141,11 @@ def test_pop_far_from_the_start_is_not_trimmed() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def _fake_recorder(monkeypatch: pytest.MonkeyPatch, wav_path: Path, pcm: bytes, rate: int = 16000) -> None:
-    def fake_run() -> SimpleNamespace:
-        with wave.open(str(wav_path), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(rate)
-            wf.writeframes(pcm)
-        return SimpleNamespace(returncode=0, stderr="")
-
-    class DoneProc:
-        returncode = 0
-
-        def poll(self) -> None:
-            return None
-
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            return "", ""
-
-        def send_signal(self, _sig: int) -> None:
-            return None
-
-        def terminate(self) -> None:
-            return None
-
-        def kill(self) -> None:
-            return None
-
-        def wait(self, timeout: float | None = None) -> int:
-            return 0
-
-    def fake_popen(cmd: list[str], **_kwargs: object) -> object:
-        fake_run()
-        return DoneProc()
-
-    monkeypatch.setattr(
-        "assistant.interfaces.voice.shutil.which", lambda name: "pw-record" if name == "pw-record" else None
-    )
-    monkeypatch.setattr("assistant.interfaces.voice.subprocess.Popen", fake_popen)
+def _fake_source(monkeypatch: pytest.MonkeyPatch, pcm: bytes) -> SyntheticSource:
+    """Fixed mode now uses the same streaming source auto mode uses."""
+    source = SyntheticSource(pcm)
+    monkeypatch.setattr("assistant.interfaces.voice.PwRecordSource", lambda: source)
+    return source
 
 
 def _controller(tmp_path: Path) -> VoiceController:
@@ -186,14 +153,15 @@ def _controller(tmp_path: Path) -> VoiceController:
     cfg.backend = "local"
     voice = VoiceController(config=cfg, adapter=None)
     voice.audio_file = tmp_path / "mic.wav"
+    voice.debug_dir = tmp_path / "voice_debug"
     return voice
 
 
 def test_clipped_start_is_dropped_before_normalising(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     voice = _controller(tmp_path)
-    _fake_recorder(monkeypatch, voice.audio_file, _tone(32767, 15) + _speech_like(3000))
+    _fake_source(monkeypatch, _tone(32767, 15) + _speech_like(3000))
 
-    ok, detail = voice.record_push_to_talk(0.1)
+    ok, detail = voice.record_push_to_talk(0.6)
 
     assert ok is True and detail == str(voice.audio_file)
     assert voice.last_peak_before < 31000  # the pop never reaches the level measurement
@@ -205,9 +173,9 @@ def test_clipped_start_is_dropped_before_normalising(tmp_path: Path, monkeypatch
 
 def test_quiet_speech_is_boosted_for_whisper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     voice = _controller(tmp_path)
-    _fake_recorder(monkeypatch, voice.audio_file, _speech_like(600))
+    _fake_source(monkeypatch, _speech_like(600))
 
-    ok, _ = voice.record_push_to_talk(0.1)
+    ok, _ = voice.record_push_to_talk(0.6)
 
     assert ok is True
     assert voice.last_peak_before == 600
@@ -216,9 +184,9 @@ def test_quiet_speech_is_boosted_for_whisper(tmp_path: Path, monkeypatch: pytest
 
 def test_room_noise_is_not_amplified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     voice = _controller(tmp_path)
-    _fake_recorder(monkeypatch, voice.audio_file, _tone(400, 50))
+    _fake_source(monkeypatch, _tone(400, 50))
 
-    ok, _ = voice.record_push_to_talk(0.1)
+    ok, _ = voice.record_push_to_talk(0.6)
 
     assert ok is True
     assert voice.last_peak == 400  # gain 1.0: hiss stays hiss
@@ -227,8 +195,8 @@ def test_room_noise_is_not_amplified(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_fixed_mode_keeps_the_old_window_behaviour(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     voice = _controller(tmp_path)
     voice.config.voice_mode = "fixed"
-    voice.config.voice_fixed_seconds = 0.1
-    _fake_recorder(monkeypatch, voice.audio_file, _speech_like(2000))
+    voice.config.voice_fixed_seconds = 0.6
+    _fake_source(monkeypatch, _speech_like(2000))
 
     ok, _ = voice.record()
 

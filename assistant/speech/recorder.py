@@ -23,6 +23,7 @@ from __future__ import annotations
 import array
 import math
 import queue
+import select
 import shutil
 import signal
 import subprocess
@@ -31,7 +32,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
@@ -44,14 +45,32 @@ FRAME_BYTES = FRAME_SAMPLES * SAMPLE_WIDTH
 WARMUP_MS = 400
 # Noise floor measured from the first frames (clipped frames excluded).
 CALIBRATION_MS = 200
-PRE_ROLL_MS = 300
+PRE_ROLL_MS = 400  # keep the first word safe
 MIN_SPEECH_MS = 200  # clicks and bumps shorter than this are not speech
-NOISE_MULTIPLIER = 3.0
-ABS_MIN_FRAME_RMS = 220  # int16 RMS; below this a frame is always silence
+
+# Start detection: a low, capped threshold so a soft first word (about 5x quieter than
+# the rest) still starts the recording, while a quiet room stays below it.
+ABS_START_RMS = 280
+MAX_START_RMS = 500
+START_NOISE_MULTIPLIER = 2.5
+DEFAULT_NOISE_FLOOR = 60.0
+MIN_NOISE_FLOOR = 40.0
+
+# End detection: hysteresis (clearly lower than the start threshold) and relative to the
+# speaker's own level in this recording. A pause of up to ~1.8 s must not end the capture.
+ABS_END_RMS = 140
+END_NOISE_MULTIPLIER = 1.8
+END_SPEAKER_FRACTION = 0.18
+MIN_SPEECH_BEFORE_SILENCE_STOP_MS = 1500
+
+# A saturated burst (wake-up thump / stuck full-scale noise) is not a voice: its RMS is
+# very close to its peak. Real speech, even clipped, keeps a crest factor above ~2.8.
+CLIPPED_BURST_CREST = 2.2
 CLIP_LEVEL = 31000  # a frame whose peak reaches this is (near) full scale
 
 # Trailing silence kept after speech so the last word is not clipped.
 TRAILING_SILENCE_MS = 300
+LEVEL_TRACE_MS = 100  # debug trace resolution
 
 
 class RecorderError(RuntimeError):
@@ -141,9 +160,11 @@ class Recording:
 
     pcm: bytes = b""
     saw_speech: bool = False
-    reason: str = "error"  # silence | timeout | max_length | cancelled | source_ended | no_audio
+    reason: str = "error"  # silence | timeout | max_length | enter | cancelled | source_ended | no_audio | fixed
     duration_ms: int = 0
     speech_ms: int = 0
+    debug_pcm: bytes = b""  # raw audio kept even when no speech was confirmed
+    trace: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -294,56 +315,102 @@ class SyntheticSource:
 # --------------------------------------------------------------------------------------
 
 
+def _is_clipped_burst(level: int, peak: int) -> bool:
+    """A saturated burst (wake-up thump) is not a voice: RMS sits very close to the peak."""
+    return peak >= CLIP_LEVEL and level * CLIPPED_BURST_CREST > peak
+
+
+def _start_threshold(noise_floor: float) -> float:
+    return max(float(ABS_START_RMS), min(noise_floor * START_NOISE_MULTIPLIER, float(MAX_START_RMS)))
+
+
+def _end_threshold(noise_floor: float, start_threshold: float, speaker_level: float) -> float:
+    return max(
+        float(ABS_END_RMS),
+        noise_floor * END_NOISE_MULTIPLIER,
+        min(start_threshold * 0.6, max(1.0, speaker_level) * END_SPEAKER_FRACTION),
+    )
+
+
+def _default_enter_pressed() -> bool:
+    """True when the user pressed Enter on a real terminal (newline is consumed)."""
+    stream = sys.stdin
+    if stream is None:
+        return False
+    try:
+        if not stream.isatty():
+            return False
+        ready, _, _ = select.select([stream], [], [], 0)
+        if not ready:
+            return False
+        stream.readline()  # consume it so the chat prompt does not receive a stray Enter
+        return True
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
 def record_until_silence(
     source: AudioSource,
     *,
-    start_timeout_s: float = 8.0,
-    silence_ms: int = 1000,
+    start_timeout_s: float = 10.0,
+    silence_ms: int = 2000,
     max_seconds: float = 30.0,
     min_speech_ms: int = MIN_SPEECH_MS,
     pre_roll_ms: int = PRE_ROLL_MS,
     status: Callable[[str], None] | None = None,
+    stop_on_enter: bool = True,
+    enter_pressed: Callable[[], bool] | None = None,
 ) -> Recording:
-    """Capture speech until ``silence_ms`` of quiet after it started.
+    """Capture speech until ``silence_ms`` of continuous quiet after it started.
 
-    Timing is measured in *audio* time (frames received), so tests with synthetic audio
-    run at full speed while the live path behaves like a wall clock.
+    Start detection uses a low capped threshold (soft starts are heard). End detection
+    uses hysteresis: a frame only counts as silence below a much lower threshold that
+    follows the speaker's own level in this recording, so a short pause never cuts the
+    sentence. Timing is measured in *audio* time, so synthetic tests run at full speed.
 
-    ``status`` receives "Listening... speak now", "Heard you..." and "Got it.".
+    ``stop_on_enter`` lets a real terminal finish the capture immediately; Enter before
+    any speech cancels it. The newline is consumed, never left for the chat prompt.
     """
     notify = status or (lambda _msg: None)
-    notify("Listening... speak now")
+    notify("Listening... speak now (press Enter when done)" if stop_on_enter else "Listening... speak now")
 
-    source.start()
-    # Keep ~300 ms *before* the first word. The 200 ms used to confirm speech is part of
-    # the ring buffer, so the pre-roll window must be larger than 300 ms.
     pre_roll_frames = max(1, (pre_roll_ms + min_speech_ms) // FRAME_MS)
     pre_roll: list[array.array] = []
     collected: list[array.array] = []
     calibration: list[int] = []
+    trace_levels: list[dict[str, Any]] = []
+    bucket: list[tuple[int, int, bool]] = []
 
-    noise_floor = float(ABS_MIN_FRAME_RMS)
+    noise_floor = DEFAULT_NOISE_FLOOR
     calibrated = False
     in_speech = False
     speech_run = 0
     silence_run = 0
     speech_frames = 0
     audio_ms = 0
+    speech_start_ms = 0
+    speaker_level = 0.0
+    start_threshold = _start_threshold(noise_floor)
+    end_threshold = _end_threshold(noise_floor, start_threshold, speaker_level)
     empty_reads = 0
     carry = b""
     reason = "no_audio"
-
     started = time.monotonic()
+    poll_enter = enter_pressed or (_default_enter_pressed if stop_on_enter else (lambda: False))
 
     try:
+        source.start()
         while True:
+            if stop_on_enter and poll_enter():
+                reason = "enter" if in_speech else "cancelled"
+                break
+
             chunk = source.read(FRAME_BYTES, timeout=0.25)
             if chunk is None:
                 reason = "source_ended" if in_speech else "no_audio"
                 break
             if not chunk:
                 empty_reads += 1
-                # A live device that has delivered nothing for ~5 s is broken.
                 if empty_reads * 250 >= 5000 or time.monotonic() - started > max_seconds + 10:
                     reason = "no_audio"
                     break
@@ -357,18 +424,20 @@ def record_until_silence(
                 audio_ms += FRAME_MS
                 level = frame_rms(frame)
                 peak = frame_peak(frame)
-                clipped = peak >= CLIP_LEVEL
+                burst = _is_clipped_burst(level, peak)
 
-                # --- noise floor calibration (skip the device wake-up thump) ---
+                # --- noise floor: 25th percentile of the first 200 ms, bursts ignored ---
                 if not calibrated:
-                    if not clipped and level > 0:
+                    if not burst and level > 0:
                         calibration.append(level)
                     if audio_ms >= CALIBRATION_MS:
-                        noise_floor = float(median(calibration) or ABS_MIN_FRAME_RMS)
+                        estimate = float(percentile(calibration, 0.25)) if calibration else DEFAULT_NOISE_FLOOR
+                        noise_floor = max(MIN_NOISE_FLOOR, estimate)
                         calibrated = True
 
-                threshold = max(noise_floor * NOISE_MULTIPLIER, ABS_MIN_FRAME_RMS)
-                is_speech = level >= threshold and not (clipped and audio_ms <= WARMUP_MS)
+                start_threshold = _start_threshold(noise_floor)
+                end_threshold = _end_threshold(noise_floor, start_threshold, speaker_level)
+                is_speech = level >= start_threshold and not burst
 
                 if not in_speech:
                     pre_roll.append(frame)
@@ -379,11 +448,13 @@ def record_until_silence(
                         speech_frames += 1
                     else:
                         speech_run = 0
-                        if calibrated and audio_ms > WARMUP_MS:
-                            # Track slow room-noise drift, never track speech.
-                            noise_floor = 0.9 * noise_floor + 0.1 * level
+                        # Track slow room-noise drift from quiet frames only.
+                        if calibrated and audio_ms > WARMUP_MS and level < start_threshold:
+                            noise_floor = max(MIN_NOISE_FLOOR, 0.9 * noise_floor + 0.1 * level)
                     if speech_run * FRAME_MS >= min_speech_ms:
                         in_speech = True
+                        speech_start_ms = max(0, audio_ms - speech_run * FRAME_MS)
+                        speaker_level = float(max(frame_rms(f) for f in pre_roll[-speech_run:]))
                         notify("Heard you...")
                         collected.extend(pre_roll)
                         pre_roll = []
@@ -392,32 +463,88 @@ def record_until_silence(
                         break
                 else:
                     collected.append(frame)
-                    if is_speech:
+                    speech_like = level >= start_threshold and not burst
+                    if speech_like:
                         silence_run = 0
+                        speaker_level = max(speaker_level, float(level))
                         speech_frames += 1
-                    else:
+                    elif level < end_threshold:
                         silence_run += 1
-                    if silence_run * FRAME_MS >= silence_ms:
+                    else:
+                        # In the hysteresis band: assume the word is fading, not finished.
+                        silence_run = 0
+                    if (
+                        silence_run * FRAME_MS >= silence_ms
+                        and audio_ms - speech_start_ms >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS
+                    ):
                         reason = "silence"
                         break
                     if audio_ms >= int(max_seconds * 1000):
                         reason = "max_length"
                         break
 
-            if reason in ("timeout", "silence", "max_length"):
+                bucket.append((level, peak, in_speech))
+                if audio_ms - (trace_levels[-1]["t_ms"] if trace_levels else 0) >= LEVEL_TRACE_MS:
+                    trace_levels.append(
+                        {
+                            "t_ms": audio_ms,
+                            "rms": int(sum(item[0] for item in bucket) / len(bucket)),
+                            "peak": max(item[1] for item in bucket),
+                            "speech": any(item[2] for item in bucket),
+                            "end_thr": int(end_threshold),
+                        }
+                    )
+                    bucket = []
+
+            if reason in ("timeout", "silence", "max_length", "enter", "cancelled"):
                 break
     finally:
         source.stop()
 
+    if bucket:
+        trace_levels.append(
+            {
+                "t_ms": audio_ms,
+                "rms": int(sum(item[0] for item in bucket) / len(bucket)),
+                "peak": max(item[1] for item in bucket),
+                "speech": any(item[2] for item in bucket),
+                "end_thr": int(end_threshold),
+            }
+        )
+
+    trace: dict[str, Any] = {
+        "mode": "auto",
+        "thresholds": {
+            "noise_floor": round(noise_floor, 1),
+            "start": int(start_threshold),
+            "end": int(end_threshold),
+            "silence_ms": silence_ms,
+            "start_timeout_s": start_timeout_s,
+            "pre_roll_ms": pre_roll_ms,
+            "min_speech_before_stop_ms": MIN_SPEECH_BEFORE_SILENCE_STOP_MS,
+        },
+        "speech_start_ms": speech_start_ms,
+        "levels": trace_levels,
+    }
+
     if not in_speech:
-        return Recording(pcm=b"", saw_speech=False, reason=reason, duration_ms=audio_ms, speech_ms=speech_frames * FRAME_MS)
+        debug_pcm = b"".join(samples_to_pcm16(frame) for frame in pre_roll)
+        return Recording(
+            pcm=b"",
+            saw_speech=False,
+            reason=reason,
+            duration_ms=audio_ms,
+            speech_ms=speech_frames * FRAME_MS,
+            debug_pcm=debug_pcm,
+            trace=trace,
+        )
 
     if reason == "silence":
-        # Cut the long pause, keeping only a short tail after the last speech frame.
-        threshold = max(noise_floor * NOISE_MULTIPLIER, ABS_MIN_FRAME_RMS)
+        # Cut the long pause, keeping only a short tail after the last speech-like frame.
+        trim_threshold = end_threshold
         last_speech = 0
         for index, frame in enumerate(collected):
-            if frame_rms(frame) >= threshold:
+            if frame_rms(frame) >= trim_threshold:
                 last_speech = index
         keep_tail = TRAILING_SILENCE_MS // FRAME_MS
         collected = collected[: last_speech + 1 + keep_tail]
@@ -430,6 +557,60 @@ def record_until_silence(
         reason=reason,
         duration_ms=audio_ms,
         speech_ms=speech_frames * FRAME_MS,
+        debug_pcm=pcm,
+        trace=trace,
+    )
+
+
+def record_for_duration(
+    source: AudioSource,
+    seconds: float,
+    *,
+    status: Callable[[str], None] | None = None,
+) -> Recording:
+    """Fixed-window capture over the same streaming source used by auto mode.
+
+    This replaces ``pw-record <file>`` + SIGINT, which could end up with only the first
+    word in the WAV. It records exactly ``seconds`` of audio (or until the source ends).
+    """
+    notify = status or (lambda _msg: None)
+    notify(f"Recording {seconds:.1f}s...")
+    target_ms = max(FRAME_MS, int(seconds * 1000))
+    frames: list[array.array] = []
+    carry = b""
+    audio_ms = 0
+    empty_reads = 0
+    started = time.monotonic()
+
+    try:
+        source.start()
+        while audio_ms < target_ms:
+            chunk = source.read(FRAME_BYTES, timeout=0.25)
+            if chunk is None:
+                break
+            if not chunk:
+                empty_reads += 1
+                if empty_reads * 250 >= 5000 or time.monotonic() - started > seconds + 10:
+                    break
+                continue
+            empty_reads = 0
+            carry += chunk
+            while len(carry) >= FRAME_BYTES and audio_ms < target_ms:
+                raw_frame, carry = carry[:FRAME_BYTES], carry[FRAME_BYTES:]
+                frames.append(pcm16_samples(raw_frame))
+                audio_ms += FRAME_MS
+    finally:
+        source.stop()
+
+    pcm = b"".join(samples_to_pcm16(frame) for frame in frames)
+    notify("Got it.")
+    return Recording(
+        pcm=pcm,
+        saw_speech=has_speech_energy(pcm),
+        reason="fixed",
+        duration_ms=audio_ms,
+        debug_pcm=pcm,
+        trace={"mode": "fixed", "target_ms": target_ms, "levels": []},
     )
 
 
@@ -444,12 +625,12 @@ def has_speech_energy(
     if not frames:
         return False
     levels = [frame_rms(frame) for frame in frames]
-    floor = float(percentile(levels, 0.25) or ABS_MIN_FRAME_RMS)
-    threshold = max(floor * NOISE_MULTIPLIER, ABS_MIN_FRAME_RMS)
+    floor = max(MIN_NOISE_FLOOR, float(percentile(levels, 0.25) or DEFAULT_NOISE_FLOOR))
+    threshold = _start_threshold(floor)
     run = 0
     for index, level in enumerate(levels):
-        clipped_now = frame_peak(frames[index]) >= CLIP_LEVEL and index * FRAME_MS <= start_skip_ms
-        if level >= threshold and not clipped_now:
+        burst = _is_clipped_burst(level, frame_peak(frames[index]))
+        if level >= threshold and not burst:
             run += 1
             if run * FRAME_MS >= min_speech_ms:
                 return True
@@ -476,7 +657,7 @@ def trim_leading_transient(pcm: bytes, *, max_ms: int = 700) -> tuple[bytes, int
         return pcm, 0
     limit = min(len(frames), max(1, max_ms // FRAME_MS))
     levels = [frame_rms(frame) for frame in frames]
-    rest_median = median(levels[limit:]) or ABS_MIN_FRAME_RMS
+    rest_median = median(levels[limit:]) or MIN_NOISE_FLOOR
 
     dropped = 0
     for frame in frames[:limit]:

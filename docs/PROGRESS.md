@@ -1,6 +1,104 @@
 # Ultron progress — Phase 5 Part B1
 
-Last updated: 2026-11-01 (follow-up fixes session)
+Last updated: 2026-11-01 (listening reliability fix)
+
+## Listening fix (Nov 1)
+
+Work branch: `phase5-b1-work`. Live listening is broken: attempts are missed, cut off,
+or rejected by the "say it again" guard.
+
+| Part | What | Status |
+|------|------|--------|
+| Part 1 | Evidence from `logs/assistant.log`, `logs/audit.jsonl` and the newest `workspace/voice_input.wav` | DONE (see below) |
+| Part 2 | Robust listening: 2 s end silence, hysteresis, adaptive levels, Enter-to-finish, 10 s start timeout, 400 ms pre-roll, streaming fixed mode, debug captures | DONE (code + tests) |
+| Part 3 | Guard: log scores, reject only on 2 bad signals or 1 extreme, configurable limits | DONE (code + tests) |
+| Part 4 | Offline tests for 9 listening cases | NOT STARTED |
+
+### Part 1 evidence (live session 11:04–11:10, today)
+
+All attempts below are from `logs/assistant.log`; the guard does not log its scores yet,
+so the last row was re-scored by running the saved newest WAV through production Whisper.
+
+| Time | Captured / speech | Stop reason | Whisper text | Guard |
+|------|-------------------|-------------|--------------|-------|
+| 11:04:14 | 2.0 s / 0.6 s | silence (peak 32768, rms 24520) | — VAD no speech | not reached |
+| 11:04:29 | 5.2 s / 3.2 s | silence | not logged | REJECTED |
+| 11:04:40 | 6.1 s / 3.9 s | silence | "This is my FFI, I'll just hit him and download it." | accepted (wrong) |
+| 11:04:58 | 14.3 s / 6.3 s | silence | "The list of my FF5 files is in my mail-down order folder" | accepted (wrong) |
+| 11:06:59 | 2.0 s / 0.6 s | silence (peak 32768, rms 22468) | — VAD no speech | not reached |
+| 11:07:08 | 6.4 s / 3.5 s | silence | not logged | REJECTED |
+| 11:07:22 | 6.2 s / 3.5 s | silence | not logged | REJECTED |
+| 11:07:42 | 4.8 s / 1.9 s | silence | "Turn the volume up" | accepted |
+| 11:08:04 | 5.8 s / 2.6 s | silence | not logged | REJECTED |
+| 11:08:21 | 10.7 s / 4.5 s | silence | not logged | REJECTED |
+| 11:08:32 | 5.3 s / 2.2 s | silence | not logged | REJECTED |
+| 11:08:48 | 8.0 s / 0.2 s | **timeout** | — never transcribed | not reached |
+| 11:08:55 | 8.0 s / 0.3 s | **timeout** | — never transcribed | not reached |
+| 11:09:03 | 8.0 s / 0.7 s | **timeout** | — never transcribed | not reached |
+| 11:09:10 | 6.4 s / 1.6 s | silence | not logged | REJECTED |
+| 11:09:21 | 3.3 s / 0.8 s | silence | "Hey!" | accepted |
+| 11:09:32 | 8.4 s / 4.1 s | silence | "List my four letters in download order." | accepted (wrong) |
+| 11:09:50 | 8.4 s / 4.0 s | silence | "Where is the MMAS folder?" | REJECTED |
+
+Re-scored newest WAV (`workspace/voice_input.wav`, copied to `/tmp/real_attempt_1109.wav`):
+5.98 s, peak 24494, rms 3390, `avg_logprob=-1.087`, `no_speech_prob=0.065`,
+`compression_ratio=0.76` → **rejected by only 0.087 log-prob**. That is genuine speech.
+
+Which causes the evidence supports:
+
+1. **Cause 3 — the guard rejects real speech: CONFIRMED.** 8 attempts were rejected; the
+   measurable one is just past `-1.0`. The guard was tuned on six clean clips only.
+2. **Cause 2 — start detection: CONFIRMED.** Three attempts ended by the 8 s start timeout
+   with 0.2–0.7 s of "speech-like" frames but never 200 ms consecutive; two more recorded a
+   full-scale thump (peak 32768, rms 22468–24520) as "speech" and Whisper then found no
+   speech. The start threshold and calibration are too easily polluted / too high.
+3. **Cause 1 — end silence: LIKELY.** Long sentences stopped at a "silence" after 1 s and
+   some recordings are short relative to the sentence (5.2–6.4 s with 2.6–3.9 s speech).
+4. **Cause 4 — pre-roll/trimming: NOT EVIDENCED.** The first word does not show a consistent
+   loss pattern; the bigger problems are start detection and guard rejection.
+
+### Part 2 result (listening robustness)
+
+- **Found and fixed a structural bug:** `VoiceController.record_auto()` started
+  `PwRecordSource` and `record_until_silence()` started it a second time. Two `pw-record`
+  processes shared one queue; the first was never stopped. The recorder now owns start/stop.
+- `assistant/speech/recorder.py`:
+  - end of speech: default `silence_ms=2000`, hysteresis (end threshold is much lower than
+    start), relative to the speaker's own level (`END_SPEAKER_FRACTION=0.18`) and the room
+    noise (`1.8x`); no stop before `MIN_SPEECH_BEFORE_SILENCE_STOP_MS=1500`.
+  - start: `ABS_START_RMS=280`, capped at `MAX_START_RMS=500`, so a soft word (5x quieter)
+    triggers; the noise floor is the 25th percentile of the first 200 ms, and saturated
+    bursts (crest < 2.2, e.g. the mic wake-up thump) never count as voice.
+  - pre-roll 400 ms; start timeout default 10 s.
+  - Enter finishes the capture and is consumed from the terminal; Enter before speech
+    cancels; Ctrl+C still cancels only the capture.
+  - `record_for_duration()` for fixed mode over the same streaming source.
+  - every `Recording` now carries `debug_pcm` + a level `trace`.
+- `assistant/config.py`: `VOICE_SILENCE_MS` default 2000, `VOICE_START_TIMEOUT_S` default 10.
+- `assistant/interfaces/voice.py`:
+  - fixed mode rewritten to stream (no `pw-record <file>` + SIGINT), so the whole window is
+    kept.
+  - every attempt saves `workspace/voice_debug/attempt_<ts>.wav` (raw) and `.json`
+    (reason, duration, speech, thresholds, per-100 ms levels, transcript, guard scores);
+    newest 10 kept. One INFO line per attempt with the same summary.
+- `.env.example`: documents all voice settings.
+- Tests updated: `tests/test_voice_auto.py`, `tests/test_mic_level.py`.
+
+### Part 3 result (guard tuning)
+
+- `assistant/speech/ears.py`: `GuardLimits` with configurable limits; every transcript logs
+  `Ears confidence: min_avg_logprob=… max_no_speech=… max_compression=… verdict=… text=…`.
+- New rule: reject only on **two** bad signals or **one** extreme value, or the existing
+  real-word / repetition-loop text rules.
+  Defaults: bad at `avg_logprob < -1.0`, `no_speech_prob > 0.60`,
+  `compression_ratio > 2.4`; extreme at `-1.5`, `0.85`, `3.0`.
+- Verification: all six `/tmp/cmp2_*.wav` clips → `verdict=ok`. The real rejected attempt
+  (`/tmp/real_attempt_1109.wav`, `-1.0866 / 0.0647 / 0.7576`) → `verdict=ok`.
+  Old rule rejected it (single signal past `-1.0`).
+- `.env.example`: `WHISPER_MIN_AVG_LOGPROB`, `WHISPER_MAX_NO_SPEECH_PROB`,
+  `WHISPER_MAX_COMPRESSION_RATIO`, `WHISPER_EXTREME_*`.
+
+
 
 ## Status
 

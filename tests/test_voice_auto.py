@@ -48,18 +48,18 @@ def _record(pcm: bytes, **kwargs: object):
 
 
 def test_waits_for_speech_and_keeps_pre_roll() -> None:
-    pcm = _silence(50) + _tone(4000, 50) + _silence(100)
+    pcm = _silence(50) + _tone(4000, 50) + _silence(150)
 
     recording, events, _source = _record(pcm)
 
     assert recording.saw_speech is True
     assert recording.reason == "silence"
-    assert events == ["Listening... speak now", "Heard you...", "Got it."]
-    # ~300 ms of silence is kept in front of the first loud frame (the first word survives).
+    assert events == ["Listening... speak now (press Enter when done)", "Heard you...", "Got it."]
+    # ~400 ms of silence is kept in front of the first loud frame (the first word survives).
     first = _first_loud_frame(recording.pcm)
-    assert 10 <= first <= 20
+    assert 15 <= first <= 25
     duration_s = len(recording.pcm) / 2 / 16000
-    assert 1.3 <= duration_s <= 1.9
+    assert 1.4 <= duration_s <= 2.0
 
 
 def test_short_click_is_not_speech() -> None:
@@ -89,8 +89,11 @@ def test_stops_after_the_configured_silence() -> None:
     recording, _events, _source = _record(pcm, silence_ms=600)
 
     assert recording.reason == "silence"
-    # speech ends at 0.9 s; 0.6 s of silence detected then a 0.3 s tail is kept
-    assert recording.duration_ms == 1500
+    # The 600 ms silence limit cannot stop before 1.5 s after speech began, so the stop
+    # lands late; the saved audio still ends 300 ms after the last word.
+    assert recording.duration_ms >= 1500
+    duration_s = len(recording.pcm) / 2 / 16000
+    assert 1.0 <= duration_s <= 1.4
 
 
 def test_hard_cap_stops_a_never_ending_speaker() -> None:
@@ -136,6 +139,7 @@ def _controller(tmp_path: Path) -> VoiceController:
     cfg.voice_max_seconds = 5.0
     voice = VoiceController(config=cfg, adapter=None)
     voice.audio_file = tmp_path / "mic.wav"
+    voice.debug_dir = tmp_path / "voice_debug"
     return voice
 
 

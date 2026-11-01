@@ -59,6 +59,12 @@ class AssistantConfig:
     whisper_model: str = "base.en"
     whisper_model_dir: Path = MODELS_DIR / "faster-whisper-base.en"
     whisper_hotwords: str = ""
+    whisper_min_avg_logprob: float = -1.0
+    whisper_max_no_speech_prob: float = 0.60
+    whisper_max_compression_ratio: float = 2.4
+    whisper_extreme_avg_logprob: float = -1.5
+    whisper_extreme_no_speech_prob: float = 0.85
+    whisper_extreme_compression_ratio: float = 3.0
     piper_voice_dir: Path = MODELS_DIR / "piper"
     piper_voice: str = "en_US-lessac-medium"
     api_key: str = ""
@@ -246,8 +252,14 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         except (TypeError, ValueError):
             return default
 
-    voice_start_timeout_s = _positive_float("VOICE_START_TIMEOUT_S", 8.0, 1.0, 60.0)
-    voice_silence_ms = _positive_int("VOICE_SILENCE_MS", 1000, 200, 10000)
+    def _float_value(key: str, default: float) -> float:
+        try:
+            return float(merged.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+
+    voice_start_timeout_s = _positive_float("VOICE_START_TIMEOUT_S", 10.0, 1.0, 60.0)
+    voice_silence_ms = _positive_int("VOICE_SILENCE_MS", 2000, 500, 10000)
     voice_max_seconds = _positive_float("VOICE_MAX_SECONDS", 30.0, 3.0, 120.0)
     voice_fixed_seconds = _positive_float("VOICE_FIXED_SECONDS", 5.0, 1.0, 60.0)
     voice_debug = merged.get("VOICE_DEBUG", "false").lower() == "true"
@@ -296,6 +308,12 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         whisper_model=whisper_model,
         whisper_model_dir=whisper_model_dir,
         whisper_hotwords=(merged.get("WHISPER_HOTWORDS") or "").strip(),
+        whisper_min_avg_logprob=_float_value("WHISPER_MIN_AVG_LOGPROB", -1.0),
+        whisper_max_no_speech_prob=_float_value("WHISPER_MAX_NO_SPEECH_PROB", 0.60),
+        whisper_max_compression_ratio=_float_value("WHISPER_MAX_COMPRESSION_RATIO", 2.4),
+        whisper_extreme_avg_logprob=_float_value("WHISPER_EXTREME_AVG_LOGPROB", -1.5),
+        whisper_extreme_no_speech_prob=_float_value("WHISPER_EXTREME_NO_SPEECH_PROB", 0.85),
+        whisper_extreme_compression_ratio=_float_value("WHISPER_EXTREME_COMPRESSION_RATIO", 3.0),
         piper_voice_dir=piper_voice_dir,
         piper_voice=piper_voice,
         api_key=merged.get("GEMINI_API_KEY", ""),

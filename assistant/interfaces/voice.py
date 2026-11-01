@@ -10,17 +10,18 @@ from __future__ import annotations
 import array
 import concurrent.futures
 import io
+import json
 import logging
 import math
 import queue
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import threading
 import time
 import wave
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -36,9 +37,9 @@ from assistant.speech.recorder import (
     PwRecordSource,
     RecorderError,
     debug_level_summary,
-    has_speech_energy,
     measure_peak_rms,
     normalise_mic_level,
+    record_for_duration,
     record_until_silence,
     trim_leading_transient,
     write_pcm16_wav,
@@ -257,11 +258,13 @@ class VoiceController:
         self.last_peak_before: int = 0
         self.last_rms_before: int = 0
         self._clipping_warned: bool = False
+        self._last_debug_json: Path | None = None
+        self._last_debug_trace: dict = {}
+        self.debug_dir: Path = WORKSPACE_DIR / "voice_debug"
         self.active_tts_engine: str = ""
         self._announced_engine: str = ""
         self._play_lock = threading.Lock()
         self._play_proc: subprocess.Popen[bytes] | subprocess.Popen[str] | None = None
-        self._record_proc: subprocess.Popen[bytes] | subprocess.Popen[str] | None = None
         self._speech_procs: list[subprocess.Popen[bytes] | subprocess.Popen[str]] = []
         # Monotonic time until which cloud TTS is skipped after a failure, so a dead
         # engine (quota/slow API) never stalls spoken replies with repeated 20s waits.
@@ -316,17 +319,10 @@ class VoiceController:
 
         source = PwRecordSource()
         try:
-            source.start()
-        except RecorderError as exc:
-            msg = redact_secrets(str(exc))
-            logger.error("Recording failed: %s", msg)
-            return False, msg
-
-        try:
             recording = record_until_silence(
                 source,
-                start_timeout_s=getattr(self.config, "voice_start_timeout_s", 8.0),
-                silence_ms=getattr(self.config, "voice_silence_ms", 1000),
+                start_timeout_s=getattr(self.config, "voice_start_timeout_s", 10.0),
+                silence_ms=getattr(self.config, "voice_silence_ms", 2000),
                 max_seconds=getattr(self.config, "voice_max_seconds", 30.0),
                 status=self.status_callback,
             )
@@ -335,6 +331,10 @@ class VoiceController:
             logger.info("Listening cancelled by Ctrl+C.")
             self.status_callback("Cancelled.")
             return False, "cancelled"
+        except RecorderError as exc:
+            msg = redact_secrets(str(exc))
+            logger.error("Recording failed: %s", msg)
+            return False, msg
         finally:
             source.stop()
 
@@ -346,8 +346,12 @@ class VoiceController:
             recording.duration_ms / 1000.0,
             recording.speech_ms / 1000.0,
         )
+        self._save_debug_attempt(recording, "auto")
 
         if not recording.saw_speech:
+            if recording.reason == "cancelled":
+                self.status_callback("Cancelled.")
+                return False, "cancelled"
             if recording.reason == "timeout":
                 return False, "I didn't hear anything."
             if recording.reason == "no_audio":
@@ -397,128 +401,143 @@ class VoiceController:
         )
         return True, str(self.audio_file)
 
+    # ----------------------------------------------------------------------------------
+    # Debug capture: one WAV + one JSON trace per listening attempt (newest 10 kept)
+    # ----------------------------------------------------------------------------------
+
+    def _save_debug_attempt(self, recording: object, mode: str) -> None:
+        """Save the raw WAV and the level trace for this attempt; never break listening."""
+        try:
+            directory = self.debug_dir
+            directory.mkdir(parents=True, exist_ok=True)
+            now = datetime.now()
+            stem = f"attempt_{now:%Y%m%d-%H%M%S-%f}"
+            pcm = getattr(recording, "debug_pcm", b"") or getattr(recording, "pcm", b"")
+            if pcm:
+                write_pcm16_wav(directory / f"{stem}.wav", pcm, rate=16000, channels=1)
+            trace = {
+                "timestamp": now.isoformat(timespec="seconds"),
+                "mode": mode,
+                "reason": getattr(recording, "reason", "error"),
+                "saw_speech": bool(getattr(recording, "saw_speech", False)),
+                "duration_ms": int(getattr(recording, "duration_ms", 0)),
+                "speech_ms": int(getattr(recording, "speech_ms", 0)),
+                "transcript": None,
+                "guard": None,
+                **dict(getattr(recording, "trace", {}) or {}),
+            }
+            json_path = directory / f"{stem}.json"
+            json_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._prune_debug_attempts(directory, keep=10)
+            self._last_debug_json = json_path
+            self._last_debug_trace = trace
+            if not trace["saw_speech"]:
+                self._log_attempt(trace)
+        except OSError as exc:  # a full disk must never break the microphone path
+            logger.warning("Could not save voice debug capture: %s", exc)
+
+    @staticmethod
+    def _prune_debug_attempts(directory: Path, keep: int) -> None:
+        stems = sorted({path.stem for path in directory.glob("attempt_*")}, reverse=True)
+        for old in stems[keep:]:
+            for suffix in (".wav", ".json"):
+                (directory / f"{old}{suffix}").unlink(missing_ok=True)
+
+    def _attach_debug_transcript(self, transcript: str) -> None:
+        """Add Whisper text + guard scores to the last attempt JSON, then log one line."""
+        if not self._last_debug_trace:
+            return
+        trace = dict(self._last_debug_trace)
+        confidence = dict(getattr(self.ears, "last_confidence", {}) or {}) if self.ears else {}
+        trace["transcript"] = transcript
+        trace["guard"] = confidence or None
+        if self._last_debug_json is not None:
+            try:
+                self._last_debug_json.write_text(
+                    json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except OSError as exc:
+                logger.warning("Could not update voice debug capture: %s", exc)
+        self._log_attempt(trace)
+        self._last_debug_json = None
+        self._last_debug_trace = {}
+
+    def _log_attempt(self, trace: dict) -> None:
+        thresholds = trace.get("thresholds") or {}
+        guard = trace.get("guard") or {}
+
+        def score(value: object) -> str:
+            return "n/a" if value is None else f"{float(value):.3f}"
+
+        logger.info(
+            "Listening attempt: mode=%s reason=%s duration=%.1fs speech=%.1fs speech_start=%sms "
+            "noise=%s start_thr=%s end_thr=%s text=%r guard=%s(avg=%s,ns=%s,cr=%s)",
+            trace.get("mode"),
+            trace.get("reason"),
+            float(trace.get("duration_ms") or 0) / 1000.0,
+            float(trace.get("speech_ms") or 0) / 1000.0,
+            trace.get("speech_start_ms", 0),
+            thresholds.get("noise_floor"),
+            thresholds.get("start"),
+            thresholds.get("end"),
+            trace.get("transcript"),
+            guard.get("verdict", "-"),
+            score(guard.get("min_avg_logprob")),
+            score(guard.get("max_no_speech_prob")),
+            score(guard.get("max_compression_ratio")),
+        )
+
     def record_push_to_talk(self, duration_sec: float = 5.0) -> tuple[bool, str]:
-        """Start pw-record with Popen, wait duration, stop with SIGINT, verify WAV, check RMS/peak, and normalize."""
+        """Fixed-window mode over the same streaming source auto mode uses.
+
+        The old path wrote a WAV file and stopped pw-record with SIGINT; it could keep only
+        the first word. Streaming + record_for_duration keeps the whole window.
+        """
         self.stop_speaking()
+        self._wait_for_playback()
         WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
         if self.audio_file.exists():
             self.audio_file.unlink(missing_ok=True)
 
-        if shutil.which("pw-record"):
-            cmd = [
-                "pw-record",
-                "--format=s16",
-                "--rate=16000",
-                "--channels=1",
-                str(self.audio_file),
-            ]
-        elif shutil.which("arecord"):
-            cmd = [
-                "arecord",
-                "-f", "S16_LE",
-                "-r", "16000",
-                "-c", "1",
-                str(self.audio_file),
-            ]
-        else:
-            msg = "Neither pw-record (pipewire-utils) nor arecord (alsa-utils) is installed."
-            logger.error("Recording failed: %s", msg)
-            return False, msg
-
-        # Record, stop, and verify (one attempt): WAV validated with standard wave module,
-        # signal level checked, and quiet mic recordings normalized.
-        def _record_once() -> tuple[bool, str]:
-            try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-            except Exception as exc:
-                err = redact_secrets(f"Microphone recording failed: {type(exc).__name__}: {exc}")
-                logger.error(err)
-                return False, err
-
-            self._record_proc = proc
-            try:
-                deadline = time.monotonic() + max(0.5, float(duration_sec))
-                while time.monotonic() < deadline:
-                    if proc.poll() is not None:
-                        break
-                    time.sleep(0.1)
-
-                stderr_text = ""
-                early_exit = False
-                if proc.poll() is not None:
-                    # Recorder died before stop time (crash/device error): collect its stderr.
-                    try:
-                        _, stderr_text = proc.communicate(timeout=2.0)
-                    except Exception:
-                        stderr_text = ""
-                    early_exit = True
-                else:
-                    if proc.poll() is None:
-                        proc.send_signal(signal.SIGINT)
-                    try:
-                        _, stderr_text = proc.communicate(timeout=3.0)
-                    except subprocess.TimeoutExpired:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-            finally:
-                self._record_proc = None
-
-            detail = (stderr_text or "").strip()
-            if early_exit:
-                msg = f"Microphone recorder exited early: {detail or f'exit code {proc.returncode}'}"
-                logger.error("Record attempt failed: %s", redact_secrets(msg))
-                return False, redact_secrets(msg)
-
-            if not self.audio_file.exists() or self.audio_file.stat().st_size < 100:
-                msg = f"No audio file produced by microphone recorder.{(' recorder stderr: ' + detail) if detail else ''}"
-                logger.error("Record attempt failed: %s", redact_secrets(msg))
-                return False, redact_secrets(msg)
-
-            # Small grace period lets the filesystem flush the finalized WAV.
-            time.sleep(0.2)
-
-            try:
-                with wave.open(str(self.audio_file), "rb") as wf:
-                    channels = wf.getnchannels()
-                    sampwidth = wf.getsampwidth()
-                    rate = wf.getframerate()
-                    nframes = wf.getnframes()
-                    pcm_bytes = wf.readframes(nframes)
-            except Exception as exc:
-                msg = f"Recorded WAV header is invalid: {exc}{(' recorder stderr: ' + detail) if detail else ''}"
-                logger.error("Record attempt failed: %s", msg)
-                return False, msg
-
-            if sampwidth != 2 or nframes == 0:
-                msg = f"Unsupported WAV format (sampwidth={sampwidth}, frames={nframes})."
-                logger.error("Record attempt failed: %s", msg)
-                return False, msg
-
-            peak, rms = compute_pcm16_peak_rms(pcm_bytes)
-            logger.info("Recorded %d frames at %d Hz (peak=%d, rms=%d)", nframes, rate, peak, rms)
-
-            if peak < MIN_SPEECH_PEAK or rms < MIN_SPEECH_RMS:
-                msg = "mic is too quiet or muted"
-                logger.warning("Voice check failed: %s (peak=%d, rms=%d)", msg, peak, rms)
-                return False, msg
-
-            # Fixed mode cannot rely on real-time detection, so speech presence is measured
-            # offline: quiet room noise is never boosted.
-            return self._finish_recording(pcm_bytes, rate, channels, has_speech=has_speech_energy(pcm_bytes))
-
         last_fail = "Recording failed."
         for attempt in (1, 2):
-            ok, failure_detail = _record_once()
-            if ok:
-                return True, failure_detail
-            if failure_detail == "mic is too quiet or muted":
-                return False, failure_detail
-            last_fail = failure_detail
+            source = PwRecordSource()
+            try:
+                recording = record_for_duration(
+                    source,
+                    max(0.5, float(duration_sec)),
+                    status=self.status_callback,
+                )
+            except KeyboardInterrupt:
+                logger.info("Fixed recording cancelled by Ctrl+C.")
+                self.status_callback("Cancelled.")
+                return False, "cancelled"
+            except RecorderError as exc:
+                last_fail = redact_secrets(str(exc))
+                logger.error("Recording failed: %s", last_fail)
+            else:
+                if getattr(source, "error", ""):
+                    logger.info("pw-record stderr: %s", redact_secrets(source.error))
+                pcm = recording.pcm
+                peak, rms = measure_peak_rms(pcm)
+                logger.info(
+                    "Fixed recording: %s, %.1fs captured (peak=%d, rms=%d)",
+                    recording.reason,
+                    recording.duration_ms / 1000.0,
+                    peak,
+                    rms,
+                )
+                self._save_debug_attempt(recording, "fixed")
+                if not pcm or peak < MIN_SPEECH_PEAK or rms < MIN_SPEECH_RMS:
+                    msg = "mic is too quiet or muted"
+                    logger.warning("Voice check failed: %s (peak=%d, rms=%d)", msg, peak, rms)
+                    return False, msg
+                return self._finish_recording(pcm, 16000, 1, has_speech=recording.saw_speech)
+            finally:
+                source.stop()
+
             if attempt == 1:
-                logger.warning("Recording attempt 1 failed (%s); retrying once in 0.5s.", failure_detail)
+                logger.warning("Recording attempt 1 failed (%s); retrying once in 0.5s.", last_fail)
                 time.sleep(0.5)
         return False, last_fail
 
@@ -661,6 +680,8 @@ class VoiceController:
             ok, text = self.ears.transcribe(target)
             if ok:
                 logger.info("Transcribed locally: %s", redact_secrets(text))
+            confidence = dict(getattr(self.ears, "last_confidence", {}) or {})
+            self._attach_debug_transcript(str(confidence.get("text") or (text if ok else "")))
             return ok, text
         return self._transcribe_cloud(wav_path)
 
