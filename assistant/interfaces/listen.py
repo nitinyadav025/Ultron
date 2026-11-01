@@ -374,7 +374,7 @@ class HandsFreeListener:
         if refused:
             reply = CONFIRMATION_REPLY
         reply_ready = self.clock()
-        speech_start = self.clock() - reply_ready
+        speech_start = self.clock() - self._t_end
         self.commands_run += 1
         self.print_fn(f"You: {command} | Ultron: {reply}")
         logger.info(
@@ -451,9 +451,9 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.tools.web import open_first_result, web_search
 
     register_gnome_kill_hotkey(config.kill_hotkey_binding)
-    _ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
-    if config.mic_source_volume:
-        print(f"  Mic input: {mic_msg}", flush=True)
+    # Apply the optional mic level silently: `listen` prints only the start line and
+    # one line per accepted command.
+    apply_mic_source_volume(config.mic_source_volume)
 
     gate = PermissionGate(config=config, mode=config.default_mode)
     registry = ToolRegistry(config=config, gate=gate, allow_prompts=False)
