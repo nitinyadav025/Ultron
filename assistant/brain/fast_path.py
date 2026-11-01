@@ -95,7 +95,11 @@ def _strip_request_prefixes(cleaned: str) -> str:
 def match_fast_command(text: str) -> dict[str, object] | None:
     """Return {"kind", "tool", "arguments", "request"} for a simple whole sentence."""
     raw = (text or "").strip()
-    typed = re.match(r"(?i)^(?:please )?(?:type|write|enter text) (.+)$", raw)
+    typed = re.match(
+        r"(?i)^(?:(?:can|could|would|will) you )?(?:please )?"
+        r"(?:type|write|enter text) (.+)$",
+        raw,
+    )
     if typed:
         return {
             "kind": "type_text",
@@ -153,7 +157,7 @@ def match_fast_command(text: str) -> dict[str, object] | None:
             "tab:prev_tab",
             re.compile(r"^(?:please )?(?:switch|jump) to (?:the )?previous tab$"),
         ),
-        ("tab:next_tab", re.compile(r"^(?:please )?next tab$")),
+        ("tab:next_tab", re.compile(r"^(?:please )?(?:next|switch) tab$")),
         ("tab:prev_tab", re.compile(r"^(?:please )?(?:previous|prev) tab$")),
         ("tab:reopen_tab", re.compile(r"^(?:please )?reopen (?:the )?(?:last )?tab$")),
         ("tab:refresh", re.compile(r"^(?:please )?refresh(?: the)?(?: page)?$")),
@@ -191,8 +195,14 @@ def match_fast_command(text: str) -> dict[str, object] | None:
             re.compile(r"^(?:please )?scroll to (?:the )?(?P<edge>top|bottom)$"),
         ),
         # Brightness and media.
-        ("brightness:up", re.compile(r"^(?:please )?(?:increase|brightness up)$")),
-        ("brightness:down", re.compile(r"^(?:please )?(?:decrease|brightness down)$")),
+        (
+            "brightness:up",
+            re.compile(r"^(?:please )?(?:increase(?: the)? brightness|brightness up)$"),
+        ),
+        (
+            "brightness:down",
+            re.compile(r"^(?:please )?(?:decrease(?: the)? brightness|brightness down)$"),
+        ),
         (
             "brightness:set",
             re.compile(r"^(?:please )?set brightness to (?P<value>.+)$"),

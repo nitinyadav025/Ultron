@@ -188,6 +188,17 @@ def test_after_open_firefox_a_search_uses_firefox_not_xdg_open(monkeypatch: pyte
     assert calls == [["firefox", web.search_url("github")]]
 
 
+def test_a_search_also_sets_the_last_app_for_close_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    SESSION.reset()
+    _fake_browser(monkeypatch)
+
+    web.web_search("github", "firefox")
+
+    assert SESSION.last_app == "firefox"
+    close = match_fast_command("close it")
+    assert close is not None and close["arguments"] == {"app_name": "firefox"}
+
+
 def test_context_pronouns_use_last_app_and_last_query() -> None:
     SESSION.reset()
     SESSION.note_app("firefox", browser=True)
@@ -493,3 +504,17 @@ def test_type_text_fast_path_preserves_case() -> None:
     assert command is not None
     assert command["tool"] == "type_text"
     assert command["arguments"] == {"text": "Hello World"}
+
+
+def test_type_text_accepts_a_conversational_prefix() -> None:
+    command = match_fast_command("Can you please type Hello World")
+    assert command is not None
+    assert command["arguments"] == {"text": "Hello World"}
+
+
+def test_switch_tab_and_increase_brightness_are_matched() -> None:
+    switch = match_fast_command("switch tab")
+    bright = match_fast_command("increase brightness")
+
+    assert switch is not None and switch["arguments"] == {"action": "next_tab"}
+    assert bright is not None and bright["arguments"] == {"percent": -1, "delta": 10}

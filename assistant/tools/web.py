@@ -174,6 +174,8 @@ def web_search(query: str, browser: str | None = None) -> dict[str, Any]:
     opened = open_url(url, chosen or None)
     if not opened.get("ok"):
         return {"ok": False, "query": cleaned, "browser": chosen, "error": opened.get("error")}
+    if chosen:
+        SESSION.note_app(chosen, browser=True)
     SESSION.note_search(cleaned, chosen or None)
     return {
         "ok": True,
@@ -208,6 +210,8 @@ def open_first_result(query: str, browser: str | None = None) -> dict[str, Any]:
     opened = open_url(url, chosen or None)
     if not opened.get("ok"):
         return {"ok": False, "query": cleaned, "browser": chosen, "error": opened.get("error")}
+    if chosen:
+        SESSION.note_app(chosen, browser=True)
     SESSION.note_search(cleaned, chosen or None)
     reply = (
         f"Opening the search results for {cleaned}."
