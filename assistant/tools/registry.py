@@ -120,10 +120,14 @@ def wrap_untrusted_output(tool_name: str, payload: Any, max_chars: int = 4000) -
 class ToolRegistry:
     """Holds registered tools, builds Gemini Tool schemas, and routes execution through PermissionGate."""
 
-    def __init__(self, config: AssistantConfig, gate: PermissionGate) -> None:
+    def __init__(self, config: AssistantConfig, gate: PermissionGate, allow_prompts: bool = True) -> None:
         self.config = config
         self.gate = gate
         self._tools: dict[str, ToolSpec] = {}
+        # Hands-free mode sets this False so a tool never reads the keyboard.
+        self.allow_prompts = allow_prompts
+        self.needs_confirmation_seen = False
+        self.on_execute: Callable[[str], None] | None = None
 
     def register(self, func: Callable[..., Any]) -> ToolSpec:
         spec: ToolSpec | None = getattr(func, "_ultron_tool_spec", None)
@@ -189,13 +193,30 @@ class ToolRegistry:
         if dry_run:
             return {"ok": True, "dry_run": True, "planned_call": f"{tool_name}({arguments})", "risk_level": spec.risk_level}
 
-        decision = self.gate.check(spec.name, spec.risk_level, spec.read_only, arguments, action_preview)
+        decision = self.gate.check(
+            spec.name,
+            spec.risk_level,
+            spec.read_only,
+            arguments,
+            action_preview,
+            allow_prompt=self.allow_prompts,
+        )
         if not decision.allowed:
             elapsed = (time.perf_counter() - start) * 1000.0
-            res = {"ok": False, "denied": True, "reason": decision.reason, "human_only_instruction": decision.human_only_instruction}
+            res = {
+                "ok": False,
+                "denied": True,
+                "reason": decision.reason,
+                "human_only_instruction": decision.human_only_instruction,
+            }
+            if decision.needs_confirmation:
+                self.needs_confirmation_seen = True
+                res["needs_confirmation"] = True
             log_audit_event(user_request, spec.name, arguments, spec.risk_level, self.gate.mode, False, res, elapsed)
             return res
 
+        if self.on_execute is not None:
+            self.on_execute(spec.name)
         try:
             raw_out = spec.func(**arguments)
             self.gate.inspect_untrusted_text(json.dumps(raw_out, ensure_ascii=False))

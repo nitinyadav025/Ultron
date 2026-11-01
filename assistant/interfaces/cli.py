@@ -7,6 +7,7 @@ import re
 
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
+from assistant.brain.fast_path import try_fast_path
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.config import LOGS_DIR, AssistantConfig
 from assistant.interfaces.voice import NOTHING_HEARD, VoiceController
@@ -20,6 +21,7 @@ from assistant.tools.apps import open_app
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
+from assistant.tools.web import open_first_result, web_search
 
 PRIVACY_ACK_FILE = LOGS_DIR / ".privacy_notice_shown"
 
@@ -72,7 +74,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
 
     gate = PermissionGate(config=config, mode=initial_mode or config.default_mode)
     registry = ToolRegistry(config=config, gate=gate)
-    for fn in (list_files, read_file, open_app, volume_up, volume_down, set_volume, mute_audio):
+    for fn in (list_files, read_file, open_app, volume_up, volume_down, set_volume, mute_audio, web_search, open_first_result):
         registry.register(fn)
 
     watchdog = WatchdogMonitor(config.max_steps, config.wall_clock_timeout_sec, config.idle_standdown_sec)
@@ -180,6 +182,16 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             # A slash line is always a command. Never let it reach the LLM by accident.
             print(UNKNOWN_COMMAND_MESSAGE)
             continue
+
+        if is_voice_turn:
+            fast_reply = try_fast_path(registry, user_in)
+            if fast_reply is not None:
+                print(f"\n{config.assistant_name}: {fast_reply}\n")
+                try:
+                    voice.speak_sync(fast_reply)
+                except KeyboardInterrupt:
+                    voice.stop_speaking()
+                continue
 
         try:
             res = loop.run_task(user_in, dry_run=dry_run)

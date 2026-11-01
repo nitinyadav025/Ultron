@@ -45,6 +45,7 @@ class GateDecision:
     mode: str
     risk_level: str
     human_only_instruction: str = ""
+    needs_confirmation: bool = False
 
 
 @dataclass
@@ -136,8 +137,13 @@ class PermissionGate:
         read_only: bool,
         arguments: dict[str, Any],
         action_preview: str | None = None,
+        allow_prompt: bool = True,
     ) -> GateDecision:
-        """Evaluate whether a requested tool call is allowed, needs confirmation, or is blocked."""
+        """Evaluate whether a requested tool call is allowed, needs confirmation, or is blocked.
+
+        ``allow_prompt=False`` is for hands-free mode: it never reads the keyboard, and a
+        call that would have asked returns ``needs_confirmation=True`` instead.
+        """
         if risk_level not in VALID_RISK_TIERS:
             return GateDecision(False, f"Invalid risk tier '{risk_level}'.", self.mode, risk_level)
         if risk_level == "blocked":
@@ -181,6 +187,15 @@ class PermissionGate:
 
         if (tool_name, folder_scope) in self.always_allow_set and not self.tainted_by_untrusted:
             return GateDecision(True, f"Allowed by session 'always allow' in {folder_scope}.", self.mode, risk_level)
+
+        if not allow_prompt:
+            return GateDecision(
+                False,
+                f"Needs confirmation, which hands-free mode cannot ask: {exact_desc}",
+                self.mode,
+                risk_level,
+                needs_confirmation=True,
+            )
 
         ans = self._prompt_user(f"{exact_desc}  [{reason_note}]")
         if ans in ("y", "yes"):

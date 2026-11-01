@@ -15,7 +15,7 @@ from assistant.safety.audit import read_audit_logs
 from assistant.safety.killswitch import trigger_kill_switch
 
 # Commands that need the local LLM, so Phase 2 may auto-start llama-server for them.
-BRAIN_COMMANDS = ("chat", "gui")
+BRAIN_COMMANDS = ("chat", "gui", "listen")
 
 
 def _server_progress(message: str) -> None:
@@ -51,6 +51,10 @@ def _dispatch(args: argparse.Namespace, config: AssistantConfig) -> int:
         return run_self_test(config)
     if args.command == "voice-test":
         return run_voice_test(config)
+    if args.command == "listen":
+        from assistant.interfaces.listen import run_listen
+
+        return run_listen(config)
     if args.command == "logs":
         for item in read_audit_logs(30):
             print(item)
@@ -66,7 +70,7 @@ def main() -> int:
         "command",
         nargs="?",
         default="chat",
-        choices=["chat", "gui", "doctor", "self-test", "voice-test", "logs", "stop", "download-models"],
+        choices=["chat", "gui", "listen", "doctor", "self-test", "voice-test", "logs", "stop", "download-models"],
     )
     parser.add_argument("--mode", choices=["ask", "auto-safe", "human-only"], default=None)
     parser.add_argument("--dry-run", action="store_true")

@@ -113,6 +113,44 @@ def volume_reply(result: dict[str, Any]) -> str | None:
     return f"Volume is now set to {percent} percent."
 
 
+def open_app_reply(result: dict[str, Any], requested: str = "") -> str | None:
+    """Speak the app that was actually launched."""
+    if not result.get("ok", False):
+        return "I couldn't open that app."
+    raw = result.get("raw_summary")
+    if not isinstance(raw, dict):
+        raw = result
+    app = str(raw.get("app_name") or requested or "").strip()
+    if not app:
+        return "Done."
+    return f"{app.title()} is open."
+
+
+def web_search_reply(result: dict[str, Any]) -> str | None:
+    """Speak the query and the browser that was used."""
+    raw = result.get("raw_summary")
+    if not isinstance(raw, dict):
+        raw = result
+    if not result.get("ok", False):
+        return "I couldn't open the search."
+    query = str(raw.get("query") or "").strip()
+    browser = str(raw.get("browser") or "").strip()
+    where = browser.title() if browser else "your browser"
+    return f"Searching for {query} in {where}."
+
+
+def open_first_result_reply(result: dict[str, Any]) -> str | None:
+    """Speak the domain that was opened, or the honest fallback sentence."""
+    raw = result.get("raw_summary")
+    if not isinstance(raw, dict):
+        raw = result
+    if not result.get("ok", False):
+        return str(raw.get("reply") or "I couldn't pick the first result, so I opened the search results.")
+    query = str(raw.get("query") or "").strip()
+    domain = str(raw.get("domain") or "").strip()
+    return f"Opened the first result for {query}: {domain}."
+
+
 def is_lead_in(text: str) -> bool:
     """True for a contentless opener such as "Here are the first items in your folder".
 
@@ -138,6 +176,12 @@ def code_reply_for_tool(tool_name: str, result: dict[str, Any]) -> str | None:
         return mute_audio_reply(result)
     if tool_name in ("set_volume", "volume_up", "volume_down"):
         return volume_reply(result)
+    if tool_name == "open_app":
+        return open_app_reply(result, str((result.get("raw_summary") or {}).get("app_name", "")))
+    if tool_name == "web_search":
+        return web_search_reply(result)
+    if tool_name == "open_first_result":
+        return open_first_result_reply(result)
     return None
 
 

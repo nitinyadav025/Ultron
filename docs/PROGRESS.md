@@ -13,10 +13,10 @@ tests whose `/tmp/cmp2_*.wav` files are gone; see Part 1).
 | 1 | Evidence + test hygiene (tmp logs, real-log guard, real clips) | DONE |
 | 2 | Fix Bug A: recorder warm-up, SNR start, "nothing heard" | DONE (code + tests) |
 | 2B | Noise robustness (fan analysis, SNR, denoise A/B, noise plan) | DONE (code + docs; live UNVERIFIED) |
-| 3 | Hands-free `main.py listen` (wake word, early endpoint, follow-up) | TODO |
-| 4 | Fast path for simple commands | TODO |
-| 5 | Web tools (`web_search`, `open_first_result`) | TODO |
-| 6 | Typing detection report (`docs/TYPING_PLAN.md`) | TODO |
+| 3 | Hands-free `main.py listen` (wake word, early endpoint, follow-up) | DONE (offline tests; live UNVERIFIED) |
+| 4 | Fast path for simple commands | DONE (code + tests) |
+| 5 | Web tools (`web_search`, `open_first_result`) | DONE (fallback verified; real GET blocked by DuckDuckGo) |
+| 6 | Typing detection report (`docs/TYPING_PLAN.md`) | DONE (detect only) |
 | 7 | Docs, full pytest, commits | TODO |
 
 ### Part 1 result — evidence and test hygiene
@@ -146,6 +146,92 @@ the user can try `VOICE_DENOISE_STRENGTH=0.6`. This is UNVERIFIED on his live vo
 `Built-in Audio Analog Stereo`, `node.name=alsa_input.pci-0000_00_1f.3.analog-stereo`.
 The exact `sudo dnf install ladspa-noise-suppression-for-voice` + filter-chain steps are
 written there and marked UNVERIFIED (the coding tool ran no sudo/dnf).
+
+### Part 3 result — hands-free `main.py listen`
+
+- `assistant/speech/wake.py` (new): fuzzy wake matching (difflib ratio ≥ 0.75) on the
+  first one or two words, plus `sentence_is_complete()` for the dangling-word rule.
+- `assistant/interfaces/listen.py` (new): `UtteranceDetector` (20 ms frames, 300 ms
+  warm-up, 400 ms ring buffer, 250 ms to start, the same hysteresis/SNR thresholds) and
+  `HandsFreeListener` (one long-lived source for the whole session, early check, retry,
+  follow-up window, silence on ignored speech, latency line, debug only after the wake
+  word). `run_listen()` builds the real session (mic, ears, mouth, tools, agent loop).
+- `assistant/speech/ears.py`: `transcribe_samples()` accepts a float32 array, so ignored
+  speech is never written to disk.
+- `assistant/safety/permissions.py` + `tools/registry.py`: `allow_prompt=False`; a tool
+  that would ask returns `needs_confirmation=True` and is **not run**. `listen` speaks
+  "That needs confirmation. Please type it in the chat."
+- `main.py`: new `listen` command; it starts/stops llama-server exactly like `chat`.
+- `assistant/interfaces/cli.py`: registers the web tools and uses the fast path on voice
+  turns.
+- Settings (defaults): `WAKE_WORD=ultron`, `WAKE_ALIASES=` (blank),
+  `LISTEN_FOLLOWUP_S=6`, `LISTEN_EARLY_CHECK_MS=800`, `LISTEN_AFTER_SPEECH_MS=600`,
+  `LISTEN_LOG_IGNORED=0`, `RECORDER_WARMUP_MS=300`.
+- Wake aliases from Piper evidence (WAV files only, never played): `Ultron, mute.` and
+  `Ultron, list my downloads.` came out clean; `Ultron open firefox` became
+  `Ultra-open Firefox`; `Ultron search github` became `Ultra on Search Kit Home`;
+  `Hey Ultron, open firefox` stayed `Hey Ultron, open Firefox.`. Built-in aliases are
+  therefore **`ultra`** and **`hey ultron`**. Piper's voice is not the user's voice, so
+  they are UNVERIFIED until his live test.
+- Tests: `tests/test_listen.py` (12 required cases + permission refusal + window expiry +
+  debug-only-after-wake) and `tests/test_wake.py` (19 wake/dangling cases).
+
+### Part 4 result — fast path
+
+- `assistant/brain/fast_path.py` (new): whole-sentence match for `open X`, `close X`,
+  `mute`, `unmute`, `turn/set volume to N`, `list files in <folder>`, plus the Part 5 web
+  sentences. Everything runs through `ToolRegistry.execute`, so permission modes are
+  unchanged. Anything unclear returns `None` and goes to the LLM. One INFO line says
+  `Fast path: used …` or `Fast path: LLM used …`.
+- `close X`: this project has **no close tool**, so it is recognised and answered
+  honestly with "I can't close apps yet." (no tool, no LLM, no invented action).
+- Tests: `tests/test_fast_path.py` (10 matched sentences, close, one LLM-only sentence,
+  multi-step rejection, exact reply strings).
+
+### Part 5 result — web tools
+
+- `assistant/tools/web.py` (new): `web_search(query, browser=None)` and
+  `open_first_result(query)`. URL built in code (`SEARCH_ENGINE`, default duckduckgo),
+  queries capped at 200 chars with control characters replaced, argv lists only, only
+  http/https, no typing.
+- Replies in code: "Searching for <query> in <browser>." and
+  "Opened the first result for <query>: <domain>."
+- **Real GET result (2026-11-01): HTTP 202 from `https://html.duckduckgo.com/html/?q=github`
+  with 14 246 bytes, but the page was DuckDuckGo's bot challenge ("Unfortunately, bots use
+  DuckDuckGo too … select all squares containing a duck"), so the parser found **no**
+  result and `fetch_first_result("github")` returned `""`.** The implemented fallback is
+  therefore what runs on this machine: it opens the normal search page and says
+  "I couldn't pick the first result, so I opened the search results." The parser itself is
+  proven on a synthetic result page. The real first-result method is **UNVERIFIED** (it
+  was blocked).
+- Fixtures: `tests/fixtures/ddg_results.html` (synthetic markup) and
+  `tests/fixtures/ddg_challenge.html` (trimmed real challenge page, 268 bytes, no personal
+  data).
+- Registered in CLI and `listen` exactly like the other tools.
+- Tests: `tests/test_web.py` (query cleaning, encoding, parser, challenge, redirect
+  unwrap, refusal of file/javascript URLs, argv list, browser URL, success and fallback
+  replies).
+
+### Part 6 result — typing detection (nothing built)
+
+`docs/TYPING_PLAN.md`. Session is **Wayland**. Installed: `ydotool 1.0.4-8.fc44` with
+`/usr/bin/ydotoold` and a **system** unit `/usr/lib/systemd/system/ydotool.service`;
+`wl-copy`/`wl-paste` exist; `dotool` is **not** installed. `systemctl is-active ydotool` →
+`inactive`, `is-enabled` → `disabled`. `/dev/uinput` exists (`root:root`, mode 660) **with
+an ACL `user:nitinyadav:rw-`**, so this user has access without joining a group. The exact
+sudo commands for the user and the risks are in the plan.
+
+### Files changed (parts 3–6)
+
+- New: `assistant/interfaces/listen.py`, `assistant/speech/wake.py`,
+  `assistant/brain/fast_path.py`, `assistant/tools/web.py`,
+  `tests/test_listen.py`, `tests/test_wake.py`, `tests/test_fast_path.py`,
+  `tests/test_web.py`, `tests/fixtures/ddg_results.html`,
+  `tests/fixtures/ddg_challenge.html`, `docs/TYPING_PLAN.md`.
+- Changed: `assistant/speech/ears.py`, `assistant/interfaces/cli.py`,
+  `assistant/brain/tool_replies.py`, `assistant/tools/registry.py`,
+  `assistant/safety/permissions.py`, `assistant/config.py`, `main.py`, `.env.example`,
+  `docs/PROGRESS.md`.
 
 ### Files changed so far
 

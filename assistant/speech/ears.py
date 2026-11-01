@@ -229,12 +229,28 @@ class WhisperEars:
         if not path.exists():
             return False, "Audio file missing."
         try:
-            model = self.load()
+            self.load()
             audio = load_wav_16k_mono(path)
         except EarsError as exc:
             logger.error("Ears unavailable: %s", redact_secrets(str(exc)))
             return False, str(exc)
+        return self._transcribe_array(audio)
 
+    def transcribe_samples(self, samples: np.ndarray) -> tuple[bool, str]:
+        """Transcribe a float32 mono array at 16 kHz (used by hands-free mode).
+
+        No file is written, so audio that did not contain the wake word is never saved.
+        """
+        try:
+            self.load()
+        except EarsError as exc:
+            logger.error("Ears unavailable: %s", redact_secrets(str(exc)))
+            return False, str(exc)
+        audio = np.ascontiguousarray(samples.astype(np.float32, copy=False))
+        return self._transcribe_array(audio)
+
+    def _transcribe_array(self, audio: np.ndarray) -> tuple[bool, str]:
+        """Run faster-whisper on a float32 array and apply the confidence guard."""
         if audio.size == 0:
             logger.info("Ears: empty recording.")
             return False, NO_SPEECH
@@ -252,6 +268,7 @@ class WhisperEars:
         if self.config.whisper_hotwords:
             decode_options["hotwords"] = self.config.whisper_hotwords
         try:
+            model = self.load()
             segments, info = model.transcribe(audio, **decode_options)
             rows = list(segments)
             text = " ".join(segment.text.strip() for segment in rows).strip()
