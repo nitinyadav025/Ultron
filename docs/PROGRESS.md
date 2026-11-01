@@ -12,7 +12,7 @@ template fragments, and the over-loosened guard.
 |------|------|--------|
 | Part 1 | Normaliser never clips: cap gain by the true raw peak | DONE (code + tests) |
 | Part 2 | Optional `MIC_SOURCE_VOLUME` applied at chat / voice-test start | DONE (code + tests; `.env` set to 0.21) |
-| Part 3 | Slash commands never reach the LLM; raw-line logging | NOT STARTED |
+| Part 3 | Slash commands never reach the LLM; raw-line logging | DONE (code + tests) |
 | Part 4 | mute/unmute explicit + code-built replies; timer honesty; intent guard | NOT STARTED |
 | Part 5 | Stop sequences + reply cleaner for `<` fragments and repeated sentences | NOT STARTED |
 | Part 6 | Restore the strict one-signal guard | NOT STARTED |
@@ -66,6 +66,26 @@ template fragments, and the over-loosened guard.
   (count checked first; file contents never read or printed; `.env` is not committed).
 - Tests: `tests/test_mic_input.py` with a fake runner (set, unset, range, missing wpctl,
   failure log, config read).
+
+### Part 3 result (slash commands)
+
+- `assistant/interfaces/cli.py`:
+  - `normalize_chat_line()` trims and collapses repeated leading slashes (`//voice` → `/voice`).
+  - `command_name()` + `is_unknown_command()` dispatch by exact command name (so `/modelx` is
+    unknown, not `/model`).
+  - Any remaining slash line prints exactly
+    "Unknown command. Available: /model, /thinking, /voice, /mode, /dry-run, /logs, /quit"
+    and sends nothing to the LLM.
+  - Every slash line, plus bare `voice` / `quit` / `logs`, is logged at INFO as
+    `Chat input: <repr>` (secrets redacted).
+- Part 3c finding: `_default_enter_pressed()` only polls stdin **while listening** and reads
+  exactly one line, so it never leaves a stray Enter and never flushes the next prompt. The
+  observed stray "/" was a repeated leading slash (the echo appeared before the prompt, and
+  the old `startswith("/...")` checks missed `//voice`), which then fell through to the LLM.
+  Characters typed while Piper is speaking stay buffered for the next `input()` by design;
+  with the new normalization a leading-slash line is always a command.
+- Tests: `tests/test_chat_commands.py` (normalization, dispatch, and an end-to-end CLI run
+  proving `/nonsense` never reaches `run_task` and `//voice` starts listening).
 
 
 ## Listening fix (Nov 1)

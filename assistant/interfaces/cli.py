@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import re
+
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
 from assistant.brain.gemini_client import TokenUsageStats
@@ -10,6 +13,7 @@ from assistant.interfaces.voice import NOTHING_HEARD, VoiceController
 from assistant.safety.audit import read_audit_logs
 from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey, trigger_kill_switch
 from assistant.safety.permissions import PermissionGate
+from assistant.safety.redact import redact_secrets
 from assistant.speech.ears import UNCLEAR_SPEECH
 from assistant.speech.mic_input import apply_mic_source_volume
 from assistant.tools.apps import open_app
@@ -18,6 +22,35 @@ from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
 
 PRIVACY_ACK_FILE = LOGS_DIR / ".privacy_notice_shown"
+
+logger = logging.getLogger("ultron.cli")
+
+KNOWN_COMMANDS = frozenset(
+    {"/model", "/thinking", "/voice", "/mode", "/dry-run", "/logs", "/quit", "/exit", "/stop"}
+)
+UNKNOWN_COMMAND_MESSAGE = (
+    "Unknown command. Available: /model, /thinking, /voice, /mode, /dry-run, /logs, /quit"
+)
+_BARE_LOG_WORDS = frozenset({"voice", "quit", "logs"})
+
+
+def normalize_chat_line(line: str) -> str:
+    """Trim a typed line and collapse repeated leading slashes ("//voice" -> "/voice")."""
+    cleaned = (line or "").strip()
+    return re.sub(r"^/+", "/", cleaned)
+
+
+def command_name(line: str) -> str:
+    """Return "/voice" for "/voice now", and "" for ordinary text."""
+    if not line.startswith("/"):
+        return ""
+    return line.split(maxsplit=1)[0]
+
+
+def is_unknown_command(line: str) -> bool:
+    """True for a slash line whose command name Ultron does not implement."""
+    name = command_name(line)
+    return bool(name) and name not in KNOWN_COMMANDS
 
 
 def show_privacy_notice_once(config: AssistantConfig) -> None:
@@ -61,18 +94,24 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
 
     while True:
         try:
-            user_in = input(f"You ({config.current_model}/{config.active_thinking_level})> ").strip()
+            raw_line = input(f"You ({config.current_model}/{config.active_thinking_level})> ")
         except (EOFError, KeyboardInterrupt):
             voice.stop_speaking()
             print("\nExiting Ultron.")
             return 0
 
+        user_in = normalize_chat_line(raw_line)
+        plain = raw_line.strip()
+        if plain.startswith("/") or plain.lower() in _BARE_LOG_WORDS:
+            logger.info("Chat input: %r", redact_secrets(raw_line))
+
         if not user_in:
             continue
-        if user_in in ("/quit", "/exit", "exit", "quit"):
+        name = command_name(user_in)
+        if name in ("/quit", "/exit") or user_in in ("exit", "quit"):
             voice.stop_speaking()
             return 0
-        if user_in.startswith("/model"):
+        if name == "/model":
             parts = user_in.split(maxsplit=1)
             if len(parts) == 1:
                 print(f"Available models: {config.available_model_choices()} (current: {config.current_model})")
@@ -82,7 +121,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
                 except ValueError as exc:
                     print(f"Error: {exc}")
             continue
-        if user_in.startswith("/thinking"):
+        if name == "/thinking":
             parts = user_in.split(maxsplit=1)
             if len(parts) == 1:
                 print(f"Current thinking level: {config.active_thinking_level} (choices: low, medium, high)")
@@ -92,7 +131,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
                 except ValueError as exc:
                     print(f"Error: {exc}")
             continue
-        if user_in.startswith("/mode"):
+        if name == "/mode":
             parts = user_in.split(maxsplit=1)
             if len(parts) > 1:
                 try:
@@ -100,21 +139,21 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
                 except ValueError as exc:
                     print(f"Error: {exc}")
             continue
-        if user_in == "/dry-run":
+        if name == "/dry-run":
             dry_run = not dry_run
             print(f"Dry-run mode: {dry_run}")
             continue
-        if user_in == "/logs":
+        if name == "/logs":
             for entry in read_audit_logs(10):
                 print(f"  {entry['time']} | {entry['tool']} | approved={entry['approved']}")
             continue
-        if user_in == "/stop":
+        if name == "/stop":
             voice.stop_speaking()
             trigger_kill_switch("CLI /stop command")
             continue
 
         is_voice_turn = False
-        if user_in == "/voice":
+        if name == "/voice":
             ok_rec, rec_msg = voice.record()
             if not ok_rec:
                 print(f"Voice: {rec_msg}\n")
@@ -137,6 +176,10 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             print(f"You (voice): {transcript}")
             user_in = transcript
             is_voice_turn = True
+        elif name:
+            # A slash line is always a command. Never let it reach the LLM by accident.
+            print(UNKNOWN_COMMAND_MESSAGE)
+            continue
 
         try:
             res = loop.run_task(user_in, dry_run=dry_run)
