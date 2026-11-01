@@ -83,8 +83,8 @@ class AssistantConfig:
     # Microphone capture: "auto" listens until the user stops talking; "fixed" records a
     # fixed window (the old behaviour) for VOICE_FIXED_SECONDS.
     voice_mode: str = "auto"
-    voice_start_timeout_s: float = 8.0
-    voice_silence_ms: int = 1000
+    voice_start_timeout_s: float = 10.0
+    voice_silence_ms: int = 2000
     voice_max_seconds: float = 30.0
     voice_fixed_seconds: float = 5.0
     voice_debug: bool = False

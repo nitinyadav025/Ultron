@@ -9,7 +9,7 @@ pushed). This section supersedes every section below it.
 
 | Part | What | Status |
 |------|------|--------|
-| 1 | Audit every setting; permissions diff; "close" capability | IN PROGRESS |
+| 1 | Audit every setting; permissions diff; "close" capability | DONE |
 | 2 | Make `listen` visible; fix text leaks of ignored speech | TODO |
 | 3 | Offline replay: why no command after "Yes?" | TODO |
 | 4 | Adaptive warm-up; SNR thresholds from real clips | TODO |
@@ -33,9 +33,92 @@ pushed). This section supersedes every section below it.
   the "ignored" line could not appear (default 0).
 - Volumes right now: sink 1.00, source 0.21.
 
+### Part 1 result — settings audit (2026-11-01)
+
+Read from `assistant/config.py`, `.env.example`, the approved `.env` grep, and a
+`load_config()` call that printed only these names. `VOICE_FALLBACK_*` map to the
+`tts_fallback_*` attributes, not `voice_fallback_*`.
+
+| Setting | config default | .env.example | .env | effective | Verdict |
+|---|---|---|---|---|---|
+| VOICE_MODE | auto | auto | absent | auto | OK |
+| VOICE_START_TIMEOUT_S | **10.0** (was 8.0) | 10 | absent | 10.0 | was WRONG, fixed |
+| VOICE_SILENCE_MS | **2000** (was 1000) | 2000 | absent | 2000 | was WRONG, fixed |
+| VOICE_MAX_SECONDS | 30.0 | 30 | absent | 30.0 | OK |
+| VOICE_FIXED_SECONDS | 5.0 | 5 | absent | 5.0 | OK |
+| VOICE_MIN_SNR_DB | 10.0 | 10 | absent | 10.0 | WRONG for his voice (8.6 dB clip); Part 4 |
+| VOICE_VOLUME | 1.0 | 1.0 | absent | 1.0 | OK |
+| VOICE_REPLY_MAX_CHARS | 160 | 160 | 160 | 160 | OK |
+| VOICE_DEBUG | False | false | absent | False | OK |
+| VOICE_HIGHPASS_HZ | 100.0 | 100 | absent | 100.0 | OK |
+| VOICE_DENOISE_STRENGTH | 0.0 | 0 | absent | 0.0 | OK (A/B said off) |
+| VOICE_FALLBACK_VOICE_TYPE / PITCH / RATE | tts_fallback_* male1/15/10 | male1/15/10 | male1/15/10 | same | OK |
+| RECORDER_WARMUP_MS | 300 | 300 | absent | 300 | WRONG: pop lasts ~700–800 ms; Part 4 |
+| MIC_SOURCE_VOLUME | "" | blank | 0.21 | 0.21 | OK, applied in `listen` too (silently) |
+| MIC_SOURCE_NAME | "" | blank | absent | "" | OK (default source) |
+| WAKE_WORD | ultron | ultron | absent | ultron | OK, but base.en is weak on it; Part 5 |
+| WAKE_ALIASES | "" | blank | absent | "" | WRONG for his voice; Part 5 |
+| LISTEN_EARLY_CHECK_MS | 800 | 800 | absent | 800 | OK |
+| LISTEN_FOLLOWUP_S | 6.0 | 6 | absent | 6.0 | OK |
+| LISTEN_AFTER_SPEECH_MS | 600 | 600 | absent | 600 | OK; first-word risk in Part 3 |
+| LISTEN_LOG_IGNORED | False | 0 | **absent** | False | explains the missing "ignored" line |
+| WHISPER_MODEL | base.en | base.en | base.en | base.en | OK |
+| WHISPER_MODEL_DIR | models/faster-whisper-base.en | same | same | same | OK |
+| WHISPER_HOTWORDS | "" | blank | blank | "" | OK (off) |
+| WHISPER_MIN_AVG_LOGPROB | -1.0 | -1.0 | absent | -1.0 | OK |
+| WHISPER_MAX_NO_SPEECH_PROB | 0.60 | 0.60 | absent | 0.60 | OK |
+| WHISPER_MAX_COMPRESSION_RATIO | 2.4 | 2.4 | absent | 2.4 | OK |
+| SEARCH_ENGINE | read by `web.py` | duckduckgo | absent | duckduckgo | OK (no config field) |
+
+**What `listen` sends to Whisper** (`assistant/speech/ears.py transcribe_samples`):
+`language="en"`, `beam_size=1`, `vad_filter=True`, `condition_on_previous_text=False`,
+`without_timestamps=True`, no `initial_prompt`/`prompt`, `hotwords` only when
+`WHISPER_HOTWORDS` is non-empty (it is blank), and a contiguous float32 array. **WRONG:**
+`listen` does **not** run the `/voice` normaliser (`normalise_mic_level`) or the transient
+trim; it sends raw `int16/32768`. Part 3 fixes this.
+
+**Thresholds** (code): start = `max(280, min(floor×2.5, 500), floor×10^(SNR/20))`, end =
+`max(140, floor×1.8, min(start×0.6, speaker×0.18))`. With his logged floor 234 and
+`VOICE_MIN_SNR_DB=10`, start = **740**, while his logged speech level was **629** (8.6 dB).
+So the auto/listen gate can reject that quiet voice even though `voice-test` (fixed mode,
+which uses the 10th-percentile floor) accepted it. That is why the logged 8.6 dB looked
+inconsistent.
+
+**Fix applied now:** the two dataclass defaults above now match the loader; tested in
+`tests/test_config_defaults.py`.
+
+**Volumes (read-only):** sink `Volume: 1.00`; source `Volume: 0.21`.
+
+### Part 1b result — permissions diff
+
+`git diff phase5-b1-work phase5-b2-work` shows only:
+1. `GateDecision.needs_confirmation: bool = False` (new flag).
+2. `PermissionGate.check(..., allow_prompt: bool = True)`. When a call would ask and
+   `allow_prompt=False`, it returns denied + `needs_confirmation=True` **instead of reading
+   the keyboard**.
+3. `ToolRegistry(..., allow_prompts: bool = True)` (default True), a
+   `needs_confirmation_seen` flag, and an `on_execute` timing hook. It passes
+   `allow_prompt=self.allow_prompts` to the gate and records the refusal.
+
+Nothing is auto-approved and no tier is weakened. Chat uses the defaults, so prompts are
+unchanged; `listen` passes `allow_prompts=False`. Proven by
+`tests/test_permissions_b3.py`: chat prompts and runs only after "yes", "no" runs nothing,
+hands-free never calls the prompt callback and never runs the tool.
+
+### Part 1c result — "close"
+
+Registered tools: `list_files`, `read_file`, `open_app`, `volume_up`, `volume_down`,
+`set_volume`, `mute_audio`, `web_search`, `open_first_result`. **None closes or quits an
+app.** A grep for `close|kill|pkill|terminate|quit|wmctrl|xdotool` in `assistant/tools/`
+found only the sandbox timeout helpers. B1 had no `fast_path.py` and no close path; the only
+"quit/kill" words in B1's CLI/agent loop are `/quit` and the killswitch. So "close firefox"
+never actually closed anything — the old model probably claimed it. B2's `fast_path.py`
+recognises it and answers "I can't close apps yet." without acting. **Nothing built.**
+
 ### Files changed so far
 
-- `docs/PROGRESS.md` only.
+- `assistant/config.py` (two defaults), `tests/test_permissions_b3.py`,
+  `tests/test_config_defaults.py`, `docs/PROGRESS.md`.
 
 ### Open problems
 
