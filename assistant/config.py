@@ -89,6 +89,7 @@ class AssistantConfig:
     voice_fixed_seconds: float = 5.0
     voice_debug: bool = False
     recorder_warmup_ms: int = 300
+    recorder_warmup_max_ms: int = 1500
     voice_min_snr_db: float = 10.0
     voice_highpass_hz: float = 100.0
     # OFF by default: the Nov 1 A/B showed no gain and one clean clip got worse.
@@ -98,7 +99,7 @@ class AssistantConfig:
     wake_aliases: str = ""
     listen_followup_s: float = 6.0
     listen_early_check_ms: int = 800
-    listen_after_speech_ms: int = 600
+    listen_after_speech_ms: int = 300
     listen_log_ignored: bool = False
     listen_debug: bool = False
     daily_token_cap: int = 500000
@@ -279,6 +280,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     voice_fixed_seconds = _positive_float("VOICE_FIXED_SECONDS", 5.0, 1.0, 60.0)
     voice_debug = merged.get("VOICE_DEBUG", "false").lower() == "true"
     recorder_warmup_ms = _positive_int("RECORDER_WARMUP_MS", 300, 0, 2000)
+    recorder_warmup_max_ms = _positive_int("RECORDER_WARMUP_MAX_MS", 1500, 300, 5000)
     voice_min_snr_db = _positive_float("VOICE_MIN_SNR_DB", 10.0, 0.0, 30.0)
     voice_highpass_hz = _positive_float("VOICE_HIGHPASS_HZ", 100.0, 0.0, 800.0)
     try:
@@ -289,7 +291,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     wake_aliases = (merged.get("WAKE_ALIASES") or "").strip()
     listen_followup_s = _positive_float("LISTEN_FOLLOWUP_S", 6.0, 0.0, 60.0)
     listen_early_check_ms = _positive_int("LISTEN_EARLY_CHECK_MS", 800, 200, 5000)
-    listen_after_speech_ms = _positive_int("LISTEN_AFTER_SPEECH_MS", 600, 0, 5000)
+    listen_after_speech_ms = _positive_int("LISTEN_AFTER_SPEECH_MS", 300, 0, 5000)
     listen_log_ignored = merged.get("LISTEN_LOG_IGNORED", "0").strip().lower() in ("1", "true", "yes")
     listen_debug = merged.get("LISTEN_DEBUG", "0").strip().lower() in ("1", "true", "yes")
 
@@ -362,6 +364,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         voice_fixed_seconds=voice_fixed_seconds,
         voice_debug=voice_debug,
         recorder_warmup_ms=recorder_warmup_ms,
+        recorder_warmup_max_ms=recorder_warmup_max_ms,
         voice_min_snr_db=voice_min_snr_db,
         voice_highpass_hz=voice_highpass_hz,
         voice_denoise_strength=voice_denoise_strength,

@@ -11,8 +11,8 @@ pushed). This section supersedes every section below it.
 |------|------|--------|
 | 1 | Audit every setting; permissions diff; "close" capability | DONE |
 | 2 | Make `listen` visible; fix text leaks of ignored speech | DONE |
-| 3 | Offline replay: why no command after "Yes?" | TODO |
-| 4 | Adaptive warm-up; SNR thresholds from real clips | TODO |
+| 3 | Offline replay: why no command after "Yes?" | DONE |
+| 4 | Adaptive warm-up; SNR thresholds from real clips | DONE |
 | 5 | `main.py wake-train` + learned aliases, with safety rule | TODO |
 | 6 | Speak every /voice outcome ("I didn't hear anything.") | TODO |
 | 7 | First-result method without scraping (if usage remains) | TODO |
@@ -141,12 +141,109 @@ recognises it and answers "I can't close apps yet." without acting. **Nothing bu
   `test_listen_log_ignored_prints_only_the_first_word`, `test_debug_text_is_screen_only`,
   and `test_private_transcription_keeps_the_words_out_of_the_log`.
 
-### Files changed so far
+### Part 3 result — why no command after "Yes?"
 
-- `assistant/config.py` (`LISTEN_DEBUG`), `assistant/speech/ears.py` (private logging),
-  `assistant/speech/wake.py` (`wake_match`/`aliases_for`),
-  `assistant/interfaces/listen.py`, `.env.example`,
-  `tests/test_ears.py`, `tests/test_listen.py`, `docs/PROGRESS.md`.
+**Diagnosis on the OLD B2 code** (timed replay: a scripted mic, a fake Piper that blocks
+1.0 s, a real saved command clip; a transcript is scripted by call order):
+
+| Case | Old code result |
+|---|---|
+| command starts 200 ms after Piper | **FAILED** — `commands=[]`, ignored |
+| 500 ms | **FAILED** — ignored |
+| 1500 ms | **FAILED** — ignored |
+| 5000 ms | **FAILED** — ignored |
+| 6500 ms | passed (ignored, as intended) |
+
+Instrumented run at 1500 ms:
+`PROCESS at audio_ms=11060 followup_until=9440 active=False last_start=4680`.
+The command **started at 4680 ms, inside the 6 s window**, but the window-closing check ran
+on audio time and cleared `_followup_active` at 9440 ms while the user was still speaking.
+At transcript time it was false, so the command was rejected as "no wake word". This is a
+direct cause of the live "no transcript after Yes?".
+
+The second cause: `LISTEN_AFTER_SPEECH_MS=600` discarded the first 600 ms after Piper, so
+a command starting at 200/500 ms lost its beginning.
+
+**Fixes:**
+- The follow-up window closes only when the detector is **idle**, never mid-sentence
+  (`UtteranceDetector.in_speech`).
+- `LISTEN_AFTER_SPEECH_MS` default is now **300**.
+- The last 400 ms of the discard window are kept and checked with `feed_warm()`: start
+  detection is possible, but the noise floor/calibration are never touched (a burst cannot
+  raise the thresholds). This keeps the first word.
+- `ContinuousReader` (new): a reader thread pulls the mic into a bounded 40 s ring with
+  timestamps while Whisper/LLM/Piper are busy; `clear()` drops only the busy-time backlog,
+  so the next utterance is fresh and the pipe never fills.
+
+**Tests:** `tests/test_listen_timing.py` (8: all four delays with the full clip intact,
+6500 ms ignored, burst during Piper, two commands, "Ultron" twice) and
+`tests/test_listen_reader.py` (2: buffering/clear while busy, and a live-paced source where
+the command after Piper still runs).
+
+### Part 4 result — adaptive warm-up and SNR from the real clips
+
+**Adaptive warm-up** (`assistant/speech/recorder.py AdaptiveWarmup`): discard until two
+consecutive 50 ms blocks are calm (≤ 1200 RMS, not rising), at least
+`RECORDER_WARMUP_MS=300`, at most `RECORDER_WARMUP_MAX_MS=1500`. The pop never feeds the
+noise floor, start detection or saved audio. It is used by `/voice`, `voice-test` and
+`listen`; "Listening…"/"Recording…" prints only after it ends.
+
+Measured on the saved takes:
+
+| Take | warm-up end | room floor |
+|---|---|---|
+| 134518 (pop) | 780 ms | 320 |
+| 135201 (fan pop) | 780 ms | 285 |
+| 135223 (pop) | 840 ms | 335 |
+| 134437 | 300 ms | 279 |
+| 134532 | 360 ms | 299 |
+| 134543 | 300 ms | 329 |
+| 134606 | 300 ms | 302 |
+| 134642 | 300 ms | 326 |
+| 134700 | 300 ms | 313 |
+| 134409 (loud throughout, transcript "Unused.", already rejected) | 1500 ms | **4510** |
+
+So 9 of 10 takes end with a floor below 1000; the loud take is honestly reported, not
+forced. `tests/test_warmup_snr.py` pins this.
+
+**The 8.6 dB question:** the logged 8.6 dB is `speech_level (75th percentile of ALL
+frames, including silence) / noise_floor`. The detector uses a **per-frame** test against
+the floor, and on the same take speech frames are far above it. Measured after warmth:
+
+| Clip | floor | speech (p75 of frames passing 10 dB) | SNR | detected |
+|---|---|---|---|---|
+| 134437 unmute | 245 | 4592 | 25.5 dB | yes |
+| 134518 "Stay silent…" | 251 | 7016 | 28.9 dB | yes |
+| 134532 Yes | 246 | 3731 | 23.6 dB | yes |
+| 134543 "Can you unmute…" | 245 | 3054 | 21.9 dB | yes |
+| 134606 "list files…" | 248 | 4314 | 24.8 dB | yes |
+| **134642 "What is your name?"** | **255** | **3167** | **21.9 dB** | **yes** |
+| 134700 "Turn the volume…" | 246 | 3948 | 24.1 dB | yes |
+| 135223 "mute unmute" | 246 | 8138 | 30.4 dB | yes |
+| fan 30 s | 286 | — (steady, only short gusts) | longest 10 dB run **80 ms** | **no** |
+| constant 4700 | 2628 | none | < 10 dB | **no** |
+| lone click | 40 | burst-excluded | — | **no** |
+| loud 134409 | 4510 | 30971 | 16.7 dB | no (its speech is not the user's command) |
+
+`VOICE_MIN_SNR_DB` stays **10** (a 5 dB gate let a fan gust run 740 ms and trigger). The
+quietest real clip has ~11.9 dB of margin above the 10 dB gate.
+
+**Two detector bugs found while measuring:**
+1. The noise floor adapted on every frame under the start threshold; during speech it
+   ratcheted from ~685 to ~2900, raising the gate above the user's own voice and preventing
+   any start. It now adapts only when `level ≤ floor × 1.5`, slowly (0.95/0.05).
+2. A 200 ms unbroken run is wrong for speech with syllable gaps. A leaky counter now adds
+   20/250 per speech frame and subtracts 20/500 per other frame; start at 1.0 (250 ms of
+   net speech). All 8 correct clips reach 1.0; fan 0.72, constant 0.72, click 0.08.
+
+### Files changed so far (parts 3–4)
+
+- `assistant/speech/recorder.py` (`AdaptiveWarmup`, activity counter, floor drift),
+  `assistant/interfaces/listen.py` (`ContinuousReader`, window close, feed_warm),
+  `assistant/interfaces/voice.py`, `assistant/config.py`,
+  `.env.example`, `tests/test_listen_timing.py`, `tests/test_listen_reader.py`,
+  `tests/test_warmup_snr.py`, `tests/test_listening_reliability.py`,
+  `docs/PROGRESS.md`.
 
 ### Open problems
 

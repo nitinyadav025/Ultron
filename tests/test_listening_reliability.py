@@ -451,7 +451,9 @@ def test_constant_loud_noise_never_starts_a_recording() -> None:
     assert recording.pcm == b""
     assert recording.reason in ("timeout", "source_ended")
     assert recording.trace["thresholds"]["min_snr_db"] == 10.0
-    assert recording.trace["thresholds"]["warmup_ms"] == 300
+    thresholds = recording.trace["thresholds"]
+    assert 300 <= thresholds["warmup_ms"] <= 1500  # constant noise: warm-up runs to max
+    assert thresholds["warmup_max_ms"] == 1500
 
 
 def test_fan_only_recording_says_nothing_heard_and_never_reaches_whisper(

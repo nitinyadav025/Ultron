@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from assistant.speech.recorder import (
     FRAME_MS,
     MIN_NOISE_FLOOR,
     PRE_ROLL_MS,
+    AdaptiveWarmup,
     PwRecordSource,
     _end_threshold,
     _is_clipped_burst,
@@ -79,12 +81,15 @@ class UtteranceDetector:
         self,
         *,
         warmup_ms: int = DEFAULT_WARMUP_MS,
+        warmup_max_ms: int = 1500,
         min_snr_db: float = 10.0,
         silence_ms: int = 2000,
         early_ms: int = 800,
         max_seconds: float = 30.0,
     ) -> None:
         self.warmup_ms = int(warmup_ms)
+        self._warm = AdaptiveWarmup(self.warmup_ms, warmup_max_ms)
+        self._warmup_end_ms = self.warmup_ms
         self.min_snr_db = float(min_snr_db)
         self.silence_ms = int(silence_ms)
         self.early_ms = int(early_ms)
@@ -99,7 +104,7 @@ class UtteranceDetector:
         self._ring: deque[array.array] = deque(maxlen=max(1, (PRE_ROLL_MS + MIN_SPEECH_MS) // FRAME_MS))
         self._collected: list[array.array] = []
         self._in_speech = False
-        self._speech_run = 0
+        self._speech_activity = 0.0
         self._silence_run = 0
         self._speech_frames = 0
         self._start_ms = 0
@@ -122,7 +127,7 @@ class UtteranceDetector:
         self._ring.clear()
         self._collected = []
         self._in_speech = False
-        self._speech_run = 0
+        self._speech_activity = 0.0
         self._silence_run = 0
         self._speech_frames = 0
         self._start_ms = 0
@@ -136,17 +141,23 @@ class UtteranceDetector:
     def feed(self, frame: array.array) -> str | None:
         """Consume one 20 ms frame. Return "early", "final", "noise" or None."""
         self.audio_ms += FRAME_MS
-        if self.audio_ms <= self.warmup_ms:
-            return None
 
         level = frame_rms(frame)
         peak = frame_peak(frame)
         burst = _is_clipped_burst(level, peak)
 
+        if not self._warm.done:
+            if self._warm.feed(level, peak, self.audio_ms):
+                return None
+            self._warmup_end_ms = self._warm.end_ms
+            self._calibrated = False
+            self._calibration.clear()
+            return None  # the frame that ended the warm-up is discarded too
+
         if not self._calibrated:
             if not burst:
                 self._calibration.append(level)
-            if self.audio_ms >= self.warmup_ms + CALIBRATION_MS:
+            if self.audio_ms >= self._warmup_end_ms + CALIBRATION_MS:
                 estimate = float(percentile(self._calibration, 0.25)) if self._calibration else DEFAULT_NOISE_FLOOR
                 self.noise_floor = max(MIN_NOISE_FLOOR, estimate)
                 self._calibrated = True
@@ -157,15 +168,15 @@ class UtteranceDetector:
         if not self._in_speech:
             self._ring.append(frame)
             if is_speech:
-                self._speech_run += 1
+                self._speech_activity = min(1.0, self._speech_activity + FRAME_MS / MIN_SPEECH_MS)
                 self._speech_frames += 1
             else:
-                self._speech_run = 0
-                if self._calibrated and level < start_thr:
-                    self.noise_floor = max(MIN_NOISE_FLOOR, 0.9 * self.noise_floor + 0.1 * level)
-            if self._speech_run * FRAME_MS >= MIN_SPEECH_MS:
+                self._speech_activity = max(0.0, self._speech_activity - FRAME_MS / (2 * MIN_SPEECH_MS))
+                if self._calibrated and level <= self.noise_floor * 1.5:
+                    self.noise_floor = max(MIN_NOISE_FLOOR, 0.95 * self.noise_floor + 0.05 * level)
+            if self._speech_activity >= 1.0:
                 self._in_speech = True
-                self._start_ms = max(0, self.audio_ms - self._speech_run * FRAME_MS)
+                self._start_ms = max(0, self.audio_ms - MIN_SPEECH_MS)
                 self.last_start_ms = self._start_ms
                 self._speaker_level = float(max(frame_rms(item) for item in self._ring))
                 self._collected = list(self._ring)
@@ -216,6 +227,37 @@ class UtteranceDetector:
             frames = frames[: last + 1 + TRAILING_SILENCE_MS // FRAME_MS]
         return b"".join(samples_to_pcm16(frame) for frame in frames)
 
+    def feed_warm(self, frames: list[array.array]) -> None:
+        """Re-process the tail of a discard window for start detection only.
+
+        The noise floor and calibration are never touched here, so a burst during Piper
+        cannot raise the thresholds. This is what keeps the first word of a command that
+        starts during the discard window.
+        """
+        if not frames:
+            return
+        if self._in_speech:
+            self._collected.extend(frames)
+            return
+        start_thr, _end = self._thresholds()
+        for frame in frames:
+            level = frame_rms(frame)
+            burst = _is_clipped_burst(level, frame_peak(frame))
+            self._ring.append(frame)
+            if level >= start_thr and not burst:
+                self._speech_activity = min(1.0, self._speech_activity + FRAME_MS / MIN_SPEECH_MS)
+                self._speech_frames += 1
+            else:
+                self._speech_activity = max(0.0, self._speech_activity - FRAME_MS / (2 * MIN_SPEECH_MS))
+            if self._speech_activity >= 1.0:
+                self._in_speech = True
+                self._start_ms = max(0, self.audio_ms - MIN_SPEECH_MS)
+                self.last_start_ms = self._start_ms
+                self._speaker_level = float(max(frame_rms(item) for item in self._ring))
+                self._collected = list(self._ring)
+                self._ring.clear()
+                break
+
     def stats(self) -> dict[str, Any]:
         """Peak/RMS/floor/SNR for the utterance log line (no text involved)."""
         frames = list(self._collected)
@@ -233,8 +275,92 @@ class UtteranceDetector:
         }
 
     @property
+    def ready(self) -> bool:
+        """True once the opening pop has been discarded."""
+        return self._warm.done
+
+    @property
+    def in_speech(self) -> bool:
+        return self._in_speech
+
+    @property
     def speech_ms(self) -> int:
         return self._speech_frames * FRAME_MS
+
+
+class ContinuousReader:
+    """Read the mic continuously in a thread into a bounded ring with timestamps.
+
+    The pipe is therefore never left unread while Whisper, the LLM or Piper is busy; the
+    newest 40 s are kept and the oldest frames are dropped. ``clear()`` removes the
+    backlog that arrived while the assistant was talking, so the next utterance starts
+    fresh with no stale audio in front of it.
+    """
+
+    def __init__(self, source: Any, max_frames: int = 2000) -> None:
+        self.source = source
+        self._frames: deque[tuple[float, bytes]] = deque(maxlen=max_frames)
+        self._cv = threading.Condition()
+        self._stop = threading.Event()
+        self._ended = False
+        self._thread: threading.Thread | None = None
+        self.peak_frames = 0
+
+    def start(self) -> None:
+        self.source.start()
+        self._thread = threading.Thread(target=self._pump, name="mic-reader", daemon=True)
+        self._thread.start()
+
+    def _pump(self) -> None:
+        while not self._stop.is_set():
+            chunk = self.source.read(FRAME_BYTES, timeout=0.25)
+            if chunk is None:
+                with self._cv:
+                    self._ended = True
+                    self._cv.notify_all()
+                return
+            if not chunk:
+                continue
+            with self._cv:
+                self._frames.append((time.monotonic(), chunk))
+                self.peak_frames = max(self.peak_frames, len(self._frames))
+                self._cv.notify_all()
+
+    def get(self, timeout: float) -> bytes | None:
+        stamped = self.get_stamped(timeout)
+        return None if stamped is None else stamped[1]
+
+    def get_stamped(self, timeout: float) -> tuple[float, bytes] | None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._cv:
+            while not self._frames:
+                if self._ended:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return b""
+                self._cv.wait(remaining)
+            return self._frames.popleft()
+
+    def clear(self) -> None:
+        with self._cv:
+            self._frames.clear()
+
+    @property
+    def buffered(self) -> int:
+        with self._cv:
+            return len(self._frames)
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._cv:
+            self._cv.notify_all()
+        try:
+            self.source.stop()
+        except Exception:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
 
 
 class HandsFreeListener:
@@ -248,6 +374,7 @@ class HandsFreeListener:
         transcribe: Callable[[bytes], Transcript],
         speak: Callable[[str], None],
         command_runner: Callable[[str], tuple[str, bool]],
+        reader: ContinuousReader | None = None,
         save_debug: Callable[[bytes, Transcript, str], None] | None = None,
         print_fn: Callable[[str], None] = print,
         clock: Callable[[], float] = time.monotonic,
@@ -257,12 +384,14 @@ class HandsFreeListener:
         self.transcribe = transcribe
         self.speak = speak
         self.command_runner = command_runner
+        self.reader = reader
         self.save_debug = save_debug
         self.print_fn = print_fn
         self.clock = clock
         self.detector = UtteranceDetector(
             warmup_ms=getattr(config, "recorder_warmup_ms", DEFAULT_WARMUP_MS),
-            min_snr_db=getattr(config, "voice_min_snr_db", 10.0),
+            warmup_max_ms=getattr(config, "recorder_warmup_max_ms", 1500),
+            min_snr_db=getattr(config, "voice_min_snr_db", 5.0),
             silence_ms=getattr(config, "voice_silence_ms", 2000),
             early_ms=getattr(config, "listen_early_check_ms", 800),
             max_seconds=getattr(config, "voice_max_seconds", 30.0),
@@ -274,6 +403,7 @@ class HandsFreeListener:
         self.ignore_until_ms = 0
         self._carry = b""
         self._ready = False
+        self._discard_tail: deque[array.array] = deque(maxlen=max(1, 400 // FRAME_MS))
         self._discard_active = False
         self._followup_active = False
         self._t_end = 0.0
@@ -290,9 +420,15 @@ class HandsFreeListener:
 
     def run(self) -> int:
         try:
-            self.source.start()
+            if self.reader is not None:
+                self.reader.start()
+            else:
+                self.source.start()
             while not self.stop_requested:
-                chunk = self.source.read(FRAME_BYTES, timeout=0.25)
+                if self.reader is not None:
+                    chunk = self.reader.get(0.25)
+                else:
+                    chunk = self.source.read(FRAME_BYTES, timeout=0.25)
                 if chunk is None:
                     break
                 if not chunk:
@@ -301,7 +437,10 @@ class HandsFreeListener:
         except KeyboardInterrupt:
             logger.info("Hands-free listening stopped by Ctrl+C.")
         finally:
-            self.source.stop()
+            if self.reader is not None:
+                self.reader.stop()
+            else:
+                self.source.stop()
         return 0
 
     # -- internals ----------------------------------------------------------------
@@ -320,17 +459,28 @@ class HandsFreeListener:
             raw_frame, self._carry = self._carry[:FRAME_BYTES], self._carry[FRAME_BYTES:]
             frame = pcm16_samples(raw_frame)
 
-            if not self._ready and self.detector.audio_ms >= self.detector.warmup_ms:
+            if not self._ready and self.detector.ready:
                 self._ready = True
                 self.print_fn(START_LINE)
 
             if self.detector.audio_ms < self.ignore_until_ms:
                 self.detector.skip(frame)
+                self._discard_tail.append(frame)
                 continue
             if self._discard_active:
                 self._discard_active = False
+                # The last 400 ms are kept as pre-roll and checked for a speech start,
+                # without letting a burst change the noise floor.
+                self.detector.feed_warm(list(self._discard_tail))
+                self._discard_tail.clear()
                 logger.info("Hands-free: discard window closed.")
-            if self._followup_active and self.detector.audio_ms > self.followup_until_ms:
+            if (
+                self._followup_active
+                and self.detector.audio_ms > self.followup_until_ms
+                and not self.detector.in_speech
+            ):
+                # Never close the window in the middle of the user's sentence: a command
+                # that started inside the window must be accepted even if it ends later.
                 self._followup_active = False
                 logger.info("Hands-free: follow-up window closed.")
                 self._say("window closed")
@@ -467,6 +617,7 @@ class HandsFreeListener:
         window = int(getattr(self.config, "listen_followup_s", 6.0) * 1000)
         self.ignore_until_ms = self.detector.audio_ms + after
         self.followup_until_ms = self.ignore_until_ms + window
+        self._discard_tail.clear()
         self._discard_active = True
         self._followup_active = True
         logger.info("Hands-free: discard window open for %d ms.", after)
@@ -474,6 +625,11 @@ class HandsFreeListener:
         self._say(f"waiting for your command ({window // 1000} s)")
 
     def _drain(self) -> None:
+        if self.reader is not None:
+            # Drop only what arrived while the assistant was busy. A reader thread keeps
+            # the pipe empty, so the next utterance is fresh and never delayed.
+            self.reader.clear()
+            return
         while True:
             chunk = self.source.read(FRAME_BYTES, timeout=0)
             if not chunk:
@@ -581,6 +737,7 @@ def run_listen(config: AssistantConfig) -> int:
     listener = HandsFreeListener(
         config,
         source,
+        reader=ContinuousReader(source),
         transcribe=transcribe,
         speak=speak,
         command_runner=run_command,

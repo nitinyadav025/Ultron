@@ -335,7 +335,8 @@ class VoiceController:
                 silence_ms=getattr(self.config, "voice_silence_ms", 2000),
                 max_seconds=getattr(self.config, "voice_max_seconds", 30.0),
                 warmup_ms=getattr(self.config, "recorder_warmup_ms", 300),
-                min_snr_db=getattr(self.config, "voice_min_snr_db", 10.0),
+                warmup_max_ms=getattr(self.config, "recorder_warmup_max_ms", 1500),
+                min_snr_db=getattr(self.config, "voice_min_snr_db", 5.0),
                 status=self.status_callback,
             )
         except KeyboardInterrupt:
@@ -536,6 +537,8 @@ class VoiceController:
                     source,
                     max(0.5, float(duration_sec)),
                     status=self.status_callback,
+                    warmup_ms=getattr(self.config, "recorder_warmup_ms", 300),
+                    warmup_max_ms=getattr(self.config, "recorder_warmup_max_ms", 1500),
                 )
             except KeyboardInterrupt:
                 logger.info("Fixed recording cancelled by Ctrl+C.")

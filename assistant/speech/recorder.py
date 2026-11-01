@@ -47,6 +47,11 @@ FRAME_BYTES = FRAME_SAMPLES * SAMPLE_WIDTH
 # completely: it is not used for the noise floor, start detection or the saved audio.
 WARMUP_MS = 400
 DEFAULT_WARMUP_MS = 300
+DEFAULT_WARMUP_MAX_MS = 1500
+# A 50 ms block at or below this level is "calm" after the opening pop. Measured: the
+# three real pop takes stay above 1000 until about 700-800 ms; the fan's 100 ms RMS is
+# 265-1025.
+WARMUP_CALM_RMS = 1200.0
 # Noise floor measured from the first frames (clipped frames excluded).
 CALIBRATION_MS = 200
 PRE_ROLL_MS = 400  # keep the first word safe
@@ -335,6 +340,61 @@ def _is_clipped_burst(level: int, peak: int) -> bool:
     return peak >= CLIP_LEVEL and level * CLIPPED_BURST_CREST > peak
 
 
+class AdaptiveWarmup:
+    """Discard the stream-opening pop until the level is calm, bounded by min/max time.
+
+    The pop is never used for the noise floor, start detection or saved audio. It ends
+    after two consecutive calm 50 ms blocks (at most ``max_ms``).
+    """
+
+    def __init__(
+        self,
+        min_ms: int = DEFAULT_WARMUP_MS,
+        max_ms: int = DEFAULT_WARMUP_MAX_MS,
+        calm_rms: float = WARMUP_CALM_RMS,
+    ) -> None:
+        self.min_ms = int(min_ms)
+        self.max_ms = max(self.min_ms, int(max_ms))
+        self.calm_rms = float(calm_rms)
+        self.done = False
+        self.end_ms = self.min_ms
+        self._block_start = 0
+        self._sum = 0
+        self._count = 0
+        self._prev: float | None = None
+        self._calm_run = 0
+        self._burst = False
+
+    def feed(self, level: int, peak: int, audio_ms: int) -> bool:
+        """Return True while frames must still be discarded."""
+        if self.done:
+            return False
+        burst = _is_clipped_burst(level, peak)
+        if burst:
+            self._burst = True
+        self._sum += level
+        self._count += 1
+        if audio_ms - self._block_start >= 50:
+            block = self._sum / max(1, self._count)
+            self._sum = 0
+            self._count = 0
+            self._block_start = audio_ms
+            if not self._burst:
+                calm = block <= self.calm_rms and (self._prev is None or block <= self._prev * 1.2)
+                self._calm_run = self._calm_run + 1 if calm else 0
+                self._prev = block
+                if audio_ms >= self.min_ms and self._calm_run >= 2:
+                    self.end_ms = audio_ms
+                    self.done = True
+                    return False
+            self._burst = False
+        if audio_ms >= self.max_ms:
+            self.end_ms = self.max_ms
+            self.done = True
+            return False
+        return True
+
+
 def _snr_ratio(min_snr_db: float) -> float:
     return 10.0 ** (float(min_snr_db) / 20.0)
 
@@ -384,6 +444,7 @@ def record_until_silence(
     stop_on_enter: bool = True,
     enter_pressed: Callable[[], bool] | None = None,
     warmup_ms: int = DEFAULT_WARMUP_MS,
+    warmup_max_ms: int = DEFAULT_WARMUP_MAX_MS,
     min_snr_db: float = MIN_SNR_DB,
 ) -> Recording:
     """Capture speech until ``silence_ms`` of continuous quiet after it started.
@@ -400,7 +461,8 @@ def record_until_silence(
     any speech cancels it. The newline is consumed, never left for the chat prompt.
     """
     notify = status or (lambda _msg: None)
-    notify("Listening... speak now (press Enter when done)" if stop_on_enter else "Listening... speak now")
+    warm = AdaptiveWarmup(warmup_ms, warmup_max_ms)
+    warmup_end_ms = int(warmup_ms)
 
     pre_roll_frames = max(1, (pre_roll_ms + min_speech_ms) // FRAME_MS)
     pre_roll: list[array.array] = []
@@ -415,7 +477,7 @@ def record_until_silence(
     in_speech = False
     constant_noise = False
     steady_checked = False
-    speech_run = 0
+    speech_activity = 0.0
     silence_run = 0
     speech_frames = 0
     audio_ms = 0
@@ -458,14 +520,25 @@ def record_until_silence(
                 burst = _is_clipped_burst(level, peak)
 
                 # Never calibrate or record the stream-opening pop.
-                if audio_ms <= warmup_ms:
-                    continue
+                if not warm.done:
+                    still_warm = warm.feed(level, peak, audio_ms)
+                    if still_warm:
+                        continue
+                    warmup_end_ms = warm.end_ms
+                    calibrated = False
+                    calibration.clear()
+                    notify(
+                        "Listening... speak now (press Enter when done)"
+                        if stop_on_enter
+                        else "Listening... speak now"
+                    )
+                    continue  # the frame that ended the warm-up is discarded too
 
                 # --- noise floor: 25th percentile of the first 200 ms, bursts ignored ---
                 if not calibrated:
                     if not burst:
                         calibration.append(level)  # digital zeros count as a very quiet room
-                    if audio_ms >= warmup_ms + CALIBRATION_MS:
+                    if audio_ms >= warmup_end_ms + CALIBRATION_MS:
                         estimate = float(percentile(calibration, 0.25)) if calibration else DEFAULT_NOISE_FLOOR
                         noise_floor = max(MIN_NOISE_FLOOR, estimate)
                         calibrated = True
@@ -479,18 +552,23 @@ def record_until_silence(
                     if len(pre_roll) > pre_roll_frames:
                         pre_roll.pop(0)
                     if is_speech:
-                        speech_run += 1
+                        # Speech has syllable gaps; accumulate net speech instead of
+                        # demanding an unbroken run. A fan's short gusts decay away.
+                        speech_activity = min(1.0, speech_activity + FRAME_MS / max(1, min_speech_ms))
                         speech_frames += 1
                     else:
-                        speech_run = 0
-                        # Track slow room-noise drift from quiet frames only.
-                        if calibrated and audio_ms > WARMUP_MS and level < start_threshold:
-                            noise_floor = max(MIN_NOISE_FLOOR, 0.9 * noise_floor + 0.1 * level)
+                        speech_activity = max(0.0, speech_activity - FRAME_MS / max(1, 2 * min_speech_ms))
+                        # Only adapt the floor when the frame is near it; adapting on
+                        # every frame under the start threshold made the floor climb
+                        # through the user's own speech.
+                        if calibrated and audio_ms > warmup_end_ms and level <= noise_floor * 1.5:
+                            noise_floor = max(MIN_NOISE_FLOOR, 0.95 * noise_floor + 0.05 * level)
                     frame_active = is_speech
-                    if speech_run * FRAME_MS >= min_speech_ms:
+                    if speech_activity >= 1.0:
                         in_speech = True
-                        speech_start_ms = max(0, audio_ms - speech_run * FRAME_MS)
-                        speaker_level = float(max(frame_rms(f) for f in pre_roll[-speech_run:]))
+                        speech_start_ms = max(0, audio_ms - min_speech_ms)
+                        recent = pre_roll[-max(1, min_speech_ms // FRAME_MS):]
+                        speaker_level = float(max(frame_rms(f) for f in recent))
                         notify("Heard you...")
                         collected.extend(pre_roll)
                         pre_roll = []
@@ -567,7 +645,8 @@ def record_until_silence(
             "start": int(start_threshold),
             "end": int(end_threshold),
             "min_snr_db": round(float(min_snr_db), 1),
-            "warmup_ms": int(warmup_ms),
+            "warmup_ms": int(warmup_end_ms),
+            "warmup_max_ms": int(warmup_max_ms),
             "silence_ms": silence_ms,
             "start_timeout_s": start_timeout_s,
             "pre_roll_ms": pre_roll_ms,
@@ -617,6 +696,8 @@ def record_for_duration(
     seconds: float,
     *,
     status: Callable[[str], None] | None = None,
+    warmup_ms: int = DEFAULT_WARMUP_MS,
+    warmup_max_ms: int = DEFAULT_WARMUP_MAX_MS,
 ) -> Recording:
     """Fixed-window capture over the same streaming source used by auto mode.
 
@@ -624,17 +705,18 @@ def record_for_duration(
     word in the WAV. It records exactly ``seconds`` of audio (or until the source ends).
     """
     notify = status or (lambda _msg: None)
-    notify(f"Recording {seconds:.1f}s...")
+    warm = AdaptiveWarmup(warmup_ms, warmup_max_ms)
     target_ms = max(FRAME_MS, int(seconds * 1000))
     frames: list[array.array] = []
     carry = b""
     audio_ms = 0
+    kept_ms = 0
     empty_reads = 0
     started = time.monotonic()
 
     try:
         source.start()
-        while audio_ms < target_ms:
+        while kept_ms < target_ms:
             chunk = source.read(FRAME_BYTES, timeout=0.25)
             if chunk is None:
                 break
@@ -645,10 +727,16 @@ def record_for_duration(
                 continue
             empty_reads = 0
             carry += chunk
-            while len(carry) >= FRAME_BYTES and audio_ms < target_ms:
+            while len(carry) >= FRAME_BYTES and kept_ms < target_ms:
                 raw_frame, carry = carry[:FRAME_BYTES], carry[FRAME_BYTES:]
-                frames.append(pcm16_samples(raw_frame))
+                frame = pcm16_samples(raw_frame)
                 audio_ms += FRAME_MS
+                if not warm.done:
+                    if not warm.feed(frame_rms(frame), frame_peak(frame), audio_ms):
+                        notify(f"Recording {seconds:.1f}s...")
+                    continue
+                frames.append(frame)
+                kept_ms += FRAME_MS
     finally:
         source.stop()
 
@@ -663,7 +751,7 @@ def record_for_duration(
         pcm=pcm,
         saw_speech=has_speech_energy(pcm),
         reason="fixed",
-        duration_ms=audio_ms,
+        duration_ms=kept_ms,
         debug_pcm=pcm,
         trace={"mode": "fixed", "target_ms": target_ms, "levels": levels},
     )
