@@ -18,12 +18,15 @@ from assistant.safety.permissions import PermissionGate
 from assistant.safety.redact import redact_secrets
 from assistant.speech.ears import UNCLEAR_SPEECH
 from assistant.speech.mic_input import apply_mic_source_volume
+from assistant.speech.vad import get_shared_vad
 from assistant.tools.apps import close_app, open_app, switch_app
 from assistant.tools.desktop_control import (
     browser_tab_control,
     media_control,
     scroll_page,
     set_brightness,
+    set_terminal_context,
+    start_ydotool,
     system_info,
     take_screenshot,
     type_text,
@@ -93,6 +96,9 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
     _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
     if config.mic_source_volume:
         print(f"  Mic input: {mic_msg}", flush=True)
+    # One keyboard daemon for the whole session, and focus the last app before key actions.
+    start_ydotool()
+    set_terminal_context(True)
 
     gate = PermissionGate(config=config, mode=initial_mode or config.default_mode)
     registry = ToolRegistry(config=config, gate=gate)
@@ -121,7 +127,12 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
 
     watchdog = WatchdogMonitor(config.max_steps, config.wall_clock_timeout_sec, config.idle_standdown_sec)
     adapter = build_adapter(config)
-    voice = VoiceController(config=config, adapter=adapter, status_callback=lambda s: print(f"  -> {s}", flush=True))
+    voice = VoiceController(
+        config=config,
+        adapter=adapter,
+        status_callback=lambda s: print(f"  -> {s}", flush=True),
+        vad=get_shared_vad(),
+    )
     if voice.ears is not None:
         print("  Loading local ears (faster-whisper, CPU int8)...", flush=True)
         ok_ears, ears_msg = voice.load_ears()

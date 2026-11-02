@@ -69,11 +69,54 @@ def _single_number(text: str) -> int | None:
 
 
 def _clean_target(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip(" .")
+    cleaned = re.sub(r"\s+", " ", value).strip(" .")
+    cleaned = re.sub(r"\s+(?:for me|please)$", "", cleaned, flags=re.I)
+    return cleaned.strip(" .")
 
 
 def _strip_article(value: str) -> str:
     return re.sub(r"^(?:the|a|an) ", "", _clean_target(value)).strip()
+
+
+_BROWSER_NAMES = frozenset({"firefox", "brave", "chrome"})
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_COMPOUND_SPLIT = re.compile(r"\s+(?:and|then)\s+", re.I)
+_WAKE_COMMA = re.compile(r",\s*(?:hey\s+)?ultron\s+", re.I)
+_LEADING_TURN = re.compile(r"^\s*(?:i'll turn|ill turn)\s+", re.I)
+_FIRST_LINK = re.compile(r"(?:please )?open (?:the )?first (?:link|result)(?: please)?")
+
+
+def _prepare_text(text: str) -> str:
+    """Drop the "I'll turn" wake miss and turn ", Ultron" into a command joiner."""
+    cleaned = _LEADING_TURN.sub("", text or "")
+    cleaned = _WAKE_COMMA.sub(" and ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in _SENTENCE_SPLIT.split(text or "") if part.strip()]
+
+
+def _compound_parts(text: str) -> list[str]:
+    return [part.strip(" ,") for part in _COMPOUND_SPLIT.split(text or "") if part.strip(" ,")]
+
+
+def _bad_app_target(app: str) -> bool:
+    """True when the captured "app" is really two commands or another sentence."""
+    padded = f" {app} "
+    return any(
+        marker in padded
+        for marker in (
+            " and ",
+            " then ",
+            " ultron ",
+            " i'll turn ",
+            " i ll turn ",
+            " ill turn ",
+            " first link ",
+            " first result ",
+        )
+    )
 
 
 _REQUEST_PREFIX = re.compile(
@@ -84,6 +127,8 @@ _REQUEST_PREFIX = re.compile(
 
 
 def _strip_request_prefixes(cleaned: str) -> str:
+    # "Okay, close the tab" has no request verb after "okay", so strip the ack first.
+    cleaned = re.sub(r"^(?:yes|yeah|ok|okay)[, ]+", "", cleaned).strip()
     for _ in range(3):
         stripped = _REQUEST_PREFIX.sub("", cleaned).strip()
         if stripped == cleaned:
@@ -92,19 +137,24 @@ def _strip_request_prefixes(cleaned: str) -> str:
     return cleaned
 
 
-def match_fast_command(text: str) -> dict[str, object] | None:
-    """Return {"kind", "tool", "arguments", "request"} for a simple whole sentence."""
-    raw = (text or "").strip()
+def _match_single(text: str) -> dict[str, object] | None:
+    """Return {"kind", "tool", "arguments", "request"} for one simple sentence."""
+    raw = _prepare_text((text or "").strip())
     typed = re.match(
         r"(?i)^(?:(?:can|could|would|will) you )?(?:please )?"
         r"(?:type|write|enter text) (.+)$",
         raw,
     )
     if typed:
+        text_to_type = typed.group(1).strip()
+        terminal = bool(re.search(r"\bin (?:the )?terminal$", text_to_type, re.I))
+        if terminal:
+            text_to_type = re.sub(r"\s+in (?:the )?terminal$", "", text_to_type, flags=re.I).strip()
         return {
             "kind": "type_text",
             "tool": "type_text",
-            "arguments": {"text": typed.group(1).strip()},
+            "arguments": {"text": text_to_type},
+            "terminal": terminal,
             "request": text,
         }
 
@@ -131,7 +181,7 @@ def match_fast_command(text: str) -> dict[str, object] | None:
         "open first link",
         "open the first result",
         "open first result",
-    }:
+    } or _FIRST_LINK.fullmatch(cleaned):
         if not SESSION.last_query:
             return _chat(cleaned, "What should I search for first?", text)
         return {
@@ -148,7 +198,17 @@ def match_fast_command(text: str) -> dict[str, object] | None:
         # Browser tabs and navigation come before "open"/"close"/"switch" so a tab
         # phrase is never mistaken for an app name.
         ("tab:new_tab", re.compile(r"^(?:please )?(?:open )?(?:a )?new tab$")),
-        ("tab:close_tab", re.compile(r"^(?:please )?close (?:this |the )?tab$")),
+        ("tab:new_tab", re.compile(r"^(?:please )?(?:go to|open|switch to) (?:the )?new tab$")),
+        ("tab:new_tab", re.compile(r"^(?:please )?open (?:the )?tab$")),
+        (
+            "tab:new_tab_in",
+            re.compile(r"^(?:please )?open (?:a )?new tab in (?P<browser>[a-z0-9 ]+)$"),
+        ),
+        ("tab:new_tab_in", re.compile(r"^(?:please )?new tab in (?P<browser>[a-z0-9 ]+)$")),
+        (
+            "tab:close_tab",
+            re.compile(r"^(?:please )?(?:close|shut) (?:this |the )?tab(?: .*)?$"),
+        ),
         (
             "tab:next_tab",
             re.compile(r"^(?:please )?(?:switch|jump) to (?:the )?next tab$"),
@@ -159,7 +219,10 @@ def match_fast_command(text: str) -> dict[str, object] | None:
         ),
         ("tab:next_tab", re.compile(r"^(?:please )?(?:next|switch) tab$")),
         ("tab:prev_tab", re.compile(r"^(?:please )?(?:previous|prev) tab$")),
-        ("tab:reopen_tab", re.compile(r"^(?:please )?reopen (?:the )?(?:last )?tab$")),
+        (
+            "tab:reopen_tab",
+            re.compile(r"^(?:please )?(?:reopen|restore) (?:the )?(?:last )?tab$"),
+        ),
         ("tab:refresh", re.compile(r"^(?:please )?refresh(?: the)?(?: page)?$")),
         ("tab:back", re.compile(r"^(?:please )?go back$")),
         ("tab:forward", re.compile(r"^(?:please )?go forward$")),
@@ -261,8 +324,27 @@ def match_fast_command(text: str) -> dict[str, object] | None:
         ("open_app", re.compile(r"^(?:please )?(?:open|launch) (?P<app>.+)$")),
         ("mute", re.compile(r"^(?:please )?(?:mute|mute the audio|mute the sound)$")),
         ("unmute", re.compile(r"^(?:please )?(?:unmute|unmute the audio|unmute the sound)$")),
+        (
+            "volume_up",
+            re.compile(
+                r"^(?:please )?(?:turn(?: the)? volume up|volume up|increase(?: the)? volume|louder)$"
+            ),
+        ),
+        (
+            "volume_down",
+            re.compile(
+                r"^(?:please )?(?:turn(?: the)? volume down|volume down|decrease(?: the)? volume|quieter)$"
+            ),
+        ),
         ("set_volume", re.compile(r"^(?:please )?(?:turn|set|change) (?:the )?volume to (?P<value>.+)$")),
         ("list_files", re.compile(r"^(?:please )?(?:list|show) (?:the )?files (?:in|from) (?P<folder>.+)$")),
+        (
+            "list_files",
+            re.compile(
+                r"^(?:please )?(?:list|show) (?:my |the )?"
+                r"(?P<folder>downloads|documents|desktop|pictures|home)(?: folder| directory)?$"
+            ),
+        ),
     ]
 
     for kind, pattern in patterns:
@@ -270,6 +352,29 @@ def match_fast_command(text: str) -> dict[str, object] | None:
         if not match:
             continue
         groups = match.groupdict()
+        if kind == "tab:new_tab_in":
+            browser = app_key(_clean_target(groups.get("browser") or ""))
+            if browser not in _BROWSER_NAMES:
+                return None
+            return {
+                "kind": "compound",
+                "tool": None,
+                "commands": [
+                    {
+                        "kind": "switch_app",
+                        "tool": "switch_app",
+                        "arguments": {"app_name": browser},
+                        "request": text,
+                    },
+                    {
+                        "kind": "browser_tab_control",
+                        "tool": "browser_tab_control",
+                        "arguments": {"action": "new_tab"},
+                        "request": text,
+                    },
+                ],
+                "request": text,
+            }
         if kind.startswith("tab:"):
             return {
                 "kind": "browser_tab_control",
@@ -289,7 +394,7 @@ def match_fast_command(text: str) -> dict[str, object] | None:
             return {
                 "kind": "scroll_page",
                 "tool": "scroll_page",
-                "arguments": {"direction": direction, "amount": 5},
+                "arguments": {"direction": direction, "amount": 1},
                 "request": text,
             }
         if kind.startswith("brightness:"):
@@ -332,18 +437,21 @@ def match_fast_command(text: str) -> dict[str, object] | None:
                 "request": text,
             }
         if kind == "close_app":
-            app = app_key(_clean_target(groups["app"]))
-            if not app:
+            target = _clean_target(groups["app"])
+            app = app_key(target)
+            if not app or _bad_app_target(target):
                 return None
             return {"kind": kind, "tool": "close_app", "arguments": {"app_name": app}, "request": text}
         if kind == "open_app":
-            app = app_key(_clean_target(groups["app"]))
-            if " and " in f" {app} " or " then " in f" {app} ":
-                return None  # a multi-step sentence belongs to the LLM
+            target = _clean_target(groups["app"])
+            app = app_key(target)
+            if not app or _bad_app_target(target):
+                return None  # a multi-step sentence belongs to the compound splitter
             return {"kind": kind, "tool": "open_app", "arguments": {"app_name": app}, "request": text}
         if kind == "switch_app":
-            app = app_key(_clean_target(groups["app"]))
-            if not app:
+            target = _clean_target(groups["app"])
+            app = app_key(target)
+            if not app or _bad_app_target(target):
                 return None
             return {
                 "kind": kind,
@@ -351,6 +459,10 @@ def match_fast_command(text: str) -> dict[str, object] | None:
                 "arguments": {"app_name": app},
                 "request": text,
             }
+        if kind == "volume_up":
+            return {"kind": kind, "tool": "volume_up", "arguments": {}, "request": text}
+        if kind == "volume_down":
+            return {"kind": kind, "tool": "volume_down", "arguments": {}, "request": text}
         if kind == "mute":
             return {"kind": kind, "tool": "mute_audio", "arguments": {"muted": True}, "request": text}
         if kind == "unmute":
@@ -364,13 +476,18 @@ def match_fast_command(text: str) -> dict[str, object] | None:
             folder = _clean_target(groups["folder"])
             folder = re.sub(r"^(?:my|the) ", "", folder)
             folder = re.sub(r" (?i:folder|directory)$", "", folder).strip()
-            if not folder or " and " in f" {folder} ":
+            if not folder or _bad_app_target(folder):
                 return None
             return {"kind": kind, "tool": "list_files", "arguments": {"directory": folder}, "request": text}
         if kind == "web_search":
             query = _clean_target(groups["query"])
-            browser = _clean_target(groups.get("browser") or "")
+            raw_browser = _clean_target(groups.get("browser") or "")
+            browser = app_key(raw_browser) if raw_browser else ""
             if not query:
+                return None
+            if raw_browser and browser not in _BROWSER_NAMES:
+                # "open a new tab and search for github" is two actions, not a browser
+                # named "a new tab". Let the compound splitter handle it.
                 return None
             return {
                 "kind": kind,
@@ -381,9 +498,40 @@ def match_fast_command(text: str) -> dict[str, object] | None:
         if kind == "open_first_result":
             # "Open the first link for the GitHub." -> query "github".
             query = _strip_article(groups["query"])
-            if not query or " and " in f" {query} " or " then " in f" {query} ":
+            if not query or _bad_app_target(query):
                 return None  # empty or multi-step: the LLM decides
             return {"kind": kind, "tool": "open_first_result", "arguments": {"query": query}, "request": text}
+    return None
+
+
+def match_fast_command(text: str) -> dict[str, object] | None:
+    """Match one sentence, a multi-sentence transcript, or two commands joined by and/then.
+
+    Priority: a whole-sentence fast path first (so "open firefox and search for github" is
+    one web_search), then each sentence of a merged transcript, then a compound split.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    prepared = _prepare_text(raw)
+    single = _match_single(prepared)
+    if single is not None:
+        return single
+    for sentence in _sentences(prepared):
+        if sentence == prepared:
+            continue
+        single = _match_single(sentence)
+        if single is not None:
+            return single
+    parts = _compound_parts(prepared)
+    if len(parts) >= 2:
+        commands: list[dict[str, object]] = []
+        for part in parts:
+            command = _match_single(part)
+            if command is None or command.get("kind") == "chat":
+                return None
+            commands.append(command)
+        return {"kind": "compound", "tool": None, "commands": commands, "request": text}
     return None
 
 
@@ -395,8 +543,22 @@ def run_fast_command(registry: ToolRegistry, command: dict[str, object]) -> str:
     request = str(command.get("request") or "")
     if kind == "chat":
         return str(command.get("reply") or "Done.")
+    if kind == "compound":
+        replies: list[str] = []
+        for sub in command.get("commands") or []:
+            reply = run_fast_command(registry, dict(sub))  # type: ignore[arg-type]
+            if reply and reply not in replies:
+                replies.append(reply)
+        return " ".join(replies) or "Done."
     if tool_name is None:
         return "Done."
+    if command.get("terminal"):
+        try:
+            from assistant.tools.desktop_control import note_explicit_terminal
+
+            note_explicit_terminal()
+        except Exception:
+            pass
     result = registry.execute(str(tool_name), arguments, request)
     reply = code_reply_for_tool(str(tool_name), result)
     return reply or "Done."

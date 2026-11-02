@@ -132,6 +132,8 @@ def open_app_reply(result: dict[str, Any], requested: str = "") -> str | None:
     app = str(raw.get("app_name") or requested or "").strip()
     if raw.get("unknown"):
         return f"I couldn't find an app named {app or 'that'}."
+    if raw.get("web_app"):
+        return str(raw.get("reply") or f"Opening {app or 'that'} in the browser.")
     if not _result_ok(result):
         return "I couldn't open that app."
     if not app:

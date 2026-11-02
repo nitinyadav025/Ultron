@@ -157,9 +157,11 @@ def test_an_unclear_sentence_goes_to_the_llm() -> None:
     assert calls == []
 
 
-def test_multi_step_sentences_are_not_matched() -> None:
-    assert match_fast_command("open firefox and list my downloads") is None
-    assert match_fast_command("turn the volume up") is None
+def test_compound_sentences_are_split_but_an_incomplete_one_is_not() -> None:
+    compound = match_fast_command("open firefox and list my downloads")
+    assert compound is not None and compound["kind"] == "compound"
+    assert [c["tool"] for c in compound["commands"]] == ["open_app", "list_files"]
+    assert match_fast_command("turn the volume up")["tool"] == "volume_up"
     assert match_fast_command("set the volume") is None
 
 

@@ -349,11 +349,13 @@ def _capture_ydotool(monkeypatch: pytest.MonkeyPatch, *, ok: bool = True) -> lis
 
 def test_type_text_uses_ydotool(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_ydotool(monkeypatch)
+    monkeypatch.setattr(dc, "_copy_clipboard", lambda _text: True)
 
     result = dc.type_text("hello world")
 
     assert result["ok"] is True and result["method"] == "ydotool"
-    assert calls == [["type", "--", "hello world"]]
+    assert calls == [["type", "--key-delay", "12", "--", "hello world"]]
+    assert result["clipboard"] is True
 
 
 def test_type_text_refuses_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -376,6 +378,7 @@ def test_type_text_clipboard_fallback_is_not_silent(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(dc, "_copy_clipboard", lambda _text: True)
 
     result = dc.type_text("hello")
+    assert calls[0][0] == "type"
 
     assert result["ok"] is True and result["method"] == "clipboard_paste"
     assert result["reply"] == "I pasted the text from the clipboard."
@@ -390,7 +393,8 @@ def test_scroll_tab_window_and_media_keys(monkeypatch: pytest.MonkeyPatch) -> No
     assert dc.window_control("next_window")["ok"] is True
     assert dc.media_control("next")["ok"] is True
 
-    assert calls[0] == ["key", "108:1", "108:0", "108:1", "108:0", "108:1", "108:0"]
+    # B6: PageDown (109), not three Down arrows (108) that print ^[[B in a terminal.
+    assert calls[0] == ["key", "109:1", "109:0", "109:1", "109:0", "109:1", "109:0"]
     assert calls[1] == ["key", "102:1", "102:0"]
     assert calls[2] == ["key", "29:1", "20:1", "20:0", "29:0"]
     assert calls[3] == ["key", "56:1", "15:1", "15:0", "56:0"]

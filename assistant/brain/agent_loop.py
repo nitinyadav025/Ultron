@@ -269,7 +269,7 @@ class AgentLoop:
                 elif local_tool_round_cap is not None and tool_rounds >= local_tool_round_cap:
                     tools_payload = None  # small local model: force a final answer after 3 tool rounds
                 elif self.config.backend == "local":
-                    tools_payload = self.registry.get_openai_tools()
+                    tools_payload = self.registry.get_openai_tools(compact=True)
                 else:
                     tools_payload = self.registry.get_gemini_tools()
                 resp, turn_u = self.adapter.generate_turn(
@@ -327,6 +327,7 @@ class AgentLoop:
 
                 resp_parts: list[types.Part] = []
                 human_notes: list[str] = []
+                executed_tools: list[tuple[str, dict[str, Any]]] = []
                 tool_rounds += 1
                 for call_index, call in enumerate(fn_calls):
                     fn_name = call.name or ""
@@ -354,6 +355,7 @@ class AgentLoop:
                     # Remember every call, including failures: a failed list must never be
                     # answered with the model's invented "no items" sentence.
                     last_tool = (fn_name, res)
+                    executed_tools.append((fn_name, res))
                     if not res.get("ok", False):
                         if res.get("human_only_instruction"):
                             human_notes.append(str(res["human_only_instruction"]))
@@ -381,6 +383,26 @@ class AgentLoop:
                 if failures >= self.config.max_repeated_failures:
                     msg = f"Stopped after {failures} repeated failures. How should I proceed?"
                     return AgentTaskResult(False, msg, steps, usage_acc, msg)
+
+                if self.config.backend == "local" and executed_tools:
+                    # tool_replies.py already knows the exact sentence for these tools. The
+                    # old loop made a SECOND llama-server call only to overwrite that answer
+                    # with the same code-built reply (7.38 s in the Nov 2 log). Return now.
+                    built: list[str] = []
+                    for tool_name, tool_result in executed_tools:
+                        reply = code_reply_for_tool(tool_name, tool_result)
+                        if not reply:
+                            built = []
+                            break
+                        if reply not in built:
+                            built.append(reply)
+                    if built:
+                        combined = " ".join(built)
+                        self.history.append(
+                            types.Content(role="model", parts=[types.Part.from_text(text=combined)])
+                        )
+                        self.step_callback("Done — deterministic tool reply; no second LLM call.")
+                        return AgentTaskResult(True, combined, steps, usage_acc, dry_run=dry_run)
 
             return AgentTaskResult(False, f"Stopped at {self.config.max_steps}-step safety cap.", steps, usage_acc)
         finally:

@@ -155,7 +155,8 @@ def test_missing_folder_reply_never_claims_no_items() -> None:
 
     assert result.reply == FOLDER_NOT_FOUND_REPLY
     assert "no items" not in result.reply
-    assert adapter.calls == 2  # the second model turn exists but its wording is ignored
+    # B6: list_files has a deterministic reply (even on failure), so no second model turn.
+    assert adapter.calls == 1
 
 
 def test_model_empty_claim_without_a_tool_is_rejected() -> None:

@@ -102,13 +102,13 @@ CASES: tuple[BenchCase, ...] = (
     BenchCase(
         "scroll down",
         "scroll_page",
-        {"direction": "down", "amount": 5},
+        {"direction": "down", "amount": 1},
         "Scrolled down.",
     ),
     BenchCase(
         "scroll to the top",
         "scroll_page",
-        {"direction": "top", "amount": 5},
+        {"direction": "top", "amount": 1},
         "Scrolled to the top.",
     ),
     BenchCase(
@@ -227,7 +227,7 @@ class BenchmarkRegistry:
         self.calls.append((tool_name, dict(arguments)))
         return _fake_result(tool_name, arguments)
 
-    def get_openai_tools(self) -> list[dict[str, Any]]:
+    def get_openai_tools(self, compact: bool = False) -> list[dict[str, Any]]:
         return []
 
 

@@ -165,9 +165,12 @@ def test_local_turn_sends_compact_tool_output_and_one_sentence_reply() -> None:
 
     result = loop.run_task("list files in my Downloads folder")
 
-    # The tool result handed back to the model carries names + a count, never sizes.
+    # B6: list_files has a deterministic reply, so the loop returns after ONE model call.
+    assert len(adapter.payloads) == 1
+    assert [p["max_tokens"] for p in adapter.payloads] == [LOCAL_MAX_TOKENS_FIRST]
+    # The tool result kept in history carries names + a count, never sizes.
     payload = None
-    for content in adapter.payloads[1]["contents"]:
+    for content in loop.history:
         for part in getattr(content, "parts", None) or []:
             if getattr(part, "function_response", None) is not None:
                 payload = part.function_response.response
@@ -182,8 +185,6 @@ def test_local_turn_sends_compact_tool_output_and_one_sentence_reply() -> None:
     assert result.reply.count("item") == 1
     assert "TB" not in result.reply and "#" not in result.reply and "*" not in result.reply
     assert len(result.reply) <= cfg.voice_reply_max_chars + 1
-    # Generation is capped locally: 128 tokens first, 96 after the tool ran.
-    assert [p["max_tokens"] for p in adapter.payloads] == [LOCAL_MAX_TOKENS_FIRST, LOCAL_MAX_TOKENS_FOLLOWUP]
 
 
 BAD_LOCAL_REPLY = "Here are the first items in your download folder."
@@ -261,7 +262,9 @@ def test_local_prompt_is_short_and_static_prefix_comes_first() -> None:
     cfg = load_config()
     cfg.backend = "local"
     prompt = build_system_prompt(cfg, "auto-safe")
-    assert len(prompt) < 520
+    # B6 adds four natural-language tool examples; the whole prompt is still under 800
+    # characters (~180 tokens) and the volatile Ctx line stays last for prompt caching.
+    assert len(prompt) < 800
     assert prompt.startswith("You are Ultron")
     assert "Answer questions directly" in prompt
     # Anything volatile (mode, roots, date) sits at the very end for prompt-cache reuse.

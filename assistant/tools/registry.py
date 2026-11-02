@@ -48,7 +48,6 @@ _PARAM_HINTS: dict[str, str] = {
     "recursive": "include subfolders",
     "path": "file path",
     "max_chars": "read limit",
-    "app_name": "app name",
     "step_percent": "5-20 step",
     "percent": "0-100 target",
     "muted": "true=mute",
@@ -61,6 +60,59 @@ _SCHEMA_TYPE_TO_JSON: dict[Any, str] = {
     types.Type.BOOLEAN: "boolean",
     types.Type.ARRAY: "array",
     types.Type.OBJECT: "object",
+}
+
+# Local 1.7B schemas: short descriptions. The model re-reads this list on every turn.
+# The fast path handles the other tools deterministically, so the LLM only sees the ones
+# it genuinely needs for an unknown phrasing. Measured in tests/test_b6_smart_brain.py.
+_COMPACT_DESCRIPTIONS: dict[str, str] = {
+    "list_files": "List a folder.",
+    "read_file": "Read a file.",
+    "open_app": "Open an app or web app.",
+    "close_app": "Close a running app.",
+    "switch_app": "Focus an app.",
+    "volume_up": "Turn volume up.",
+    "volume_down": "Turn volume down.",
+    "set_volume": "Set volume percent.",
+    "mute_audio": "Mute or unmute.",
+    "web_search": "Search the web.",
+    "open_first_result": "Open first web result.",
+    "type_text": "Type text in the focused window.",
+    "scroll_page": "Scroll the page.",
+    "browser_tab_control": "Control browser tabs.",
+    "window_control": "Control windows.",
+    "set_brightness": "Set screen brightness.",
+    "media_control": "Play, pause or skip media.",
+    "system_info": "Read battery, time or status.",
+    "take_screenshot": "Take a screenshot.",
+}
+
+# The local model only sees these; every other command is handled by fast_path or the
+# deterministic desktop tools without a model round.
+LOCAL_SCHEMA_TOOLS = frozenset(
+    {
+        "open_app",
+        "close_app",
+        "web_search",
+        "open_first_result",
+        "type_text",
+        "scroll_page",
+        "set_volume",
+        "mute_audio",
+    }
+)
+
+# Optional parameters the local model may genuinely need. Everything else optional is
+# omitted: the Python default is still used when the model leaves it out.
+_LOCAL_OPTIONAL_PARAMS: dict[str, frozenset[str]] = {
+    "web_search": frozenset({"browser"}),
+    "open_first_result": frozenset({"browser"}),
+    "scroll_page": frozenset({"direction"}),
+    "set_volume": frozenset({"percent"}),
+    "mute_audio": frozenset({"muted"}),
+    "set_brightness": frozenset({"percent"}),
+    "media_control": frozenset({"action"}),
+    "system_info": frozenset({"kind"}),
 }
 
 
@@ -146,29 +198,38 @@ class ToolRegistry:
             out.append(types.Tool(google_search=types.GoogleSearch()))
         return out
 
-    def get_openai_tools(self) -> list[dict[str, Any]]:
+    def get_openai_tools(self, compact: bool = False) -> list[dict[str, Any]]:
         """Build OpenAI-compatible function schemas from the registered tools (for llama.cpp).
 
-        Kept as small as the format allows: the local 1.7B model re-reads these on every
-        turn, empty fields are omitted, and optional params carry no description.
+        ``compact=True`` is the local 1.7B path: only the 12 tools that still need a model
+        round, short descriptions, required params plus the few optional ones the model
+        really uses. The default keeps every tool/param for Gemini and for tests.
         """
         out: list[dict[str, Any]] = []
         for spec in self._tools.values():
             decl = spec.declaration
+            if compact and decl.name not in LOCAL_SCHEMA_TOOLS:
+                continue
             parameters = decl.parameters
+            required = list(parameters.required or []) if parameters else []
+            keep_optional = _LOCAL_OPTIONAL_PARAMS.get(decl.name, frozenset()) if compact else None
             properties: dict[str, Any] = {}
             for prop_name, prop in (parameters.properties or {}).items() if parameters else []:
+                if keep_optional is not None and prop_name not in required and prop_name not in keep_optional:
+                    continue
                 prop_schema: dict[str, Any] = {"type": _SCHEMA_TYPE_TO_JSON.get(prop.type, "string")}
                 if prop.description:
                     prop_schema["description"] = prop.description
                 properties[prop_name] = prop_schema
-            param_schema: dict[str, Any] = {"type": "object", "properties": properties}
-            required = list(parameters.required or []) if parameters else []
-            if required:
-                param_schema["required"] = required
-            function: dict[str, Any] = {"name": decl.name, "parameters": param_schema}
-            if decl.description:
-                function["description"] = decl.description
+            function: dict[str, Any] = {"name": decl.name}
+            if properties or not compact:
+                param_schema: dict[str, Any] = {"type": "object", "properties": properties}
+                if required:
+                    param_schema["required"] = required
+                function["parameters"] = param_schema
+            description = _COMPACT_DESCRIPTIONS.get(decl.name, decl.description) if compact else decl.description
+            if description:
+                function["description"] = description
             out.append({"type": "function", "function": function})
         return out
 
@@ -190,6 +251,14 @@ class ToolRegistry:
         spec = self._tools.get(tool_name)
         if spec is None:
             return {"ok": False, "error": f"Unknown tool '{tool_name}'."}
+        if tool_name == "type_text" and "terminal" in (user_request or "").lower():
+            # The user explicitly wants the terminal: do not move focus away from it.
+            try:
+                from assistant.tools.desktop_control import note_explicit_terminal
+
+                note_explicit_terminal()
+            except Exception:
+                pass
         if dry_run:
             return {"ok": True, "dry_run": True, "planned_call": f"{tool_name}({arguments})", "risk_level": spec.risk_level}
 

@@ -74,6 +74,42 @@ APP_DISPLAY: dict[str, str] = {
     "vlc": "VLC",
 }
 
+# Popular web apps with no local .desktop entry on this machine. They are opened in the
+# session browser, never passed to xdg-open. Local installs always win (checked first).
+WEB_APPS: dict[str, tuple[str, str]] = {
+    "discord": ("Discord", "https://discord.com/app"),
+    "instagram": ("Instagram", "https://www.instagram.com"),
+    "youtube": ("YouTube", "https://www.youtube.com"),
+    "whatsapp": ("WhatsApp", "https://web.whatsapp.com"),
+    "chatgpt": ("ChatGPT", "https://chatgpt.com"),
+    "gmail": ("Gmail", "https://mail.google.com"),
+    "github": ("GitHub", "https://github.com"),
+    "steam": ("Steam", "https://store.steampowered.com"),
+    "netflix": ("Netflix", "https://www.netflix.com"),
+    "spotify": ("Spotify", "https://open.spotify.com"),
+    "reddit": ("Reddit", "https://www.reddit.com"),
+    "twitter": ("Twitter", "https://x.com"),
+    "x": ("X", "https://x.com"),
+    "google": ("Google", "https://www.google.com"),
+    "claude": ("Claude", "https://claude.ai"),
+}
+WEB_APP_ALIASES: dict[str, str] = {
+    "whats app": "whatsapp",
+    "you tube": "youtube",
+    "git hub": "github",
+    "chat gpt": "chatgpt",
+    "insta": "instagram",
+    "google mail": "gmail",
+    "x twitter": "twitter",
+}
+
+
+def web_app_for(app_name: str) -> tuple[str, str] | None:
+    """Return (display, URL) for a known web app, or None."""
+    key = normalise_app_name(app_name)
+    key = WEB_APP_ALIASES.get(key, key)
+    return WEB_APPS.get(key)
+
 # Safe-to-close user GUI apps only. System/session processes are absent by design, and
 # an explicit deny list refuses them even if a name is ever added by mistake.
 CLOSE_EXECUTABLES: dict[str, tuple[str, ...]] = {
@@ -507,6 +543,32 @@ def open_app(app_name: str) -> dict[str, Any]:
     cleaned = normalise_app_name(app_name)
     match = find_app(app_name)
     if match is None:
+        web = web_app_for(app_name)
+        if web is not None:
+            display, url = web
+            # Lazy import: web.py imports this module, so a top-level import would cycle.
+            from assistant.tools.web import choose_browser, open_url
+
+            browser = choose_browser(None)
+            opened = open_url(url, browser or None)
+            if not opened.get("ok"):
+                return {
+                    "ok": False,
+                    "web_app": True,
+                    "app_name": display,
+                    "url": url,
+                    "error": opened.get("error") or f"I couldn't open {display}.",
+                }
+            SESSION.note_app(browser or display, browser=bool(browser))
+            where = browser.title() if browser else "your browser"
+            return {
+                "ok": True,
+                "web_app": True,
+                "app_name": display,
+                "browser": browser,
+                "url": url,
+                "reply": f"Opening {display} in {where}.",
+            }
         return {
             "ok": False,
             "unknown": True,
