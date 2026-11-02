@@ -54,16 +54,27 @@ def has_real_word(text: str) -> bool:
     return any(len(word.strip("'")) >= 2 for word in _WORD.findall((text or "").lower()))
 
 
+_WAKE_REPEAT_WORDS = frozenset({"ultron", "hey"})
+
+
 def looks_like_repetition_loop(text: str) -> bool:
     """True for decoder loops such as "mute mute unmute" or "list list".
 
-    A normal command never has one word making up half of a short transcript.
+    A normal command never has one word making up half of a short transcript. Repeated
+    wake words are not a decoder loop: "Hey Ultron, Hey Ultron, Hey Ultron" must reach
+    the wake matcher and answer "Yes?" (Nov 2 live bug). They are removed before the
+    repeat check, so "Ultron, Ultron, open firefox" is also not rejected.
     """
     words = _WORD.findall((text or "").lower())
     if len(words) < 2:
         return False
-    top = Counter(words).most_common(1)[0][1]
-    return top >= 2 and top / len(words) >= 0.5
+    if all(word in _WAKE_REPEAT_WORDS for word in words):
+        return False
+    remaining = [word for word in words if word not in _WAKE_REPEAT_WORDS]
+    if not remaining:
+        return False
+    top = Counter(remaining).most_common(1)[0][1]
+    return top >= 2 and top / len(remaining) >= 0.5
 
 
 def transcript_scores(segments: list[Any]) -> dict[str, float | None]:

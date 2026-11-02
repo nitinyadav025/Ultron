@@ -51,8 +51,9 @@ def _gauss(ms: int, sigma: float, seed: int) -> bytes:
     return array.array("h", values).tobytes()
 
 
-def test_recorder_stops_1350ms_after_speech_despite_room_noise_450() -> None:
+def test_recorder_stops_850ms_after_speech_despite_room_noise_450() -> None:
     # The live numbers: floor ~100, speech 1400-2500, post-speech room/breathing 200-450.
+    # B6 lowers the recorder default from 1.35 s to 850 ms.
     pcm = _gauss(500, 100, 1) + _gauss(2000, 1800, 2) + _gauss(4000, 450, 3)
 
     recording = record_until_silence(SyntheticSource(pcm))
@@ -60,7 +61,7 @@ def test_recorder_stops_1350ms_after_speech_despite_room_noise_450() -> None:
     assert recording.saw_speech is True
     assert recording.reason == "silence"  # never max_length / 30 s
     after_speech_ms = recording.duration_ms - 2500
-    assert 1250 <= after_speech_ms <= 1450
+    assert 850 <= after_speech_ms <= 1100
     assert recording.duration_ms < 5000
     assert recording.trace["thresholds"]["speech_rms"] > 1500
 
@@ -172,10 +173,11 @@ class _WakeSource:
 
 
 def _short_utterance() -> bytes:
-    # 640 ms quiet lead-in (past the adaptive warm-up), 600 ms of voice, 1.2 s silence.
+    # 640 ms quiet lead-in (past the adaptive warm-up), 600 ms of voice, 2.2 s silence
+    # so the 1.35 s final check runs before the source ends.
     return b"\x00\x00" * FRAME * 32 + array.array(
         "h", [3000 if i % 2 == 0 else -3000 for _ in range(30) for i in range(FRAME)]
-    ).tobytes() + b"\x00\x00" * FRAME * 60
+    ).tobytes() + b"\x00\x00" * FRAME * 110
 
 
 def _utterance() -> bytes:
@@ -212,11 +214,9 @@ def _listener(
 
 
 def test_repeated_wake_word_is_accepted_as_wake_only() -> None:
-    # Real decoder output from the user's clips: "Ultron, Ultron, Ultron" was rejected
-    # by the repetition guard and the wake word was lost.
-    transcript = Transcript(
-        False, UNCLEAR_SPEECH, raw="Ultron, Ultron, Ultron", reason="repetition_loop"
-    )
+    # B6: ears no longer rejects repeated wake words as a repetition loop, so the
+    # transcript reaches the wake matcher as ok text and answers "Yes?".
+    transcript = Transcript(True, "Ultron, Ultron, Ultron", raw="Ultron, Ultron, Ultron")
     listener, spoken, _prints = _listener(_utterance(), transcript)
 
     listener.run()
@@ -224,7 +224,9 @@ def test_repeated_wake_word_is_accepted_as_wake_only() -> None:
     assert spoken == ["Yes?"]
 
 
-def test_short_ultron_at_minus_1_2_logprob_is_still_the_wake_word() -> None:
+def test_rejected_short_ultron_is_ignored_not_passed_to_wake() -> None:
+    # B6 rule: verdict != ok never reaches wake.py or fast_path. The old -1.20 log-prob
+    # exception is gone; the turn is ignored without opening a follow-up window.
     transcript = Transcript(
         False, UNCLEAR_SPEECH, raw="Ultron", reason="avg_logprob=-1.20"
     )
@@ -232,7 +234,8 @@ def test_short_ultron_at_minus_1_2_logprob_is_still_the_wake_word() -> None:
 
     listener.run()
 
-    assert spoken == ["Yes?"]
+    assert spoken == []
+    assert listener.ignored == 1
 
 
 # --------------------------------------------------------------------------------------

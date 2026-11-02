@@ -75,18 +75,36 @@ STEADY_SPEECH_LIMIT_MS = 8000
 STEADY_LEVEL_CV = 0.06
 
 # End detection: hysteresis (clearly lower than the start threshold) and relative to the
-# speaker's own level in this recording. Default 900 ms (VOICE_SILENCE_MS) for a snappy
-# reply; a longer pause can still be configured explicitly.
+# speaker's own level in this recording. The Nov 1 live log showed a steady fan at RMS
+# 1700 kept resetting a 30 s capture while the speaker's own level was ~2400: 45 % of the
+# speaker's level is 1080, so 1700 still looked like voice to an energy-only detector.
+# Silero VAD is the second signal that ends that case (see VAD_* below).
 ABS_END_RMS = 140
 END_NOISE_MULTIPLIER = 1.8
 END_SPEAKER_FRACTION = 0.18
 # The end threshold must follow the *active speech* level, not just the room floor.
-# Live evidence (Nov 1): speech RMS 1400-2500, post-speech room/breathing RMS 200-450.
-# Tying silence to the 84-134 floor kept resetting the counter and every utterance ran
-# to the 30 s cap. A frame is now silence when it is below max(end floor, 35 % of the
-# speaker's active level) or at least 60 % below it (<= 40 %).
-SPEECH_RMS_FRACTION = 0.35
+# A frame is silence when it is below max(end floor, 45 % of the speaker's active level),
+# at least 60 % below it (<= 40 %), or within 6 dB of a recent post-speech floor.
+SPEECH_RMS_FRACTION = 0.45
 SPEECH_DROP_FRACTION = 0.40
+POST_FLOOR_MULTIPLIER = 2.0  # +6 dB
+
+# Silero VAD endpointing (B6). Once speech starts, the last 900 ms are checked every
+# 150 ms; 0 ms of human speech in the last 850 ms ends the utterance even when a fan keeps
+# the energy high. A 1.2 s VAD-silent run is the hard backstop.
+VAD_WINDOW_MS = 900
+VAD_EVAL_MS = 850
+VAD_CHECK_MS = 150
+VAD_BACKSTOP_MS = 1200
+VAD_START_MS = 300
+DEFAULT_MAX_SECONDS = 12.0
+# A background louder than the first calibration is still background. The rolling floor
+# follows it so a fan/room hum can never leave noise_floor stuck at 85.
+NOISE_FLOOR_WINDOW_MS = 3000
+# 10th percentile, not 20th: a short recording may have only 500 ms of room noise before
+# speech, and 160 ms of speech is already 20 % of that window. The 10th percentile stays
+# on the room noise until the background really dominates.
+NOISE_FLOOR_PERCENTILE = 0.10
 # Last-resort stop: 2.5 s after the last frame at >=45 % of the peak speech level, steady
 # low audio (room/fan) ends the utterance instead of running to max_length.
 POST_SPEECH_PEAK_FRACTION = 0.45
@@ -414,6 +432,48 @@ def _snr_ratio(min_snr_db: float) -> float:
     return 10.0 ** (float(min_snr_db) / 20.0)
 
 
+class RollingNoiseFloor:
+    """Track the quiet background even when it is louder than the first calibration.
+
+    The old floor only adapted while ``level <= floor * 1.5``. With an initial floor of 85
+    and a fan at 1400 that condition never held, so ``noise_floor`` stayed at 85 all
+    session while the fan made every utterance run to the 30 s cap. This class keeps the
+    last 3 s of non-speech frames and follows their 20th percentile. Speech is never fed
+    into it (the caller skips frames VAD/energy calls speech), so a loud word cannot raise
+    the floor.
+    """
+
+    def __init__(
+        self,
+        initial: float = DEFAULT_NOISE_FLOOR,
+        *,
+        window_ms: int = NOISE_FLOOR_WINDOW_MS,
+        percentile_value: float = NOISE_FLOOR_PERCENTILE,
+    ) -> None:
+        self.floor = float(max(MIN_NOISE_FLOOR, initial))
+        self.percentile = float(percentile_value)
+        self._levels: deque[int] = deque(maxlen=max(5, int(window_ms) // FRAME_MS))
+
+    def set(self, value: float) -> None:
+        self.floor = float(max(MIN_NOISE_FLOOR, value))
+        self._levels.clear()
+
+    def feed(self, level: int) -> None:
+        """Add one non-speech frame and move the floor toward its low percentile."""
+        if level <= 0:
+            return
+        self._levels.append(int(level))
+        if len(self._levels) < 5:
+            return
+        estimate = float(percentile(list(self._levels), self.percentile))
+        if estimate > self.floor * 1.5:
+            # A louder steady background must be tracked quickly, not ignored.
+            self.floor = 0.70 * self.floor + 0.30 * estimate
+        else:
+            self.floor = 0.95 * self.floor + 0.05 * estimate
+        self.floor = max(MIN_NOISE_FLOOR, self.floor)
+
+
 def _start_threshold(noise_floor: float, min_snr_db: float = MIN_SNR_DB) -> float:
     return max(
         float(ABS_START_RMS),
@@ -423,9 +483,14 @@ def _start_threshold(noise_floor: float, min_snr_db: float = MIN_SNR_DB) -> floa
 
 
 def _end_threshold(noise_floor: float, start_threshold: float, speaker_level: float) -> float:
+    noise_term = noise_floor * END_NOISE_MULTIPLIER
+    if speaker_level > 0:
+        # A fan just below the voice must not make the end threshold *above* the voice:
+        # with floor 1700 and speech 2400 the old 1.8x term was 3060 and cut mid-word.
+        noise_term = min(noise_term, speaker_level * 0.5)
     return max(
         float(ABS_END_RMS),
-        noise_floor * END_NOISE_MULTIPLIER,
+        noise_term,
         min(start_threshold * 0.6, max(1.0, speaker_level) * END_SPEAKER_FRACTION),
     )
 
@@ -436,14 +501,32 @@ def speech_rms_percentile(levels: list[int] | deque[int]) -> float:
     return float(percentile(values, 0.75)) if values else 0.0
 
 
-def is_end_silence(level: int, end_threshold: float, speech_rms: float) -> bool:
-    """True when this frame is post-speech quiet, relative to the speaker's own level."""
+def is_end_silence(
+    level: int,
+    end_threshold: float,
+    speech_rms: float,
+    post_floor: float = 0.0,
+) -> bool:
+    """True when this frame is post-speech quiet, relative to the speaker's own level.
+
+    ``post_floor`` is the recent background estimate. A level within 6 dB of it is quiet
+    even when the fan is louder than 45 % of the speaker: that is the case the Nov 2 log
+    showed (fan RMS 1700, speech RMS 2400).
+    """
     if speech_rms > 0:
+        if post_floor > 0 and level <= post_floor * POST_FLOOR_MULTIPLIER:
+            # A level near the recent post-speech floor is background, but never call a
+            # frame that is still near the speaker's own level silent. Without this guard
+            # a fan at 1700 would mark the 2400 speech as quiet (the early-cut replay).
+            if level < 0.8 * speech_rms:
+                return True
         if level < max(float(end_threshold), SPEECH_RMS_FRACTION * speech_rms):
             return True
         # A >=60 % drop from the active speech level is silence too, even when the room
         # noise happens to sit slightly above the absolute end threshold.
         return level <= SPEECH_DROP_FRACTION * speech_rms
+    if post_floor > 0 and level <= post_floor * POST_FLOOR_MULTIPLIER:
+        return True
     return level < float(end_threshold)
 
 
@@ -491,8 +574,8 @@ def record_until_silence(
     source: AudioSource,
     *,
     start_timeout_s: float = 10.0,
-    silence_ms: int = 1350,
-    max_seconds: float = 30.0,
+    silence_ms: int = 850,
+    max_seconds: float = DEFAULT_MAX_SECONDS,
     min_speech_ms: int = MIN_SPEECH_MS,
     pre_roll_ms: int = PRE_ROLL_MS,
     status: Callable[[str], None] | None = None,
@@ -501,16 +584,18 @@ def record_until_silence(
     warmup_ms: int = DEFAULT_WARMUP_MS,
     warmup_max_ms: int = DEFAULT_WARMUP_MAX_MS,
     min_snr_db: float = MIN_SNR_DB,
+    vad: Any | None = None,
+    vad_backstop_ms: int = VAD_BACKSTOP_MS,
 ) -> Recording:
-    """Capture speech until ``silence_ms`` of continuous quiet after it started.
+    """Capture speech until 850 ms of continuous quiet after it started.
 
     The first ``warmup_ms`` of a new stream is discarded (the mic/pw-record opening pop).
     Start detection needs a level that is both above the low capped threshold and at least
-    ``min_snr_db`` above the running noise floor, so steady loud noise (a fan) never
-    starts a recording. End detection uses hysteresis: a frame only counts as silence
-    below a much lower threshold that follows the speaker's own level, so a short pause
-    never cuts the sentence. Timing is measured in *audio* time, so synthetic tests run
-    at full speed.
+    ``min_snr_db`` above the running noise floor. ``vad`` (Silero) is the second signal:
+    when it is available it confirms the start and ends a fan that the energy rule would
+    mistake for speech. End detection uses hysteresis plus the trailing 850 ms VAD check,
+    so a short pause never cuts the sentence. Timing is measured in *audio* time, so
+    synthetic tests run at full speed.
 
     ``stop_on_enter`` lets a real terminal finish the capture immediately; Enter before
     any speech cancels it. The newline is consumed, never left for the chat prompt.
@@ -525,19 +610,26 @@ def record_until_silence(
     speech_levels: list[int] = []
     active_speech_levels: list[int] = []
     recent_levels: deque[int] = deque(maxlen=RECENT_LEVEL_WINDOW)
+    vad_frames: deque[array.array] = deque(maxlen=max(1, VAD_WINDOW_MS // FRAME_MS))
     peak_speech_rms = 0.0
     loud_until_ms = 0
     calibration: list[int] = []
     trace_levels: list[dict[str, Any]] = []
     bucket: list[tuple[int, int, bool]] = []
 
-    noise_floor = DEFAULT_NOISE_FLOOR
+    floor = RollingNoiseFloor()
+    noise_floor = floor.floor
     calibrated = False
     in_speech = False
     constant_noise = False
     steady_checked = False
     speech_activity = 0.0
-    silence_run = 0
+    energy_quiet_run = 0
+    vad_quiet_run = 0
+    vad_start_run = 0
+    last_vad_ms = 0
+    last_vad_speech_ms = 0
+    vad_usable = vad is not None
     speech_frames = 0
     audio_ms = 0
     speech_start_ms = 0
@@ -549,6 +641,49 @@ def record_until_silence(
     reason = "no_audio"
     started = time.monotonic()
     poll_enter = enter_pressed or (_default_enter_pressed if stop_on_enter else (lambda: False))
+
+    def _vad_check(elapsed_ms: int) -> None:
+        nonlocal last_vad_speech_ms, vad_quiet_run, vad_start_run, vad_usable
+        if vad is None or not vad_usable:
+            return
+        result = vad.speech_ms_in_window(
+            list(vad_frames), window_ms=VAD_EVAL_MS, context_ms=VAD_WINDOW_MS
+        )
+        if result is None:
+            vad_usable = False
+            vad_quiet_run = 0
+            vad_start_run = 0
+            return
+        last_vad_speech_ms = int(result)
+        if in_speech:
+            if last_vad_speech_ms <= 0:
+                vad_quiet_run += max(1, int(elapsed_ms))
+            else:
+                vad_quiet_run = 0
+        elif last_vad_speech_ms >= 150:
+            vad_start_run += max(1, int(elapsed_ms))
+        else:
+            vad_start_run = 0
+
+    def _start_speech() -> None:
+        nonlocal in_speech, speech_start_ms, speaker_level, active_speech_levels
+        nonlocal peak_speech_rms, loud_until_ms
+        in_speech = True
+        speech_start_ms = max(0, audio_ms - min_speech_ms)
+        recent = pre_roll[-max(1, min_speech_ms // FRAME_MS):]
+        speaker_level = float(max((frame_rms(item) for item in recent), default=0))
+        active_speech_levels = [frame_rms(item) for item in recent if frame_rms(item) >= ABS_START_RMS]
+        recent_levels.clear()
+        for recent_level in active_speech_levels[-RECENT_LEVEL_WINDOW:]:
+            recent_levels.append(recent_level)
+        if active_speech_levels:
+            # Robust peak (p90), not one loud transient: a single very loud frame must not
+            # make the rest of the sentence look quiet.
+            peak_speech_rms = float(percentile(active_speech_levels, 0.90))
+            loud_until_ms = audio_ms
+        notify("Heard you...")
+        collected.extend(pre_roll)
+        pre_roll.clear()
 
     try:
         source.start()
@@ -593,18 +728,32 @@ def record_until_silence(
                     )
                     continue  # the frame that ended the warm-up is discarded too
 
+                vad_frames.append(frame)
+
                 # --- noise floor: 25th percentile of the first 200 ms, bursts ignored ---
                 if not calibrated:
                     if not burst:
                         calibration.append(level)  # digital zeros count as a very quiet room
                     if audio_ms >= warmup_end_ms + CALIBRATION_MS:
                         estimate = float(percentile(calibration, 0.25)) if calibration else DEFAULT_NOISE_FLOOR
-                        noise_floor = max(MIN_NOISE_FLOOR, estimate)
+                        floor.set(max(MIN_NOISE_FLOOR, estimate))
+                        noise_floor = floor.floor
                         calibrated = True
 
+                noise_floor = floor.floor
                 start_threshold = _start_threshold(noise_floor, min_snr_db)
                 end_threshold = _end_threshold(noise_floor, start_threshold, speaker_level)
                 is_speech = level >= start_threshold and not burst
+
+                if (
+                    vad is not None
+                    and vad_usable
+                    and calibrated
+                    and audio_ms - last_vad_ms >= VAD_CHECK_MS
+                ):
+                    elapsed_vad = audio_ms - last_vad_ms
+                    last_vad_ms = audio_ms
+                    _vad_check(elapsed_vad)
 
                 if not in_speech:
                     pre_roll.append(frame)
@@ -617,31 +766,32 @@ def record_until_silence(
                         speech_frames += 1
                     else:
                         speech_activity = max(0.0, speech_activity - FRAME_MS / max(1, 2 * min_speech_ms))
-                        # Only adapt the floor when the frame is near it; adapting on
-                        # every frame under the start threshold made the floor climb
-                        # through the user's own speech.
-                        if calibrated and audio_ms > warmup_end_ms and level <= noise_floor * 1.5:
-                            noise_floor = max(MIN_NOISE_FLOOR, 0.95 * noise_floor + 0.05 * level)
+                    # Follow a background that is louder than the first calibration. Never
+                    # feed a frame that is speech into the floor, or the gate would rise
+                    # above the user's own voice. VAD is the judge when it is available.
+                    if vad is None or not vad_usable:
+                        feed_floor = not is_speech
+                    else:
+                        feed_floor = last_vad_ms > 0 and last_vad_speech_ms <= 0
+                    if (
+                        calibrated
+                        and audio_ms > warmup_end_ms
+                        and not burst
+                        and feed_floor
+                    ):
+                        floor.feed(level)
+                        noise_floor = floor.floor
                     frame_active = is_speech
-                    if speech_activity >= 1.0:
-                        in_speech = True
-                        speech_start_ms = max(0, audio_ms - min_speech_ms)
-                        recent = pre_roll[-max(1, min_speech_ms // FRAME_MS):]
-                        speaker_level = float(max(frame_rms(f) for f in recent))
-                        active_speech_levels = [
-                            frame_rms(f) for f in recent if frame_rms(f) >= start_threshold
-                        ]
-                        recent_levels.clear()
-                        for recent_level in active_speech_levels[-RECENT_LEVEL_WINDOW:]:
-                            recent_levels.append(recent_level)
-                        if active_speech_levels:
-                            # Robust peak (p90), not one loud transient: a single very
-                            # loud frame must not make the rest of the sentence look quiet.
-                            peak_speech_rms = float(percentile(active_speech_levels, 0.90))
-                            loud_until_ms = audio_ms
-                        notify("Heard you...")
-                        collected.extend(pre_roll)
-                        pre_roll = []
+                    start_now = (
+                        vad is not None
+                        and vad_usable
+                        and vad_start_run >= VAD_START_MS
+                    ) or (
+                        (vad is None or not vad_usable)
+                        and speech_activity >= 1.0
+                    )
+                    if start_now:
+                        _start_speech()
                     elif audio_ms >= int(start_timeout_s * 1000):
                         reason = "timeout"
                         break
@@ -651,12 +801,13 @@ def record_until_silence(
                     recent_levels.append(level)
                     current_speech_rms = speech_rms_percentile(active_speech_levels)
                     # Room noise can sit above the low start threshold. Once speech has
-                    # started, a frame that is >=60 % below the speaker's level is not
-                    # part of the sentence, whatever the absolute floor says.
-                    frame_active = not is_end_silence(level, end_threshold, current_speech_rms)
+                    # started, a frame that is within 6 dB of the floor or far below the
+                    # speaker's level is not part of the sentence.
+                    frame_active = not is_end_silence(
+                        level, end_threshold, current_speech_rms, noise_floor
+                    )
                     speech_like = level >= start_threshold and not burst and frame_active
                     if speech_like:
-                        silence_run = 0
                         speaker_level = max(speaker_level, float(level))
                         speech_frames += 1
                         active_speech_levels.append(level)
@@ -667,22 +818,31 @@ def record_until_silence(
                         )
                         if level >= POST_SPEECH_PEAK_FRACTION * peak_speech_rms:
                             loud_until_ms = audio_ms
-                    elif is_end_silence(level, end_threshold, current_speech_rms):
-                        silence_run += 1
+                    if is_end_silence(level, end_threshold, current_speech_rms, noise_floor):
+                        energy_quiet_run += FRAME_MS
                     else:
-                        # In the hysteresis band: assume the word is fading, not finished.
-                        silence_run = 0
+                        energy_quiet_run = 0
+                    quiet_run = max(energy_quiet_run, vad_quiet_run)
                     if (
-                        silence_run * FRAME_MS >= silence_ms
+                        quiet_run >= silence_ms
                         and audio_ms - speech_start_ms >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS
                     ):
+                        reason = "silence"
+                        break
+                    if (
+                        vad is not None
+                        and vad_usable
+                        and vad_quiet_run >= vad_backstop_ms
+                        and audio_ms - speech_start_ms >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS
+                    ):
+                        # Silero heard no human speech for 1.2 s: a fan, not a sentence.
                         reason = "silence"
                         break
                     if is_steady_post_speech(
                         recent_levels, peak_speech_rms, audio_ms - loud_until_ms
                     ):
                         # Steady room/fan noise after the last speech burst: stop now
-                        # instead of recording until the 30 s cap.
+                        # instead of recording until the cap.
                         reason = "silence"
                         break
                     if audio_ms >= int(max_seconds * 1000):
@@ -741,6 +901,10 @@ def record_until_silence(
             "warmup_ms": int(warmup_end_ms),
             "warmup_max_ms": int(warmup_max_ms),
             "silence_ms": silence_ms,
+            "max_seconds": max_seconds,
+            "vad": bool(vad is not None and vad_usable),
+            "vad_quiet_ms": vad_quiet_run,
+            "vad_backstop_ms": vad_backstop_ms,
             "start_timeout_s": start_timeout_s,
             "pre_roll_ms": pre_roll_ms,
             "min_speech_before_stop_ms": MIN_SPEECH_BEFORE_SILENCE_STOP_MS,

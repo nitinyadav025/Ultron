@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from assistant.config import load_config
-from assistant.interfaces.listen import CONFIRMATION_REPLY, RETRY_REPLY, START_LINE, Transcript, HandsFreeListener
+from assistant.interfaces.listen import CONFIRMATION_REPLY, START_LINE, Transcript, HandsFreeListener
 from assistant.safety.permissions import PermissionGate
 from assistant.speech.recorder import FRAME_BYTES, FRAME_SAMPLES
 from assistant.tools.registry import ToolRegistry, tool
@@ -268,8 +268,8 @@ def test_two_commands_back_to_back() -> None:
     assert commands == ["open firefox", "mute"]
 
 
-# 9) unreliable transcript with the wake word -----------------------------------------
-def test_unreliable_transcript_after_the_wake_word_asks_again_and_runs_nothing() -> None:
+# 9) rejected transcript: ignored, never passed to wake.py / fast_path ----------------
+def test_rejected_transcript_is_ignored_and_runs_nothing() -> None:
     source = ScriptedSource(utterance())
     transcriber = ScriptedTranscriber(
         [Transcript(False, "I didn't catch that, please say it again.", raw="Ultron open firefox")]
@@ -280,8 +280,11 @@ def test_unreliable_transcript_after_the_wake_word_asks_again_and_runs_nothing()
 
     listener.run()
 
-    assert spoken[0] == RETRY_REPLY
+    # B6: a rejected decode must not be fed to the wake matcher, and it must not open or
+    # extend the follow-up window (the old "I didn't hear anything." wake loop).
+    assert spoken == []
     assert commands == []
+    assert listener.ignored == 1
 
 
 # 10) a confirmation-needed tool is refused by voice and not run -----------------------

@@ -20,12 +20,12 @@ def test_voice_timing_defaults_are_consistent(tmp_path: Path, monkeypatch: pytes
         monkeypatch.delenv(key, raising=False)
     cfg = load_config(env_path=tmp_path / "missing.env", settings_path=tmp_path / "missing.yaml")
 
-    assert AssistantConfig().voice_silence_ms == 1450
-    assert AssistantConfig().voice_record_silence_ms == 1350
+    assert AssistantConfig().voice_silence_ms == 1350
+    assert AssistantConfig().voice_record_silence_ms == 850
     assert AssistantConfig().voice_start_timeout_s == 10.0
-    assert cfg.voice_silence_ms == 1450
-    assert cfg.voice_record_silence_ms == 1350
+    assert cfg.voice_silence_ms == 1350
+    assert cfg.voice_record_silence_ms == 850
     assert cfg.voice_start_timeout_s == 10.0
-    assert cfg.voice_max_seconds == 30.0
-    assert AssistantConfig().listen_early_check_ms == 1050
-    assert cfg.listen_early_check_ms == 1050
+    assert cfg.voice_max_seconds == 12.0
+    assert AssistantConfig().listen_early_check_ms == 850
+    assert cfg.listen_early_check_ms == 850

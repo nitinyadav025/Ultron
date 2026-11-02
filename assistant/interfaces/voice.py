@@ -23,7 +23,7 @@ import time
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from google.genai import types
 
@@ -245,11 +245,15 @@ class VoiceController:
         adapter: GeminiAdapter | None,
         status_callback: Callable[[str], None] | None = None,
         transcribe_timeout_sec: float = 20.0,
+        vad: Any | None = None,
     ) -> None:
         self.config = config
         self.adapter = adapter
         self.status_callback = status_callback or (lambda _msg: None)
         self.transcribe_timeout_sec = transcribe_timeout_sec
+        # Production passes the Silero wrapper; unit tests leave it None so a synthetic
+        # tone is judged by the energy rules (deterministic and fast).
+        self.vad = vad
         # Local ears exist only in local mode; the model itself loads once via load_ears().
         self.ears: WhisperEars | None = WhisperEars(config) if config.backend == "local" else None
         # Local mouth (Piper) replaces Gemini TTS + spd-say entirely in local mode.
@@ -343,11 +347,12 @@ class VoiceController:
                     "voice_record_silence_ms",
                     getattr(self.config, "voice_silence_ms", 1350),
                 ),
-                max_seconds=getattr(self.config, "voice_max_seconds", 30.0),
+                max_seconds=getattr(self.config, "voice_max_seconds", 12.0),
                 warmup_ms=getattr(self.config, "recorder_warmup_ms", 300),
                 warmup_max_ms=getattr(self.config, "recorder_warmup_max_ms", 1500),
                 min_snr_db=getattr(self.config, "voice_min_snr_db", 5.0),
                 status=self.status_callback,
+                vad=self.vad,
             )
         except KeyboardInterrupt:
             # Ctrl+C while listening cancels only this capture; the chat stays open.

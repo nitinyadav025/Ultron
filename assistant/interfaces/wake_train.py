@@ -29,12 +29,14 @@ import numpy as np
 from assistant.config import WORKSPACE_DIR, AssistantConfig
 from assistant.interfaces.listen import ContinuousReader, UtteranceDetector, pcm_to_float32
 from assistant.speech.ears import WhisperEars
+from assistant.speech.wake import is_safe_learned_alias
 from assistant.speech.recorder import (
     FRAME_BYTES,
     PwRecordSource,
     pcm16_samples,
     write_pcm16_wav,
 )
+from assistant.speech.vad import get_shared_vad
 
 logger = logging.getLogger("ultron.waketrain")
 
@@ -47,10 +49,15 @@ VARIANTS = ("plain", "hotwords", "no_vad", "small_en")
 
 
 def _prefixes(text: str, counts: dict[str, int]) -> None:
+    """Record 1-3 word prefixes, never a rejected decode or ordinary English filler."""
+    if "<rejected" in (text or "").lower():
+        return
     words = [word for word in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split() if word]
     for size in (1, 2, 3):
         if len(words) >= size:
             prefix = " ".join(words[:size])
+            if not is_safe_learned_alias(prefix):
+                continue
             counts[prefix] = counts.get(prefix, 0) + 1
 
 
@@ -75,6 +82,7 @@ def _microphone_capture(config: AssistantConfig) -> tuple[Callable[[], bytes | N
         silence_ms=config.voice_silence_ms,
         early_ms=config.listen_early_check_ms,
         max_seconds=10.0,
+        vad=get_shared_vad(),
     )
     reader.start()
     carry = b""
@@ -168,6 +176,7 @@ def run_wake_train(
                 samples = pcm_to_float32(pcm)
                 texts: dict[str, str] = {}
                 seconds: dict[str, float] = {}
+                decoded_ok: dict[str, bool] = {}
                 variants: list[tuple[str, Any, dict[str, Any]]] = [
                     ("plain", ears, {}),
                     (
@@ -183,9 +192,11 @@ def run_wake_train(
                     started = time.monotonic()
                     ok, text = engine.transcribe_samples(samples, log_text=False, **options)
                     seconds[name] = time.monotonic() - started
+                    decoded_ok[name] = ok
                     texts[name] = text if ok else f"<rejected: {text}>"
                     timings[name].append(seconds[name])
-                _prefixes(texts["plain"].replace("<rejected: ", "").rstrip(">"), counts)
+                if decoded_ok.get("plain"):
+                    _prefixes(texts["plain"], counts)
                 rows.append((phrase, texts, seconds))
     except KeyboardInterrupt:
         prompt("\nStopped.")

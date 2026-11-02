@@ -20,10 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Safe spellings: a fuzzy match is trusted even when the rest is ordinary talk.
-SAFE_DEFAULT_ALIASES = ("outron", "ultra", "hey ultron")
-# Phonetic variants measured in the user's own wake-train clips (Nov 1, 18:01). These
-# are ordinary English words, so a match is trusted only when the remainder is empty or
-# a known fast-path command (handled by ``learned=True`` in WakeMatch).
+SAFE_DEFAULT_ALIASES = ("outron", "ultra", "hey ultron", "here ultron", "hailtone")
+# Phonetic variants measured in the user's own wake-train clips (Nov 1, 18:01) plus the
+# Nov 2 "I'll turn open VS code" miss. These are ordinary English words, so a match is
+# trusted only when the remainder is empty or a known fast-path command (handled by
+# ``learned=True`` in WakeMatch).
 RISKY_ALIASES = (
     "i'm drawn",
     "i'll draw",
@@ -34,12 +35,57 @@ RISKY_ALIASES = (
     "are you drawn",
     "hey all drawn",
     "hey all right",
+    "i'll turn",
+    "ill turn",
+    "here drone",
 )
 DEFAULT_ALIASES = SAFE_DEFAULT_ALIASES + RISKY_ALIASES
 RATIO = 0.75
 # Whisper inserts small connector words after a misheard wake word:
 # "I'll draw an open Firefox." must become "open firefox".
-FILLER_WORDS = {"an", "and", "to", "uh", "um", "please"}
+FILLER_WORDS = {"an", "and", "to", "uh", "um", "please", "then", "so"}
+# Prefixes wake-train must never save. The Nov 2 file contained "i didn", "i didn t",
+# "i ll", "i m", "what do", "what do you" and "hey all"; the first one made the error
+# string "I didn't hear anything." match the wake word at 0.86.
+BAD_LEARNED_ALIASES = frozenset(
+    {
+        "i",
+        "hey",
+        "what",
+        "the",
+        "and",
+        "a",
+        "to",
+        "you",
+        "it",
+        "is",
+        "so",
+        "i didn",
+        "i didn t",
+        "i ll",
+        "i m",
+        "what do",
+        "what do you",
+        "hey all",
+        "i don",
+        "i don t",
+        "i can",
+        "i can t",
+        "i will",
+        "i would",
+        "i could",
+        "i won",
+        "i won t",
+        "i was",
+        "i am",
+        "i have",
+        "i had",
+    }
+)
+_CONTRACTION_TAILS = frozenset(
+    {"didn", "didn t", "ll", "m", "re", "ve", "s", "t", "don", "don t", "can", "can t", "won", "won t"}
+)
+_GENERIC_STARTERS = frozenset({"i", "hey", "what", "the", "and", "a", "to", "you", "it", "is", "so"})
 # Common app mishearings in the saved clips (B3 wake-train table).
 _SPOKEN_COMMAND_FIXES = (
     (re.compile(r"\b(open|launch) (?:5ox|5x|file box|fire box|fire fox)\b", re.I), r"\1 firefox"),
@@ -76,11 +122,39 @@ def _alias_list(wake_word: str, aliases: str | tuple[str, ...] | list[str] = "")
     return [w for w in dict.fromkeys(words) if w]
 
 
+def is_safe_learned_alias(name: str) -> bool:
+    """False for wake-train junk that would wake on ordinary English.
+
+    Rejected: an empty/rejected decode, common words, contraction fragments ("i didn",
+    "i ll", "i m"), and anything starting with "what do", "i ll", "i m", "i didn",
+    "i don" or "hey all". The measured built-ins ("i'll draw", "i'm drawn") are added
+    separately and are not affected by this filter.
+    """
+    cleaned = " ".join(str(name or "").lower().split())
+    if not cleaned or "<rejected" in cleaned or cleaned.startswith("rejected"):
+        return False
+    if cleaned in BAD_LEARNED_ALIASES:
+        return False
+    words = cleaned.split()
+    if not words:
+        return False
+    if words[-1] in _CONTRACTION_TAILS:
+        return False
+    if cleaned.startswith(("what do", "i ll", "i m", "i didn", "i don", "hey all")):
+        return False
+    if all(word in _GENERIC_STARTERS for word in words):
+        return False
+    if len(words) == 1 and len(cleaned) < 5 and cleaned not in {"outron", "ultra", "hailtone"}:
+        return False
+    return True
+
+
 def load_learned_aliases(path: Path | str | None) -> list[str]:
     """Read workspace/wake_aliases.json (written by `main.py wake-train`).
 
     Accepts {"aliases": {"ultron": 12, ...}} or {"aliases": ["ultron", ...]}.
-    A missing or broken file means "no learned aliases", never an error.
+    A missing or broken file means "no learned aliases", never an error. The Nov 2 file
+    was filtered here too, so an old polluted file cannot bring the error loop back.
     """
     if not path:
         return []
@@ -96,14 +170,7 @@ def load_learned_aliases(path: Path | str | None) -> list[str]:
     elif isinstance(raw, list):
         names = [str(item.get("text") if isinstance(item, dict) else item) for item in raw]
     cleaned = [" ".join(str(name).lower().split()) for name in names]
-    # Wake-train also records ordinary sentence starters ("i", "hey", "what"). Those
-    # would make any "I ..." sentence look like a wake word; keep only useful spellings.
-    common = {"i", "hey", "what", "the", "and", "a", "to", "you", "it", "is", "so"}
-    return [
-        name
-        for name in dict.fromkeys(cleaned)
-        if name and (len(name.split()) > 1 or (len(name) >= 5 and name not in common))
-    ]
+    return [name for name in dict.fromkeys(cleaned) if is_safe_learned_alias(name)]
 
 
 def strip_wake_prefixes(
@@ -139,6 +206,20 @@ def aliases_for(
     return _alias_list(wake_word, aliases) + [name for name in learned if name not in _alias_list(wake_word, aliases)]
 
 
+def _strip_leading_fillers(tokens: list[str]) -> list[str]:
+    """Remove repeated fillers and "can you" after the wake prefix."""
+    changed = True
+    while tokens and changed:
+        changed = False
+        while tokens and tokens[0] in FILLER_WORDS:
+            tokens.pop(0)
+            changed = True
+        if len(tokens) >= 2 and tokens[0] == "can" and tokens[1] == "you":
+            del tokens[:2]
+            changed = True
+    return tokens
+
+
 def wake_match(
     text: str,
     wake_word: str = "ultron",
@@ -148,7 +229,8 @@ def wake_match(
     """Return the best wake-word match, including its score and target (for debug output).
 
     Built-in/configured spellings may be one or two words; learned spellings up to three.
-    On a tie the shorter match wins so a real command word is not swallowed.
+    On a tie the shorter match wins so a real command word is not swallowed. Whenever a
+    prefix matches, its words and any leading filler are always removed from ``command``.
     """
     tokens = _tokens(text)
     if not tokens:
@@ -177,10 +259,54 @@ def wake_match(
     if best is None:
         return WakeMatch(False)
     ratio, consumed, target, is_learned = best
-    command_tokens = tokens[consumed:]
-    while command_tokens and command_tokens[0] in FILLER_WORDS:
-        command_tokens.pop(0)
+    command_tokens = _strip_leading_fillers(tokens[consumed:])
     command = normalise_spoken_command(" ".join(command_tokens).strip())
+    return WakeMatch(True, command, ratio, target, is_learned)
+
+
+def wake_match_anywhere(
+    text: str,
+    wake_word: str = "ultron",
+    aliases: str | tuple[str, ...] | list[str] = "",
+    learned_aliases: list[str] | tuple[str, ...] = (),
+) -> WakeMatch:
+    """Find a wake spelling later in the sentence and join both sides with "and".
+
+    The Nov 2 log merged two commands into one 30 s transcript:
+    ``"Open Steam, Ultron can you open Discord for me?"``. The prefix matcher cannot see
+    the second wake word. This returns ``"open steam and can you open discord for me"`` so
+    the fast-path compound splitter can run both actions. The caller accepts it only when
+    the remainder is a known fast-path sentence, so ordinary talk about Ultron is ignored.
+    """
+    tokens = _tokens(text)
+    if not tokens:
+        return WakeMatch(False)
+    builtin = _alias_list(wake_word, aliases)
+    learned = [" ".join(str(item).lower().split()) for item in learned_aliases if str(item).strip()]
+    restricted = set(RISKY_ALIASES)
+    targets: list[tuple[str, bool]] = [(name, name in restricted) for name in builtin]
+    targets += [(name, True) for name in learned if name not in builtin]
+    best: tuple[float, int, int, str, bool] | None = None
+    for index in range(len(tokens)):
+        for count in (1, 2, 3):
+            if index + count > len(tokens):
+                break
+            candidate = " ".join(tokens[index : index + count])
+            for target, is_learned in targets:
+                if len(target.split()) != count:
+                    continue
+                ratio = difflib.SequenceMatcher(None, candidate, target).ratio()
+                if ratio < RATIO:
+                    continue
+                if best is None or ratio > best[0] + 1e-9:
+                    best = (ratio, index, count, target, is_learned)
+    if best is None:
+        return WakeMatch(False)
+    ratio, index, count, target, is_learned = best
+    before = tokens[:index]
+    after = tokens[index + count :]
+    joined = before + (["and"] if before and after else []) + after
+    command = normalise_spoken_command(" ".join(joined).strip())
     return WakeMatch(True, command, ratio, target, is_learned)
 
 

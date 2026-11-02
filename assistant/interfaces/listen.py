@@ -31,9 +31,10 @@ import numpy as np
 from assistant.brain.context import SESSION
 from assistant.brain.fast_path import match_fast_command
 from assistant.config import AssistantConfig
-from assistant.speech.ears import NO_SPEECH
 from assistant.speech.recorder import (
+    ABS_START_RMS,
     CALIBRATION_MS,
+    DEFAULT_MAX_SECONDS,
     DEFAULT_NOISE_FLOOR,
     DEFAULT_WARMUP_MS,
     FRAME_BYTES,
@@ -44,8 +45,14 @@ from assistant.speech.recorder import (
     PRE_ROLL_MS,
     RECENT_LEVEL_WINDOW,
     SPEECH_RMS_FRACTION,
+    VAD_BACKSTOP_MS,
+    VAD_CHECK_MS,
+    VAD_EVAL_MS,
+    VAD_START_MS,
+    VAD_WINDOW_MS,
     AdaptiveWarmup,
     PwRecordSource,
+    RollingNoiseFloor,
     _end_threshold,
     _is_clipped_burst,
     _start_threshold,
@@ -68,6 +75,7 @@ from assistant.speech.wake import (
     sentence_is_complete,
     strip_wake_prefixes,
     wake_match,
+    wake_match_anywhere,
 )
 from assistant.tools.registry import ToolRegistry
 
@@ -125,7 +133,13 @@ class Transcript:
 
 
 class UtteranceDetector:
-    """State machine over 20 ms frames: waiting -> speech -> silence -> done."""
+    """State machine over 20 ms frames: waiting -> speech -> silence -> done.
+
+    The energy rules are the first signal. When ``vad`` (Silero) is supplied it confirms
+    the start and ends a steady fan that the energy rule would mistake for speech. The
+    850 ms early event gives the listener a transcript for a continuation decision; the
+    1350 ms final is the ceiling, and a 1.2 s VAD-silent run is the hard backstop.
+    """
 
     def __init__(
         self,
@@ -133,9 +147,11 @@ class UtteranceDetector:
         warmup_ms: int = DEFAULT_WARMUP_MS,
         warmup_max_ms: int = 1500,
         min_snr_db: float = 10.0,
-        silence_ms: int = 1450,
-        early_ms: int = 1050,
-        max_seconds: float = 30.0,
+        silence_ms: int = 1350,
+        early_ms: int = 850,
+        max_seconds: float = DEFAULT_MAX_SECONDS,
+        vad: Any | None = None,
+        vad_backstop_ms: int = VAD_BACKSTOP_MS,
     ) -> None:
         self.warmup_ms = int(warmup_ms)
         self._warm = AdaptiveWarmup(self.warmup_ms, warmup_max_ms)
@@ -144,18 +160,27 @@ class UtteranceDetector:
         self.silence_ms = int(silence_ms)
         self.early_ms = int(early_ms)
         self.max_seconds = float(max_seconds)
+        self.vad = vad
+        self.vad_backstop_ms = int(vad_backstop_ms)
+        self._vad_usable = vad is not None
 
         self.audio_ms = 0
         self.last_start_ms = 0
         self.last_reason = ""
-        self.noise_floor = DEFAULT_NOISE_FLOOR
+        self._floor = RollingNoiseFloor()
+        self.noise_floor = self._floor.floor
         self._calibrated = False
         self._calibration: list[int] = []
         self._ring: deque[array.array] = deque(maxlen=max(1, (PRE_ROLL_MS + MIN_SPEECH_MS) // FRAME_MS))
+        self._vad_frames: deque[array.array] = deque(maxlen=max(1, VAD_WINDOW_MS // FRAME_MS))
         self._collected: list[array.array] = []
         self._in_speech = False
         self._speech_activity = 0.0
-        self._silence_run = 0
+        self._energy_quiet_run = 0
+        self._vad_quiet_run = 0
+        self._vad_start_run = 0
+        self._last_vad_ms = 0
+        self._last_vad_speech_ms = 0
         self._speech_frames = 0
         self._start_ms = 0
         self._speaker_level = 0.0
@@ -177,19 +202,63 @@ class UtteranceDetector:
         return speech_rms_percentile(self._active_levels)
 
     def _silence_threshold(self, end_threshold: float) -> float:
-        """The absolute end floor raised to 35 % of the speaker's active level."""
+        """The absolute end floor raised to 45 % of the speaker's active level."""
         return max(float(end_threshold), SPEECH_RMS_FRACTION * self._speech_rms())
 
     def skip(self, frame: array.array) -> None:
         """Advance audio time for discarded audio (during/after Piper) without detecting."""
         self.audio_ms += FRAME_MS
 
+    def _check_vad(self, elapsed_ms: int) -> None:
+        if self.vad is None or not self._vad_usable:
+            return
+        result = self.vad.speech_ms_in_window(
+            list(self._vad_frames), window_ms=VAD_EVAL_MS, context_ms=VAD_WINDOW_MS
+        )
+        if result is None:
+            self._vad_usable = False
+            self._vad_quiet_run = 0
+            self._vad_start_run = 0
+            return
+        self._last_vad_speech_ms = int(result)
+        if self._in_speech:
+            if self._last_vad_speech_ms <= 0:
+                self._vad_quiet_run += max(1, int(elapsed_ms))
+            else:
+                self._vad_quiet_run = 0
+        elif self._last_vad_speech_ms >= 150:
+            self._vad_start_run += max(1, int(elapsed_ms))
+        else:
+            self._vad_start_run = 0
+
+    def _begin_speech(self, start_threshold: float) -> None:
+        self._in_speech = True
+        self._start_ms = max(0, self.audio_ms - MIN_SPEECH_MS)
+        self.last_start_ms = self._start_ms
+        ring_levels = [frame_rms(item) for item in self._ring]
+        self._speaker_level = float(max(ring_levels, default=0))
+        active_floor = max(ABS_START_RMS, min(float(start_threshold), 500.0))
+        self._active_levels = [value for value in ring_levels if value >= active_floor]
+        self._recent_levels.clear()
+        for value in ring_levels[-RECENT_LEVEL_WINDOW:]:
+            self._recent_levels.append(value)
+        if self._active_levels:
+            self._peak_speech_rms = float(percentile(self._active_levels, 0.90))
+            self._loud_until_ms = self.audio_ms
+        self._collected = list(self._ring)
+        self._ring.clear()
+
     def reset(self) -> None:
         self._ring.clear()
+        self._vad_frames.clear()
         self._collected = []
         self._in_speech = False
         self._speech_activity = 0.0
-        self._silence_run = 0
+        self._energy_quiet_run = 0
+        self._vad_quiet_run = 0
+        self._vad_start_run = 0
+        self._last_vad_ms = 0
+        self._last_vad_speech_ms = 0
         self._speech_frames = 0
         self._start_ms = 0
         self._speaker_level = 0.0
@@ -219,16 +288,30 @@ class UtteranceDetector:
             self._calibration.clear()
             return None  # the frame that ended the warm-up is discarded too
 
+        self._vad_frames.append(frame)
+
         if not self._calibrated:
             if not burst:
                 self._calibration.append(level)
             if self.audio_ms >= self._warmup_end_ms + CALIBRATION_MS:
                 estimate = float(percentile(self._calibration, 0.25)) if self._calibration else DEFAULT_NOISE_FLOOR
-                self.noise_floor = max(MIN_NOISE_FLOOR, estimate)
+                self._floor.set(max(MIN_NOISE_FLOOR, estimate))
+                self.noise_floor = self._floor.floor
                 self._calibrated = True
 
+        self.noise_floor = self._floor.floor
         start_thr, end_thr = self._thresholds()
         is_speech = level >= start_thr and not burst
+
+        if (
+            self.vad is not None
+            and self._vad_usable
+            and self._calibrated
+            and self.audio_ms - self._last_vad_ms >= VAD_CHECK_MS
+        ):
+            elapsed_vad = self.audio_ms - self._last_vad_ms
+            self._last_vad_ms = self.audio_ms
+            self._check_vad(elapsed_vad)
 
         if not self._in_speech:
             self._ring.append(frame)
@@ -237,32 +320,30 @@ class UtteranceDetector:
                 self._speech_frames += 1
             else:
                 self._speech_activity = max(0.0, self._speech_activity - FRAME_MS / (2 * MIN_SPEECH_MS))
-                if self._calibrated and level <= self.noise_floor * 1.5:
-                    self.noise_floor = max(MIN_NOISE_FLOOR, 0.95 * self.noise_floor + 0.05 * level)
-            if self._speech_activity >= 1.0:
-                self._in_speech = True
-                self._start_ms = max(0, self.audio_ms - MIN_SPEECH_MS)
-                self.last_start_ms = self._start_ms
-                ring_levels = [frame_rms(item) for item in self._ring]
-                self._speaker_level = float(max(ring_levels, default=0))
-                self._active_levels = [value for value in ring_levels if value >= start_thr]
-                self._recent_levels.clear()
-                for value in ring_levels[-RECENT_LEVEL_WINDOW:]:
-                    self._recent_levels.append(value)
-                if self._active_levels:
-                    self._peak_speech_rms = float(percentile(self._active_levels, 0.90))
-                    self._loud_until_ms = self.audio_ms
-                self._collected = list(self._ring)
-                self._ring.clear()
+            # Follow a louder steady background, but never feed a frame that is speech:
+            # VAD is the judge when available; otherwise the energy result is the old rule.
+            if self.vad is None or not self._vad_usable:
+                feed_floor = not is_speech
+            else:
+                feed_floor = self._last_vad_ms > 0 and self._last_vad_speech_ms <= 0
+            if self._calibrated and not burst and feed_floor:
+                self._floor.feed(level)
+                self.noise_floor = self._floor.floor
+            start_now = (
+                self.vad is not None and self._vad_usable and self._vad_start_run >= VAD_START_MS
+            ) or (
+                (self.vad is None or not self._vad_usable) and self._speech_activity >= 1.0
+            )
+            if start_now:
+                self._begin_speech(start_thr)
             return None
 
         self._collected.append(frame)
         self._recent_levels.append(level)
         current_speech_rms = self._speech_rms()
-        frame_active = not is_end_silence(level, end_thr, current_speech_rms)
+        frame_active = not is_end_silence(level, end_thr, current_speech_rms, self.noise_floor)
         speech_like = level >= start_thr and not burst and frame_active
         if speech_like:
-            self._silence_run = 0
             self._speaker_level = max(self._speaker_level, float(level))
             self._speech_frames += 1
             self._active_levels.append(level)
@@ -273,21 +354,26 @@ class UtteranceDetector:
             )
             if level >= POST_SPEECH_PEAK_FRACTION * self._peak_speech_rms:
                 self._loud_until_ms = self.audio_ms
-        elif is_end_silence(level, end_thr, current_speech_rms):
-            # Post-speech room/breathing noise is silence relative to the speaker's own
-            # active level. Tying this to the low noise floor alone never stopped.
-            self._silence_run += 1
+        if is_end_silence(level, end_thr, current_speech_rms, self.noise_floor):
+            self._energy_quiet_run += FRAME_MS
         else:
-            self._silence_run = 0
+            self._energy_quiet_run = 0
 
+        quiet_run = max(self._energy_quiet_run, self._vad_quiet_run)
         elapsed = self.audio_ms - self._start_ms
-        if not self._early_sent and self._silence_run * FRAME_MS >= self.early_ms:
+        if not self._early_sent and quiet_run >= self.early_ms:
             self._early_sent = True
             return "early"
+        if quiet_run >= self.silence_ms and elapsed >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS:
+            self.last_reason = "silence"
+            return "final"
         if (
-            self._silence_run * FRAME_MS >= self.silence_ms
+            self.vad is not None
+            and self._vad_usable
+            and self._vad_quiet_run >= self.vad_backstop_ms
             and elapsed >= MIN_SPEECH_BEFORE_SILENCE_STOP_MS
         ):
+            # Silero heard no human speech for 1.2 s: a fan, not a sentence.
             self.last_reason = "silence"
             return "final"
         if is_steady_post_speech(
@@ -334,32 +420,22 @@ class UtteranceDetector:
             return
         if self._in_speech:
             self._collected.extend(frames)
+            for frame in frames:
+                self._vad_frames.append(frame)
             return
         start_thr, _end = self._thresholds()
         for frame in frames:
             level = frame_rms(frame)
             burst = _is_clipped_burst(level, frame_peak(frame))
             self._ring.append(frame)
+            self._vad_frames.append(frame)
             if level >= start_thr and not burst:
                 self._speech_activity = min(1.0, self._speech_activity + FRAME_MS / MIN_SPEECH_MS)
                 self._speech_frames += 1
             else:
                 self._speech_activity = max(0.0, self._speech_activity - FRAME_MS / (2 * MIN_SPEECH_MS))
             if self._speech_activity >= 1.0:
-                self._in_speech = True
-                self._start_ms = max(0, self.audio_ms - MIN_SPEECH_MS)
-                self.last_start_ms = self._start_ms
-                ring_levels = [frame_rms(item) for item in self._ring]
-                self._speaker_level = float(max(ring_levels, default=0))
-                self._active_levels = [value for value in ring_levels if value >= start_thr]
-                self._recent_levels.clear()
-                for value in ring_levels[-RECENT_LEVEL_WINDOW:]:
-                    self._recent_levels.append(value)
-                if self._active_levels:
-                    self._peak_speech_rms = float(percentile(self._active_levels, 0.90))
-                    self._loud_until_ms = self.audio_ms
-                self._collected = list(self._ring)
-                self._ring.clear()
+                self._begin_speech(start_thr)
                 break
 
     def stats(self) -> dict[str, Any]:
@@ -480,6 +556,7 @@ class HandsFreeListener:
         command_runner: Callable[[str], tuple[str, bool]],
         reader: ContinuousReader | None = None,
         save_debug: Callable[[bytes, Transcript, str], None] | None = None,
+        vad: Any | None = None,
         print_fn: Callable[[str], None] = print,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -490,15 +567,17 @@ class HandsFreeListener:
         self.command_runner = command_runner
         self.reader = reader
         self.save_debug = save_debug
+        self.vad = vad
         self.print_fn = print_fn
         self.clock = clock
         self.detector = UtteranceDetector(
             warmup_ms=getattr(config, "recorder_warmup_ms", DEFAULT_WARMUP_MS),
             warmup_max_ms=getattr(config, "recorder_warmup_max_ms", 1500),
             min_snr_db=getattr(config, "voice_min_snr_db", 10.0),
-            silence_ms=getattr(config, "voice_silence_ms", 1450),
-            early_ms=getattr(config, "listen_early_check_ms", 1050),
-            max_seconds=getattr(config, "voice_max_seconds", 30.0),
+            silence_ms=getattr(config, "voice_silence_ms", 1350),
+            early_ms=getattr(config, "listen_early_check_ms", 850),
+            max_seconds=getattr(config, "voice_max_seconds", DEFAULT_MAX_SECONDS),
+            vad=vad,
         )
         self.learned_aliases = load_learned_aliases(getattr(config, "wake_aliases_file", None))
         self.ignored = 0
@@ -648,10 +727,13 @@ class HandsFreeListener:
         self._early_started_ms = self.detector.last_start_ms
         self._early_speech_frames = self.detector.speech_ms
         if not transcript.ok:
-            # A rejected decode cannot be trusted either way; process it now so a wake word
-            # that is still readable in the raw text gets "Sorry, say that again.".
-            self._process(transcript, pcm)
-        elif early_command_is_complete(
+            # B6: a rejected decode is never passed to wake.py or the fast path. Wait for
+            # the final check, which ignores it without opening or extending the follow-up
+            # window. The old code fed "I didn't hear anything." to wake.py, which matched
+            # the polluted learned alias "i didn" (score 0.86) and looped forever.
+            logger.info("Hands-free: early decode rejected; waiting for the final check.")
+            return
+        if early_command_is_complete(
             transcript.text,
             getattr(self.config, "wake_word", "ultron"),
             getattr(self.config, "wake_aliases", ""),
@@ -692,18 +774,46 @@ class HandsFreeListener:
     def _process(self, transcript: Transcript, pcm: bytes) -> None:
         started = self.detector.last_start_ms
         in_followup = self._followup_active and started <= self.followup_until_ms
-        wake_text = transcript.raw or transcript.text
+        text = (transcript.text or "").strip()
+        wake_text = (transcript.raw or text).strip()
+        verdict = transcript.reason or ("ok" if transcript.ok else "rejected")
+        if not transcript.ok or not text:
+            # Never feed an error string or a rejected decode to wake.py / fast_path. In the
+            # Nov 2 log "I didn't hear anything." matched the polluted alias "i didn" at
+            # 0.86 and kept the wake loop alive. A no_real_word turn neither opens nor
+            # extends the follow-up window.
+            self.ignored += 1
+            self._debug(
+                f"heard={wake_text!r} verdict={verdict} wake_match=False "
+                f"cmd='' ignored=no_real_word"
+            )
+            self._log_utterance("no_real_word")
+            self._say("heard noise, ignored")
+            self.detector.reset()
+            return
+
         wake_word = getattr(self.config, "wake_word", "ultron")
         wake_aliases = getattr(self.config, "wake_aliases", "")
         match = wake_match(wake_text, wake_word, wake_aliases, self.learned_aliases)
+        if not match.found and not in_followup:
+            # A command may contain the wake word after the first words ("Open Steam,
+            # Ultron can you open Discord for me?"). Accept that only when the remainder is
+            # a known fast-path sentence, so ordinary talk about Ultron is still ignored.
+            anywhere = wake_match_anywhere(
+                wake_text, wake_word, wake_aliases, self.learned_aliases
+            )
+            if anywhere.found:
+                candidate = strip_wake_prefixes(
+                    anywhere.command, wake_word, wake_aliases, self.learned_aliases
+                )
+                if candidate and match_fast_command(candidate) is not None:
+                    match = anywhere
         wake_found = match.found
-        raw_command = match.command
         # "Ultron, Ultron", "Ultron, I'll draw an open Firefox" and "Ultron, I drawn" must
         # reduce to "" / "open firefox"; repeated wake words are not a command.
         command = strip_wake_prefixes(
-            raw_command, wake_word, wake_aliases, self.learned_aliases
+            match.command, wake_word, wake_aliases, self.learned_aliases
         )
-        wake_repeated = bool(raw_command) and not command
         if wake_found and match.learned and command and match_fast_command(command) is None:
             # A learned spelling (for example "I'll turn") is only trusted when the rest
             # of the sentence is a known fast-path command. Otherwise it is ordinary talk.
@@ -713,9 +823,8 @@ class HandsFreeListener:
         if not wake_found and in_followup:
             wake_found = True
             used_followup = True
-            command = re.sub(r"\s+", " ", transcript.text or "").strip()
+            command = re.sub(r"\s+", " ", text).strip()
 
-        verdict = transcript.reason or ("ok" if transcript.ok else "rejected")
         self._debug(
             f"heard={wake_text!r} verdict={verdict} wake_match={wake_found} "
             f"score={match.ratio:.2f} cmd={command!r} "
@@ -732,20 +841,6 @@ class HandsFreeListener:
             return
 
         self._say("wake word heard")
-
-        if not transcript.ok:
-            if wake_repeated or self._accepts_short_wake_word(transcript, command):
-                # Repeated wake words trip the decoder's repetition rule; a short "Ultron"
-                # can score between -1.35 and -1.0 log-prob. Both are still the wake word,
-                # so answer "Yes?" instead of "Say that again.".
-                self._log_utterance("wake_only")
-                self.detector.reset()
-                self._speak(YES_REPLY)
-                return
-            self._log_utterance("too_short" if transcript.text == NO_SPEECH else "rejected_by_guard")
-            self.detector.reset()
-            self._speak(RETRY_REPLY)
-            return
 
         if not command:
             self._log_utterance("wake_only")
@@ -780,22 +875,6 @@ class HandsFreeListener:
             speech_start,
         )
         self._speak(reply)
-
-    def _accepts_short_wake_word(self, transcript: Transcript, command: str) -> bool:
-        """A short (<1.8 s) wake word may pass even at avg_logprob -1.35..-1.0.
-
-        Only when the transcript is exactly the wake word (no command) and the single
-        failing signal is average log-probability. One-word "Ultron" was rejected at
-        -1.0 in B3 while the user clearly said it.
-        """
-        if transcript.ok or command:
-            return False
-        if self.detector.stats()["duration_ms"] >= 1800:
-            return False
-        matched = re.fullmatch(r"avg_logprob=(-?\d+(?:\.\d+)?)", transcript.reason or "")
-        if not matched:
-            return False
-        return -1.35 <= float(matched.group(1)) < -1.0
 
     def _speak(self, text: str) -> None:
         self.speak(text)
@@ -862,12 +941,15 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey
     from assistant.safety.permissions import PermissionGate
     from assistant.speech.mic_input import apply_mic_source_volume
+    from assistant.speech.vad import get_shared_vad
     from assistant.tools.apps import close_app, open_app, switch_app
     from assistant.tools.desktop_control import (
         browser_tab_control,
         media_control,
         scroll_page,
         set_brightness,
+        set_terminal_context,
+        start_ydotool,
         system_info,
         take_screenshot,
         type_text,
@@ -881,6 +963,9 @@ def run_listen(config: AssistantConfig) -> int:
     _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
     if config.mic_source_volume:
         print(f"  Mic input: {mic_msg}", flush=True)
+    # One keyboard daemon for the whole session, and focus the last app before key actions.
+    start_ydotool()
+    set_terminal_context(True)
 
     gate = PermissionGate(config=config, mode=config.default_mode)
     registry = ToolRegistry(config=config, gate=gate, allow_prompts=False)
@@ -910,10 +995,12 @@ def run_listen(config: AssistantConfig) -> int:
     adapter = build_adapter(config)
     watchdog = WatchdogMonitor(config.max_steps, config.wall_clock_timeout_sec, config.idle_standdown_sec)
     loop = AgentLoop(config, adapter, registry, watchdog)
+    vad = get_shared_vad()
     voice = VoiceController(
         config=config,
         adapter=adapter,
         status_callback=lambda line: print(f"  -> {line}", flush=True),
+        vad=vad,
     )
 
     ok_ears, ears_msg = voice.load_ears()
@@ -968,6 +1055,7 @@ def run_listen(config: AssistantConfig) -> int:
         speak=speak,
         command_runner=run_command,
         save_debug=lambda pcm, tr, cmd: save_debug_attempt(WORKSPACE_DIR / "voice_debug", pcm, tr, cmd),
+        vad=vad,
     )
     registry.on_execute = listener.note_tool_call
     return listener.run()
