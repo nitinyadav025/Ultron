@@ -1,4 +1,184 @@
-# Ultron progress — Phase 5 B5 + Part C + Full Desktop Control (current)
+# Ultron progress — Phase 5 B6 (current)
+
+Last updated: 2026-11-02 (B6 in progress)
+
+## Phase 5 B6 - Neural VAD Endpointing, 1s LLM Brain & Smart Control (Nov 2)
+
+Work branch: `phase5-b6-smart-brain` (from `phase5-b5-full-control` @ `ff266f8`,
+local only, nothing pushed). This section supersedes every section below it.
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | Silero VAD + adaptive 850 ms endpointing, 12 s cap | DONE |
+| 2 | Wake aliases, error-loop guard, prefix stripping | DONE |
+| 3 | One LLM call per tool turn + compact schemas + compounds | DONE |
+| 4 | Natural tabs, web-app fallback, fast scroll/type | DONE |
+| 5 | `tests/test_b6_smart_brain.py` for every live failure | DONE (53 tests) |
+| 6 | Full pytest + benchmark | DONE (415 passed, 25/25) |
+| 7 | Docs + local commits | DONE |
+
+### Part 1 — Silero VAD + adaptive endpointing (DONE)
+
+- New `assistant/speech/vad.py` wraps `faster_whisper.vad.get_speech_timestamps`
+  (already bundled in `.venv`; verified import). It lazily loads the ONNX model once,
+  is thread-safe, and returns `None` if the model fails so the energy rules still run.
+- `record_until_silence` and `UtteranceDetector` now use:
+  - a rolling background floor (last 3 s of non-speech frames, 10th percentile), so a
+    fan at RMS 1700 raises `noise_floor` instead of leaving it stuck at 85;
+  - Silero-confirmed start when VAD is available (a fan cannot start an utterance);
+  - a trailing 900 ms VAD check every ~150 ms, evaluated over the last 850 ms;
+  - end at 850 ms of quiet (energy < 45 % of speech or within 6 dB of the floor, or VAD
+    hears 0 ms), with a 1.2 s VAD-silent backstop;
+  - recorder default `silence_ms` 850 ms, hands-free final `VOICE_SILENCE_MS` 1350 ms,
+    `VOICE_MAX_SECONDS` 12 s, `LISTEN_EARLY_CHECK_MS` 850 ms.
+- End threshold is capped at 50 % of the speaker's active level; the post-floor rule
+  never calls a frame near the speaker's own level silent. Without this the first replay
+  cut the 2400 speech when the fan raised the floor to 1700.
+- Replay (500 ms floor 100 + 2.0 s speech RMS 2400 + 10 s fan RMS 1700):
+  recorder `reason=silence` at **3360 ms**, i.e. **860 ms after speech ends**, never
+  `max_length`; the detector's early event is at the same 860 ms. A 3 s fan with VAD
+  hearing no speech raises the floor from 85 to **1622**.
+- Production wiring: `run_listen`, `run_cli_chat`, `VoiceController` and `wake-train`
+  pass the shared Silero wrapper. Unit tests leave it `None`, so synthetic tones still
+  use the deterministic energy rules.
+
+### Part 2 — wake aliases, error loop, prefix stripping (DONE)
+
+- `listen.py` never passes `verdict != ok`, empty text, or `"I didn't hear anything."`
+  to `wake.py`/`fast_path`. The turn logs `result=no_real_word`, prints
+  `· heard noise, ignored`, resets the detector and leaves the follow-up window
+  untouched. `test_no_real_word_never_reaches_wake_match` monkeypatches `wake_match` to
+  raise, so the old 0.86 `"i didn"` match is impossible.
+- `workspace/wake_aliases.json` was cleaned with the new filter (all 14 polluted prefixes
+  removed; the file now has `"aliases": {}`). `wake_train.py` only records prefixes when
+  the plain decode is `ok`, and `wake.py:is_safe_learned_alias` rejects
+  `<rejected...>`, `i`, `i didn`, `i didn t`, `i ll`, `i m`, `what do`, `what do you`,
+  `hey all`, and contraction fragments. `load_learned_aliases` re-filters old files.
+- `wake.py` adds `i'll turn`, `ill turn`, `here ultron`, `here drone`, `hailtone`,
+  `hey ultron`; every match strips its prefix plus fillers (`an, and, to, please, then,
+  so, can you`). `"Hey Ultron, Hey Ultron, Hey Ultron"` strips to `""` -> `"Yes?"`.
+- `ears.py:looks_like_repetition_loop` removes `ultron`/`hey` before the repeat check,
+  so repeated wake words are not a decoder loop.
+- A mid-sentence wake word (`"Open Steam, Ultron can you open Discord for me?"`) is handled
+  by `wake_match_anywhere`, which joins both sides with `and`; the listener accepts it
+  only when the result is a fast-path sentence.
+
+### Part 3 — one LLM call, compact schemas, compound fast path (DONE)
+
+- `agent_loop.py` collects every executed tool. If every result has a deterministic
+  `code_reply_for_tool`, it appends the joined reply to history and returns **without a
+  second llama-server call**. Two tools join as `"Steam is open. Discord is open."`; a tool
+  with no code builder (`read_file`) still gets the second call.
+- `registry.py` compact mode: 8 tools (`open_app, close_app, web_search,
+  open_first_result, type_text, scroll_page, set_volume, mute_audio`), short descriptions,
+  required params plus the few optional ones the model uses. Measured
+  `len(json.dumps(tools))/4 = 370` estimated tokens (1482 chars), under the ~380 target.
+  The default (Gemini/tests) still returns all 19 tools and all parameters.
+- `prompts.py` adds four natural-language tool examples and the "two actions -> call
+  every tool" rule; the local prompt is 737 characters.
+- `fast_path.py` supports compounds joined by `and`/`then`, multiple sentences, and the
+  comma-wake split. Examples: `open steam and open discord`,
+  `open a new tab and search for github`, `switch to firefox and scroll down`,
+  `open firefox and list my downloads`.
+
+### Part 4 — natural tabs, web apps, fast scroll/type (DONE)
+
+- Tab phrasings: `go to the new tab`, `open the tab`, `open a new tab in <browser>`,
+  `new tab in <browser>` (focus the browser first), `okay, close the tab`,
+  `close the tab <name>`, `shut this tab`, `reopen the tab`, `restore tab`.
+- `Search, Instagram` -> `web_search(instagram)`; `Open the first link, please.` uses
+  `SESSION.last_query`; `Can you open the first link of GitHub?` -> github.
+- `apps.py` web fallback: Discord, Instagram, YouTube, WhatsApp, ChatGPT, Gmail, GitHub,
+  Steam, Netflix, Spotify, Reddit, Twitter/X, Google, Claude. Local `.desktop`/apps.yaml
+  wins; otherwise the URL opens in `choose_browser()` and the reply is
+  `"Opening <Name> in <Browser>."`.
+- `desktop_control.py` starts one `ydotoold --socket-path=/tmp/.ultron_ydotool.sock` for
+  the session (`start_ydotool()` at chat/listen startup; atexit stop). Tests never start
+  it (`PYTEST_CURRENT_TEST` guard). `scroll_page` sends PageDown/PageUp (109/104), so
+  one `"scroll down"` moves a full screen and never prints `^[[B^[[B...`. Before scroll,
+  tab or type, `wmctrl -a <last app/browser>` runs (when the terminal context is on) and
+  waits 80 ms; an explicit "in the terminal" request skips the focus. `type_text` copies
+  via `wl-copy` and sends `ydotool type --key-delay 12 -- <text>`.
+
+### Part 5 — tests (DONE)
+
+`tests/test_b6_smart_brain.py` (53 tests) proves:
+1. VAD replay (85 floor, 2400 speech, 1700 fan) stops in 860 ms, never `max_length`;
+   the rolling floor reaches 1622 on a fan; the hard cap is 12 s; real Silero reads a
+   saved speech clip and says the saved 30 s fan is not speech.
+2. `"I didn't hear anything."` (`no_real_word`) never calls `wake_match`, never speaks and
+   never extends the follow-up window, even with `"i didn"` in the learned list.
+3. `"Hey Ultron, Hey Ultron, Hey Ultron"` is not `repetition_loop` and answers `"Yes?"`.
+4. `"I'll turn open VS code"` strips to `open vs code` and routes to `open_app(code)`.
+5. Every Nov 2 phrase: Firefox+GitHub search, first link (please/of), `Search, Instagram`,
+   new/close/reopen tab, `Open Steam, Ultron ... Discord`, scroll down.
+6. `agent_loop` calls the model once for `open_app`/multi-`open_app`, twice for
+   `read_file`; the compact schema is <= 380 estimated tokens.
+7. Web-app URLs for all 14 names, local install wins, daemon start-once, PageDown,
+   `--key-delay 12`, `wmctrl` focus, terminal skip.
+
+### Part 6 — verification (DONE)
+
+- `.venv/bin/python -m pytest -q` → **415 passed, 0 failed** (37.7 s).
+- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **1.403 ms** (mocked;
+  live mic/LLM latency is UNVERIFIED).
+- `compileall` OK; `git diff --check` clean.
+
+### Part 7 — head state (DONE)
+
+- Branch `phase5-b6-smart-brain` (from `phase5-b5-full-control` @ `ff266f8`), local only,
+  nothing pushed.
+- No `llama-server` on port 9931 and no `ydotoold` process or `/tmp/.ultron_ydotool.sock`
+  left by tests (checked below).
+- `.env`, `models/`, `workspace/`, `logs/`, `.backups/` and `.venv/` are not staged.
+
+### Files changed (B6)
+
+- New: `assistant/speech/vad.py`, `tests/test_b6_smart_brain.py`.
+- Speech/listening: `assistant/speech/recorder.py`, `assistant/speech/wake.py`,
+  `assistant/speech/ears.py`, `assistant/interfaces/listen.py`,
+  `assistant/interfaces/voice.py`, `assistant/interfaces/wake_train.py`.
+- Brain/tools: `assistant/brain/agent_loop.py`, `assistant/brain/fast_path.py`,
+  `assistant/brain/prompts.py`, `assistant/brain/tool_replies.py`,
+  `assistant/tools/registry.py`, `assistant/tools/apps.py`,
+  `assistant/tools/desktop_control.py`, `assistant/interfaces/cli.py`,
+  `assistant/config.py`, `.env.example`, `scripts/benchmark_phase5c.py`.
+- Tests updated: `tests/test_b4_live_bugs.py`, `tests/test_listen.py`,
+  `tests/test_config_defaults.py`, `tests/test_fast_path.py`,
+  `tests/test_b5_full_control.py`, `tests/test_reply_style.py`,
+  `tests/test_file_paths.py`.
+- Docs: `docs/PROGRESS.md`.
+
+### What changed for the user's Nov 2 phrases
+
+- `"I'll turn open VS code"` -> wake prefix stripped, `open_app("code")`, `"Code is open."`.
+- `"Open the first link, please."` -> `open_first_result(SESSION.last_query)`, reply
+  `"Opening the first result for github."`.
+- `"Search, Instagram"` -> `web_search("instagram")`, `"Searching for instagram in Firefox."`.
+- `"Go to the new tab"` -> `browser_tab_control("new_tab")`, `"Opened a new tab."`.
+- `"Close the tab Instagram"` -> `browser_tab_control("close_tab")`, `"Closed the tab."`.
+- `"Open Steam, Ultron can you open Discord for me?"` -> two `open_app` calls; each uses
+  the local app if installed, else the web fallback.
+- `"Scroll down."` -> one PageDown after focusing the last browser; no `^[[B`.
+
+### NEXT STEP — 5-step live test (the coding tool cannot use the mic/speakers)
+
+Run from `~/Downloads/assistant-project`:
+
+1. `.venv/bin/python main.py listen` — say **"Ultron"**, then **"open firefox"**. No
+   recording may last 12 s; a fan may stay on.
+2. Say **"Scroll down."** with Firefox focused. Expected: one full page, no `^[[B`.
+3. Say **"Ultron, open a new tab"** and **"Ultron, open the first link, please."**
+   (after a search). Expected: one tab; the first GitHub result.
+4. Say **"Ultron, open Steam"** and **"Ultron, open Discord"**. Expected: Steam locally if
+   installed; Discord in the browser with `"Opening Discord in Firefox."`.
+5. Say **"Ultron, I'm done with Firefox, shut it down."** Expected: `"Closed Firefox."`;
+   then check `pgrep -a ydotoold` (one daemon while listen runs) and `ss -ltnp | grep 9931`
+   (llama-server only while the app runs).
+
+---
+
+# Ultron progress — Phase 5 B5 + Part C + Full Desktop Control (HISTORY, superseded by B6)
 
 Last updated: 2026-11-01 (B5 + Part C code, tests and benchmark complete)
 
