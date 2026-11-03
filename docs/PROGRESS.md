@@ -166,10 +166,19 @@ Run from `~/Downloads/assistant-project`:
 
 ### Head state (Phase 6)
 
-- Branch `phase6-intelligent-agent`, local only, nothing pushed.
-- Commits are listed in the final handoff after the docs commit; working tree is clean.
-- No `llama-server` on port 9931 and no `ydotoold` process left by tests (verified in the
-  final report).
+- Branch `phase6-intelligent-agent` (from `phase5-b6-smart-brain` @ `8e2646f`), local only,
+  **nothing pushed**.
+- Commits:
+  - `07781dc` — P6 parts 1–2: AGC guard, lexical prompt, phonetic repairs
+  - `2e0bc2a` — P6 part 3: screen context and in-tab site search
+  - `16a8448` — P6 parts 4–5: flat history, natural replies, skills
+  - `a970252` — P6 part 6: Phase 6 suite and benchmark expectations
+  - `8350d0e` — P6 part 7: project bible and progress checkpoint
+- Final pytest: **450 passed, 0 failed, 0 errors**; benchmark **25/25**, average
+  **2.063 ms** (mocked).
+- `ss -ltnp | grep 9931` → **empty** (no llama-server).
+- `pgrep -a ydotoold` → **empty** (no keyboard daemon).
+- Working tree clean; `.env` (only the new `SEARCH_ENGINE=google` line) was not staged.
 
 ---
 

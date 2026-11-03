@@ -466,7 +466,10 @@ executes both actions.
 - `main.py teach` and `main.py import-skills` verified in an isolated
   `ULTRON_WORKSPACE_DIR`: both skills were written to `workspace/learned_skills.json`.
 - `compileall` OK; `git diff --check` clean.
-- Commit hashes and final process checks are added after the final commit (see §7).
+- Commits on `phase6-intelligent-agent`: `07781dc` (parts 1–2), `2e0bc2a` (part 3),
+  `16a8448` (parts 4–5), `a970252` (part 6), `8350d0e` (part 7 docs).
+- Final checks: `ss -ltnp | grep 9931` → empty; `pgrep -a ydotoold` → empty; working tree
+  clean; `.env` never staged.
 
 ---
 
