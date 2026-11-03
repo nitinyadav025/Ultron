@@ -473,14 +473,16 @@ executes both actions.
 
 ### 6.7 Part 7 — final verification
 
-- `.venv/bin/python -m pytest -q` → **450 passed, 0 failed, 0 errors** (39.19 s).
+- `.venv/bin/python -m pytest -q` → **450 passed, 0 failed, 0 errors** (38.98 s final run;
+  39.19 s first Phase 6 run).
 - `.venv/bin/python main.py benchmark` → **25/25 passed**, average **2.063 ms** (mocked;
   live mic/LLM latency UNVERIFIED).
 - `main.py teach` and `main.py import-skills` verified in an isolated
   `ULTRON_WORKSPACE_DIR`: both skills were written to `workspace/learned_skills.json`.
 - `compileall` OK; `git diff --check` clean.
 - Commits on `phase6-intelligent-agent`: `07781dc` (parts 1–2), `2e0bc2a` (part 3),
-  `16a8448` (parts 4–5), `a970252` (part 6), `8350d0e` (part 7 docs).
+  `16a8448` (parts 4–5), `a970252` (part 6), `8350d0e` (part 7 docs), `9d2ee28`
+  (head state), `67d52fa` (flat-prompt verification), plus the final docs commit.
 - Final checks: `ss -ltnp | grep 9931` → empty; `pgrep -a ydotoold` → empty; working tree
   clean; `.env` never staged.
 

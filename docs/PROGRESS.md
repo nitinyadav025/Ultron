@@ -122,7 +122,8 @@ only, nothing pushed).
 
 ### Part 6 — verification
 
-- `.venv/bin/python -m pytest -q` → **450 passed, 0 failed, 0 errors** (39.19 s).
+- `.venv/bin/python -m pytest -q` → **450 passed, 0 failed, 0 errors** (38.98 s final run;
+  39.19 s first Phase 6 run).
 - `.venv/bin/python main.py benchmark` → **25/25 passed**, average **2.063 ms** (mocked;
   live mic/LLM latency is UNVERIFIED).
 - New `tests/test_phase6_intelligent_agent.py` (31 tests) covers the 9 permission tests,
@@ -179,6 +180,9 @@ Run from `~/Downloads/assistant-project`:
   - `16a8448` — P6 parts 4–5: flat history, natural replies, skills
   - `a970252` — P6 part 6: Phase 6 suite and benchmark expectations
   - `8350d0e` — P6 part 7: project bible and progress checkpoint
+  - `9d2ee28` — head state: hashes, 450 tests, clean process checks
+  - `67d52fa` — pin the flat-prompt plateau and record measured sizes
+  - final docs commit (this file) follows the verification commit
 - Final pytest: **450 passed, 0 failed, 0 errors**; benchmark **25/25**, average
   **2.063 ms** (mocked).
 - `ss -ltnp | grep 9931` → **empty** (no llama-server).
