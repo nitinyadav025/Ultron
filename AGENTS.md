@@ -1,4 +1,6 @@
-Before anything else, read docs/PROGRESS.md and continue from its NEXT STEP.
+Before anything else, read `docs/ULTRON_PROJECT_BIBLE.md` (the complete project history,
+architecture, failure catalogue and Phase 6 results), then `docs/PROGRESS.md`, and continue
+from its NEXT STEP.
 
 # Ultron — Local Voice Assistant
 
@@ -7,7 +9,8 @@ being migrated from the Gemini cloud stack to a fully local one: llama.cpp LFM3-
 (`http://127.0.0.1:9931/v1`), faster-whisper ears, Piper mouth. The GTX 1650 (4 GB) is reserved
 for the LLM only; ears and mouth run on CPU.
 
-**At the start of every session, read `docs/ULTRON_LOCAL_HANDOFF.md` first.**
+**At the start of every session, read `docs/ULTRON_PROJECT_BIBLE.md` first, then
+`docs/ULTRON_LOCAL_HANDOFF.md`.**
 
 ## Rules
 - Do ONE phase at a time, then STOP and tell the user exactly how to test it.

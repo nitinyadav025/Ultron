@@ -1,6 +1,177 @@
-# Ultron progress — Phase 5 B6 (current)
+# Ultron progress — Phase 6 (current)
 
-Last updated: 2026-11-02 (B6 in progress)
+Last updated: 2026-11-03 (Phase 6 code, tests and docs complete; live microphone test pending)
+
+> **Read `docs/ULTRON_PROJECT_BIBLE.md` first.** It is the single, detailed entry point:
+> architecture, every phase, the live-failure catalogue with root causes/fixes, the Phase 6
+> result, limitations, roadmap, runbook and the exact resume procedure.
+
+## Phase 6 - Screen-Aware LLM Brain, In-Tab Search, AGC Guard & Skill Training (Nov 3)
+
+Work branch: `phase6-intelligent-agent` (from `phase5-b6-smart-brain` @ `8e2646f`, local
+only, nothing pushed).
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | Audit/fix the 9 reported permission-test errors | DONE (not reproducible; 12/12 and full suite 0 errors) |
+| 2 | Dynamic mic AGC guard + Whisper lexical priming + phonetic repairs | DONE |
+| 3 | `wmctrl -l` screen awareness, Google default, site/in-tab search | DONE |
+| 4 | LLM-first brain, 3-turn history cap, screen header, professional replies | DONE |
+| 5 | Trainable skills + experience dataset | DONE |
+| 6 | `tests/test_phase6_intelligent_agent.py`, full pytest, benchmark | DONE (450 passed, 25/25) |
+| 7 | Docs, final verification, local commits | DONE (see head state) |
+
+### Part 1 — the 9 permission errors
+
+- User report: `.venv/bin/python -m pytest -q` → `415 passed, 9 errors` in
+  `tests/test_permission_modes.py`, including `test_confirm_tier_tools_still_ask` and
+  `test_untrusted_content_still_forces_confirmation`.
+- Re-checked at `8e2646f` on Nov 3:
+  - `tests/test_permission_modes.py -v` → **12 passed in 0.72 s**.
+  - full `pytest -q` → **415 passed in 46.79 s**.
+- The file never reads stdin: every gate in it receives an explicit `confirm_callback`.
+  No permission check was weakened. The report is kept in the failure catalogue; no
+  reproducible cause was found at HEAD.
+- Phase 6 adds a subprocess guard test: `tests/test_phase6_intelligent_agent.py` reruns
+  the permission module and asserts **12 passed, 0 errors**.
+
+### Part 2 — AGC guard, lexical prompt, phonetic repair
+
+- `assistant/speech/mic_input.py`:
+  - `AGC_PEAK_THRESHOLD=32700`, `AGC_RMS_THRESHOLD=3500`.
+  - `agc_guard_needed(peak, rms)` matches exactly the Nov 3 Brave signature.
+  - `guard_mic_agc()` restores `MIC_SOURCE_VOLUME` or **0.21** in a daemon thread.
+  - `schedule_mic_volume_restore()` re-applies the safe level 1.5 s after a browser launch.
+  - Tests can inject a runner; `PYTEST_CURRENT_TEST`/`ULTRON_NO_MIC` stop any real `wpctl`.
+- Wired into `VoiceController._finish_recording` (`/voice`, voice-test) and
+  `HandsFreeListener._process` (listen). Browser hooks are in `web.open_url` and
+  `apps._launch_match`.
+- Whisper: `WHISPER_INITIAL_PROMPT` default is a **153-character natural sentence**
+  (`Ultron, Hey Ultron. Commands: … F1, scroll down, new tab, close tab, type.`), passed as
+  `initial_prompt`; an explicit empty value disables it. Hotwords stay opt-in.
+- Real saved-clip comparison (base.en, CPU int8, 2026-11-03):
+  - 8 valid command clips: **8/8 semantically correct with and without the prompt**
+    (the prompt changed punctuation/capitalisation on one clip, not meaning).
+  - 8 saved single-“Ultron” clips: **6/8 wake matches without prompt → 8/8 with prompt**
+    (the two previously rejected clips became “Ultron”).
+  - 4 saved “Hey Ultron” clips: **2/4 both ways**; the prompt did not fix those two.
+  - No word-list echo returned; longest prompt-enabled wake transcript < 120 chars.
+- `wake.py`: added risky aliases `hey everyone`, `iron`, `here drawn`, `altron`,
+  `all drawn`; they only wake Ultron when followed by a real fast-path command (or alone).
+  Phonetic repairs: `third/hurt/sir youtube` → `search youtube` (with a query:
+  `search <q> in youtube`), and `right <text>` → `write <text>`.
+
+### Part 3 — screen awareness and in-tab search
+
+- `assistant/brain/context.py`: `SESSION.open_windows`, `active_site`, `last_site`,
+  `read_window_titles()` (`wmctrl -l`, 0.2 s) and `screen_line()`.
+  `get_screen_context()` refreshes browser/site from real titles.
+- Live check on this machine: `wmctrl -m` → GNOME Shell, exit 0; `wmctrl -l` returned no
+  titles at check time because no GUI windows were open. The parser is covered by
+  deterministic tests.
+- `web.py`:
+  - Google is the default (`SEARCH_ENGINE=google`); `.env.example` updated and
+    `SEARCH_ENGINE=google` appended to `.env`.
+  - `web_search(query, browser=None, site=None, in_current_tab=False)` supports YouTube,
+    GitHub, Reddit, Wikipedia, Google, Amazon, Spotify, Gmail URLs.
+  - “search f1 in youtube” → `web_search(query="f1", site="youtube")` with
+    `https://www.youtube.com/results?search_query=f1`.
+  - “search f1” while YouTube is the active site → the same URL in the **current tab**.
+  - In-tab navigation: focus with `wmctrl -a`, Ctrl+L, `wl-copy`, Ctrl+V, Enter via
+    `ydotool`; falls back to opening the URL if injection is unavailable.
+  - `open_first_result` never uses `btnI=1`: known brands open their canonical site,
+    YouTube can open the first parsed video, other queries use a clean first-result fetch
+    or the Google results page.
+  - Fast path supports “play/click/open first video” (needs a previous query).
+- Prompt/tool schema: `web_search` now exposes `site` and `in_current_tab`; the compact
+  schema stays under the measured token cap.
+
+### Part 4 — LLM-first brain, flat history, professional replies
+
+- `AgentLoop.run_task` now wraps `_run_task`:
+  - prunes before each turn to 5 messages, then the new user message keeps the prompt at
+    ≤6;
+  - prunes after every turn to **3 text-only turns / 6 messages**, retaining only the
+    current turn’s tool protocol when it is still needed.
+- Every local LLM call receives one compact `Screen: browser=…, site=…, windows=[…]` line.
+- `prompts.py` tells the model that input is STT, that screen state is live, and that
+  `learn_skill` exists. Local prompt length: **784 characters** (under the 800 guard).
+- `tool_replies.py` speaks natural professional sentences, e.g.
+  “I’ve opened Firefox for you.”, “Searching YouTube for F1 right now.”,
+  “I’ve closed that tab.”, “I’ve scrolled the page down.”,
+  “I’ve typed that into the active window.”
+
+### Part 5 — skills and experience dataset
+
+- New `assistant/brain/skills.py`, backed by `config/learned_skills.json` and
+  `workspace/learned_skills.json` (workspace wins).
+- Voice forms: “remember when I say …, …”, “learn skill … means …”, “when I say …, …”.
+- CLI: `.venv/bin/python main.py teach "<trigger>" "<action1>; <action2>"` and
+  `.venv/bin/python main.py import-skills <path.json>` (verified in a temp workspace).
+- `AgentLoop` matches a skill by exact/prefix/keyword/fuzzy score ≥0.80, executes the fast
+  path action chain, and otherwise injects the top two skills as a compact `Skills:` hint.
+- `learn_skill` tool registered in CLI, GUI and listen.
+- `workspace/training_dataset.jsonl` logs only accepted wake commands:
+  timestamp, raw/repaired transcript, screen context, tools, reply and latency. No audio,
+  no secrets, no ignored speech.
+
+### Part 6 — verification
+
+- `.venv/bin/python -m pytest -q` → **450 passed, 0 failed, 0 errors** (39.19 s).
+- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **2.063 ms** (mocked;
+  live mic/LLM latency is UNVERIFIED).
+- New `tests/test_phase6_intelligent_agent.py` (31 tests) covers the 9 permission tests,
+  AGC, lexical prompt, screen/site/in-tab search, phonetic repairs, wake aliases, 15-turn
+  history cap, skills and the dataset.
+- `compileall` OK; `git diff --check` clean.
+
+### Files changed (Phase 6)
+
+- New: `assistant/brain/skills.py`, `config/learned_skills.json`,
+  `tests/test_phase6_intelligent_agent.py`, `docs/ULTRON_PROJECT_BIBLE.md`.
+- Speech: `assistant/speech/mic_input.py`, `assistant/speech/ears.py`,
+  `assistant/speech/wake.py`, `assistant/interfaces/voice.py`,
+  `assistant/interfaces/listen.py`.
+- Brain/tools: `assistant/brain/context.py`, `assistant/brain/fast_path.py`,
+  `assistant/brain/agent_loop.py`, `assistant/brain/prompts.py`,
+  `assistant/brain/tool_replies.py`, `assistant/tools/web.py`,
+  `assistant/tools/apps.py`, `assistant/tools/desktop_control.py`,
+  `assistant/tools/registry.py`, `assistant/config.py`, `main.py`,
+  `assistant/interfaces/cli.py`, `assistant/interfaces/gui.py`.
+- Tests updated: `test_ears.py`, `test_fast_path.py`, `test_web.py`,
+  `test_b4_live_bugs.py`, `test_b5_full_control.py`, `test_b6_smart_brain.py`,
+  `test_reply_style.py`, `scripts/benchmark_phase5c.py`.
+- Config/docs: `.env.example`, `.env` (SEARCH_ENGINE only, not committed), `AGENTS.md`,
+  `docs/PROGRESS.md`, `docs/ULTRON_PROJECT_BIBLE.md`.
+
+### NEXT STEP — 5-step live test (the coding tool cannot use the mic/speakers)
+
+Run from `~/Downloads/assistant-project`:
+
+1. `.venv/bin/python main.py listen` — say **“Ultron, open YouTube”**, then
+   **“search f1 in youtube”**. Expected: one tab navigates to
+   `https://www.youtube.com/results?search_query=f1`; Ultron says
+   “Searching YouTube for f1 right now.”
+2. With YouTube already open, say **“Ultron, search f1”**. Expected: the same tab searches
+   YouTube (no duplicate tab), not Google.
+3. Say **“Ultron, Hey everyone open firefox”** and **“Ultron, Iron search for youtube”**.
+   Expected: Firefox opens; the second searches YouTube. Say **“Third YouTube”** after the
+   wake word: same result.
+4. Open Brave, then speak a command at normal volume and check the next utterance:
+   `logs/assistant.log` must show `Mic AGC guard: restoring @DEFAULT_AUDIO_SOURCE@ to 0.21`
+   if Brave boosted the source; peak should return near the old level.
+5. Say **“Ultron, remember when I say work mode, open code and open github”**, then
+   **“Ultron, work mode”**. Expected: “I’ve learned …” and both apps open. Check
+   `workspace/training_dataset.jsonl` has the accepted command with tools and reply.
+
+### Head state (Phase 6)
+
+- Branch `phase6-intelligent-agent`, local only, nothing pushed.
+- Commits are listed in the final handoff after the docs commit; working tree is clean.
+- No `llama-server` on port 9931 and no `ydotoold` process left by tests (verified in the
+  final report).
+
+---
 
 ## Phase 5 B6 - Neural VAD Endpointing, 1s LLM Brain & Smart Control (Nov 2)
 
