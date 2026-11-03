@@ -388,7 +388,7 @@ class RecordingRegistry:
                     "ok": True,
                     "app_name": display,
                     "web_app": True,
-                    "reply": f"Opening {display} in Firefox.",
+                    "reply": f"I've opened {display} in Firefox.",
                 },
             }
         if tool_name == "web_search":
@@ -407,7 +407,7 @@ class RecordingRegistry:
                 "raw_summary": {
                     "ok": True,
                     "query": query,
-                    "reply": f"Opening the first result for {query}.",
+                    "reply": f"I've opened the first result for {query}.",
                 },
             }
         if tool_name == "switch_app":
@@ -454,7 +454,7 @@ def test_can_you_open_firefox_and_search_for_github() -> None:
     registry = RecordingRegistry()
 
     assert try_fast_path(registry, "Can you open Firefox and search for GitHub?") == (
-        "Searching for github in Firefox."
+        "Searching the web for github in Firefox right now."
     )
     assert registry.calls == [("web_search", {"query": "github", "browser": "firefox"})]
 
@@ -465,7 +465,7 @@ def test_open_the_first_link_please_uses_the_last_query() -> None:
 
     reply = try_fast_path(registry, "Open the first link, please.")
 
-    assert reply == "Opening the first result for github."
+    assert reply == "I've opened the first result for github."
     assert registry.calls == [
         ("open_first_result", {"query": "github", "browser": "firefox"})
     ]
@@ -475,7 +475,7 @@ def test_can_you_open_the_first_link_of_github() -> None:
     registry = RecordingRegistry()
 
     assert try_fast_path(registry, "Can you open the first link of GitHub?") == (
-        "Opening the first result for github."
+        "I've opened the first result for github."
     )
     assert registry.calls == [("open_first_result", {"query": "github"})]
 
@@ -483,7 +483,7 @@ def test_can_you_open_the_first_link_of_github() -> None:
 def test_search_comma_instagram() -> None:
     registry = RecordingRegistry()
 
-    assert try_fast_path(registry, "Search, Instagram") == "Searching for instagram in Firefox."
+    assert try_fast_path(registry, "Search, Instagram") == "Searching the web for instagram in Firefox right now."
     assert registry.calls == [("web_search", {"query": "instagram", "browser": None})]
 
 
@@ -498,7 +498,7 @@ def test_search_comma_instagram() -> None:
 def test_new_tab_phrasings(text: str) -> None:
     registry = RecordingRegistry()
 
-    assert try_fast_path(registry, text) == "Opened a new tab."
+    assert try_fast_path(registry, text) == "I've opened a new tab."
     assert registry.calls == [("browser_tab_control", {"action": "new_tab"})]
 
 
@@ -507,7 +507,7 @@ def test_new_tab_in_a_named_browser_focuses_it_first() -> None:
 
     reply = try_fast_path(registry, "Open a new tab in Brave")
 
-    assert reply == "Switching to Brave. Opened a new tab."
+    assert reply == "I've switched to Brave. I've opened a new tab."
     assert registry.calls == [
         ("switch_app", {"app_name": "brave"}),
         ("browser_tab_control", {"action": "new_tab"}),
@@ -521,7 +521,7 @@ def test_new_tab_in_a_named_browser_focuses_it_first() -> None:
 def test_close_tab_phrasings(text: str) -> None:
     registry = RecordingRegistry()
 
-    assert try_fast_path(registry, text) == "Closed the tab."
+    assert try_fast_path(registry, text) == "I've closed that tab."
     assert registry.calls == [("browser_tab_control", {"action": "close_tab"})]
 
 
@@ -529,7 +529,7 @@ def test_close_tab_phrasings(text: str) -> None:
 def test_reopen_tab_phrasings(text: str) -> None:
     registry = RecordingRegistry()
 
-    assert try_fast_path(registry, text) == "Reopened the last tab."
+    assert try_fast_path(registry, text) == "I've reopened the last tab."
     assert registry.calls == [("browser_tab_control", {"action": "reopen_tab"})]
 
 
@@ -538,7 +538,7 @@ def test_open_steam_and_discord_from_the_merged_phrase() -> None:
 
     reply = try_fast_path(registry, "Open Steam, Ultron can you open Discord for me?")
 
-    assert reply == "Opening Steam in Firefox. Opening Discord in Firefox."
+    assert reply == "I've opened Steam in Firefox. I've opened Discord in Firefox."
     assert registry.calls == [
         ("open_app", {"app_name": "steam"}),
         ("open_app", {"app_name": "discord"}),
@@ -558,7 +558,7 @@ def test_scroll_down_is_one_page_not_five_arrows(monkeypatch: pytest.MonkeyPatch
     registry = ToolRegistry(config=cfg, gate=gate)
     registry.register(dc.scroll_page)
 
-    assert try_fast_path(registry, "Scroll down.") == "Scrolled down."
+    assert try_fast_path(registry, "Scroll down.") == "I've scrolled the page down."
     assert calls == [["key", "109:1", "109:0"]]
 
 
@@ -577,9 +577,9 @@ def test_web_app_fallback_opens_the_builtin_url(monkeypatch: pytest.MonkeyPatch)
 
     assert result["ok"] is True and result["web_app"] is True
     assert result["url"] == "https://discord.com/app"
-    assert result["reply"] == "Opening Discord in Firefox."
+    assert result["reply"] == "I've opened Discord in Firefox."
     assert opened == [("https://discord.com/app", "firefox")]
-    assert open_app_reply({"ok": True, "raw_summary": result}) == "Opening Discord in Firefox."
+    assert open_app_reply({"ok": True, "raw_summary": result}) == "I've opened Discord in Firefox."
 
 
 @pytest.mark.parametrize(
@@ -692,7 +692,7 @@ def test_agent_loop_makes_one_call_after_open_app() -> None:
 
     result = _agent_loop(adapter).run_task("open firefox")
 
-    assert result.reply == "Firefox is open."
+    assert result.reply == "I've opened Firefox for you."
     assert adapter.calls == 1
 
 
@@ -703,7 +703,7 @@ def test_agent_loop_joins_two_code_replies_without_a_second_call() -> None:
 
     result = _agent_loop(adapter).run_task("open steam and discord")
 
-    assert result.reply == "Steam is open. Discord is open."
+    assert result.reply == "I've opened Steam for you. I've opened Discord for you."
     assert adapter.calls == 1
 
 

@@ -122,7 +122,7 @@ def test_open_first_link_never_calls_open_app() -> None:
     registry = _registry(calls)
 
     assert try_fast_path(registry, "Open the first link for the GitHub.") == (
-        "Opening the first result for github."
+        "I've opened the first result for github."
     )
     assert calls == [("open_first_result", {"query": "github"})]
 
@@ -143,7 +143,7 @@ def test_close_reply_is_built_from_the_real_result() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
     registry = _registry(calls)
 
-    assert try_fast_path(registry, "close firefox") == "Closed Firefox."
+    assert try_fast_path(registry, "close firefox") == "I've closed Firefox for you."
 
 
 def test_an_unclear_sentence_goes_to_the_llm() -> None:
@@ -169,14 +169,14 @@ def test_replies_are_built_in_code() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
     registry = _registry(calls)
 
-    assert try_fast_path(registry, "open firefox") == "Firefox is open."
+    assert try_fast_path(registry, "open firefox") == "I've opened Firefox for you."
     assert try_fast_path(registry, "mute") == "Audio is now muted."
     assert try_fast_path(registry, "unmute") == "Audio is now unmuted."
     assert try_fast_path(registry, "turn volume to thirty percent") == "Volume is now set to 30 percent."
     assert try_fast_path(registry, "list files in my downloads folder") == (
         "There are 3 items in your downloads folder."
     )
-    assert try_fast_path(registry, "open firefox and search for github") == "Searching for github in Firefox."
+    assert try_fast_path(registry, "open firefox and search for github") == "Searching the web for github in Firefox right now."
     assert try_fast_path(registry, "open the first result for github") == (
-        "Opening the first result for github."
+        "I've opened the first result for github."
     )

@@ -282,7 +282,7 @@ def test_fake_app_is_never_claimed_open() -> None:
 
 def test_wake_mishearing_extracts_open_firefox_and_runs_open_app() -> None:
     reply, calls = _fast_reply("open firefox")
-    assert reply == "Firefox is open."
+    assert reply == "I've opened Firefox for you."
     assert calls == [("open_app", {"app_name": "firefox"})]
 
     for text in ("I'll draw an open Firefox.", "Ultron open 5ox"):
@@ -318,7 +318,7 @@ def test_close_app_uses_pgrep_then_kill(monkeypatch: pytest.MonkeyPatch) -> None
         ["pgrep", "-x", "firefox-bin"],
         ["kill", "-TERM", "4242"],
     ]
-    assert close_app_reply({"ok": True, "raw_summary": result}) == "Closed Firefox."
+    assert close_app_reply({"ok": True, "raw_summary": result}) == "I've closed Firefox for you."
 
 
 def test_close_app_reports_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -328,7 +328,7 @@ def test_close_app_reports_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
     result = close_app("firefox")
 
     assert result["ok"] is True and result["running"] is False
-    assert close_app_reply({"ok": True, "raw_summary": result}) == "Firefox is not running."
+    assert close_app_reply({"ok": True, "raw_summary": result}) == "Firefox isn't running right now."
 
 
 def test_close_app_refuses_unknown_and_system_processes(monkeypatch: pytest.MonkeyPatch) -> None:

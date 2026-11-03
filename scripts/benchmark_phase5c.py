@@ -49,34 +49,34 @@ class BenchCase:
 
 
 CASES: tuple[BenchCase, ...] = (
-    BenchCase("open firefox", "open_app", {"app_name": "firefox"}, "Firefox is open."),
-    BenchCase("close firefox", "close_app", {"app_name": "firefox"}, "Closed Firefox."),
-    BenchCase("open files", "open_app", {"app_name": "files"}, "Files is open."),
-    BenchCase("switch to firefox", "switch_app", {"app_name": "firefox"}, "Switching to Firefox."),
+    BenchCase("open firefox", "open_app", {"app_name": "firefox"}, "I've opened Firefox for you."),
+    BenchCase("close firefox", "close_app", {"app_name": "firefox"}, "I've closed Firefox for you."),
+    BenchCase("open files", "open_app", {"app_name": "files"}, "I've opened Files for you."),
+    BenchCase("switch to firefox", "switch_app", {"app_name": "firefox"}, "I've switched to Firefox."),
     BenchCase(
         "close it",
         "close_app",
         {"app_name": "firefox"},
-        "Closed Firefox.",
+        "I've closed Firefox for you.",
         seed={"last_app": "firefox"},
     ),
     BenchCase(
         "open firefox and search for github",
         "web_search",
         {"query": "github", "browser": "firefox"},
-        "Searching for github in Firefox.",
+        "Searching the web for github in Firefox right now.",
     ),
     BenchCase(
         "search for python in firefox",
         "web_search",
         {"query": "python", "browser": "firefox"},
-        "Searching for python in Firefox.",
+        "Searching the web for python in Firefox right now.",
     ),
     BenchCase(
         "open the first link for github",
         "open_first_result",
         {"query": "github"},
-        "Opening the first result for github.",
+        "Opening GitHub for you.",
     ),
     BenchCase(
         "turn volume to 30 percent",
@@ -103,38 +103,38 @@ CASES: tuple[BenchCase, ...] = (
         "scroll down",
         "scroll_page",
         {"direction": "down", "amount": 1},
-        "Scrolled down.",
+        "I've scrolled the page down.",
     ),
     BenchCase(
         "scroll to the top",
         "scroll_page",
         {"direction": "top", "amount": 1},
-        "Scrolled to the top.",
+        "I've scrolled to the top.",
     ),
     BenchCase(
         "open a new tab",
         "browser_tab_control",
         {"action": "new_tab"},
-        "Opened a new tab.",
+        "I've opened a new tab.",
     ),
     BenchCase(
         "next tab",
         "browser_tab_control",
         {"action": "next_tab"},
-        "Switched to the next tab.",
+        "I've switched to the next tab.",
     ),
     BenchCase(
         "close tab",
         "browser_tab_control",
         {"action": "close_tab"},
-        "Closed the tab.",
+        "I've closed that tab.",
     ),
-    BenchCase("type hello world", "type_text", {"text": "hello world"}, "Typed that."),
+    BenchCase("type hello world", "type_text", {"text": "hello world"}, "I've typed that into the active window."),
     BenchCase(
         "switch window",
         "window_control",
         {"action": "next_window"},
-        "Switched windows.",
+        "I've switched windows.",
     ),
     BenchCase(
         "what is my battery",
@@ -181,7 +181,7 @@ def _fake_result(tool: str, args: dict[str, Any]) -> dict[str, Any]:
         }
     if tool == "open_first_result":
         query = str(args.get("query") or "")
-        return {"ok": True, "query": query, "reply": f"Opening the first result for {query}."}
+        return {"ok": True, "query": query, "reply": "Opening GitHub for you."}
     if tool == "set_volume":
         return {"ok": True, "requested_percent": args.get("percent")}
     if tool == "mute_audio":
@@ -194,7 +194,7 @@ def _fake_result(tool: str, args: dict[str, Any]) -> dict[str, Any]:
     if tool in ("scroll_page", "browser_tab_control", "window_control"):
         return {"ok": True, **{key: value for key, value in args.items()}}
     if tool == "type_text":
-        return {"ok": True, "reply": "Typed that.", "text_chars": len(str(args.get("text") or ""))}
+        return {"ok": True, "reply": "I've typed that into the active window.", "text_chars": len(str(args.get("text") or ""))}
     if tool == "system_info":
         kind = str(args.get("kind") or "")
         if kind == "battery":

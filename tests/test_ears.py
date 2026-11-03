@@ -123,11 +123,21 @@ def test_transcribe_passes_the_phase3_decode_settings(tmp_path: Path) -> None:
     assert call["beam_size"] == 1
     assert call["vad_filter"] is True
     assert call["condition_on_previous_text"] is False
-    # Regression: the old default hotword list leaked into the transcript. No prompt
-    # text of any kind may reach the decoder unless the user opts in.
+    # Regression: the old default hotword list leaked into the transcript. Hotwords stay
+    # opt-in; Phase 6 adds one natural lexical sentence (never a comma word list).
     assert "hotwords" not in call
-    assert "initial_prompt" not in call
+    assert call["initial_prompt"] == _cfg(tmp_path).whisper_initial_prompt
+    assert "Ultron" in call["initial_prompt"] and "YouTube" in call["initial_prompt"]
     assert "prompt" not in call
+
+
+def test_initial_prompt_can_be_disabled(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.whisper_initial_prompt = ""
+    model = FakeModel(["open firefox"])
+    ears = WhisperEars(cfg, model_factory=lambda _d: model)
+    ears.transcribe(_write_wav(tmp_path / "g.wav", _tone()))
+    assert "initial_prompt" not in model.calls[0]
 
 
 def test_hotwords_are_off_by_default_even_with_apps_yaml(tmp_path: Path) -> None:

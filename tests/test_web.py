@@ -1,17 +1,24 @@
-"""Web tools: URL building, safety, the real-challenge fallback and reply text."""
+"""Web tools: Google default, site/in-tab search, first result, safety and replies."""
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from assistant.brain.context import SESSION
 from assistant.brain.tool_replies import open_first_result_reply, web_search_reply
 from assistant.tools import web
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _clean_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    SESSION.reset()
+    monkeypatch.delenv("SEARCH_ENGINE", raising=False)
+    monkeypatch.delenv("FIRST_RESULT_METHOD", raising=False)
 
 
 def test_query_is_cleaned_and_capped() -> None:
@@ -19,10 +26,20 @@ def test_query_is_cleaned_and_capped() -> None:
     assert len(web.clean_query("x" * 500)) == 200
 
 
-def test_search_url_is_encoded() -> None:
+def test_google_is_the_default_search_engine() -> None:
     url = web.search_url("github cli & tools")
-    assert url.startswith("https://duckduckgo.com/?q=")
+    assert url.startswith("https://www.google.com/search?q=")
     assert " " not in url and "&" not in url.split("?q=")[1]
+
+
+def test_site_search_urls_are_built_in_code() -> None:
+    assert web.site_search_url("youtube", "f1") == "https://www.youtube.com/results?search_query=f1"
+    assert web.site_search_url("github", "ultron") == "https://github.com/search?q=ultron"
+    assert web.site_search_url("reddit", "python") == "https://www.reddit.com/search/?q=python"
+    assert web.site_search_url("wikipedia", "Ultron") == (
+        "https://en.wikipedia.org/w/index.php?search=Ultron"
+    )
+    assert web.site_search_url("not-a-site", "x") == web.search_url("x")
 
 
 def test_parser_reads_the_first_real_result() -> None:
@@ -31,8 +48,6 @@ def test_parser_reads_the_first_real_result() -> None:
 
 
 def test_parser_returns_nothing_on_the_real_bot_challenge() -> None:
-    # The trimmed first part of the page DuckDuckGo really returned on 2026-11-01
-    # (HTTP 202, "Unfortunately, bots use DuckDuckGo too."). No personal data.
     page = (FIXTURES / "ddg_challenge.html").read_text(encoding="utf-8")
     assert web.parse_first_result(page) == ""
 
@@ -86,54 +101,99 @@ def test_named_browser_receives_the_url(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls[0] == ["firefox", "https://example.org"]
 
 
-def test_web_search_builds_the_reply_in_code(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_web_search_builds_a_natural_reply_in_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(web, "open_url", lambda url, browser=None: {"ok": True, "url": url, "opened_with": "Firefox"})
 
     result = web.web_search("github", "firefox")
 
     assert result["ok"] is True
-    assert web_search_reply({"ok": True, "raw_summary": result}) == "Searching for github in Firefox."
+    assert result["url"] == "https://www.google.com/search?q=github"
+    assert web_search_reply({"ok": True, "raw_summary": result}) == (
+        "Searching the web for github in Firefox right now."
+    )
 
 
-def test_open_first_result_uses_ducky_without_scraping(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_in_youtube_uses_the_site_url(monkeypatch: pytest.MonkeyPatch) -> None:
     opened: list[str] = []
-    monkeypatch.setenv("FIRST_RESULT_METHOD", "ducky")
     monkeypatch.setattr(web, "open_url", lambda url, browser=None: opened.append(url) or {"ok": True})
-    monkeypatch.setattr(web, "fetch_first_result", lambda _q: pytest.fail("must not scrape"))
+
+    result = web.web_search("f1", browser="firefox", site="youtube")
+
+    assert result["ok"] is True
+    assert opened == ["https://www.youtube.com/results?search_query=f1"]
+    assert result["site"] == "youtube"
+    assert result["in_current_tab"] is False
+    assert web_search_reply({"ok": True, "raw_summary": result}) == (
+        "Searching YouTube for f1 right now."
+    )
+
+
+def test_search_uses_the_site_already_on_screen_in_the_current_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handled: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        web,
+        "_open_in_current_tab",
+        lambda url, browser: handled.append((url, browser)) or {"ok": True, "method": "current_tab"},
+    )
+    SESSION.active_site = "youtube"
+    SESSION.last_browser = "firefox"
+
+    result = web.web_search("f1")
+
+    assert handled == [("https://www.youtube.com/results?search_query=f1", "firefox")]
+    assert result["in_current_tab"] is True
+    assert result["site"] == "youtube"
+
+
+def test_open_first_result_opens_a_canonical_brand_without_scraping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(web, "open_url", lambda url, browser=None: opened.append(url) or {"ok": True})
+    monkeypatch.setattr(web, "fetch_first_result", lambda _q: pytest.fail("must not scrape a brand"))
 
     result = web.open_first_result("github")
 
-    assert opened == [web.DUCKY_URL + "github"]
-    assert result["method"] == "ducky"
-    assert result["reply"] == "Opening the first result for github."
-    assert open_first_result_reply({"ok": True, "raw_summary": result}) == "Opening the first result for github."
+    assert opened == ["https://github.com"]
+    assert result["method"] == "canonical"
+    assert result["reply"] == "Opening GitHub for you."
 
 
-def test_google_lucky_and_plain_search_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_open_first_result_uses_a_clean_fetch_or_google_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     opened: list[str] = []
     monkeypatch.setattr(web, "open_url", lambda url, browser=None: opened.append(url) or {"ok": True})
+    monkeypatch.setattr(web, "fetch_first_result", lambda _q: "https://example.org/python")
 
-    monkeypatch.setenv("FIRST_RESULT_METHOD", "google")
-    google = web.open_first_result("github")
-    assert opened[-1] == web.GOOGLE_LUCKY_URL + "github&btnI=1"
-    assert google["reply"] == "Opening the first result for github."
+    first = web.open_first_result("python tutorial")
+    assert opened[-1] == "https://example.org/python"
+    assert first["method"] == "first"
+    assert first["reply"] == "Opening the first result for python tutorial."
 
-    monkeypatch.setenv("FIRST_RESULT_METHOD", "search")
-    search = web.open_first_result("github")
-    assert opened[-1] == web.search_url("github")
-    assert search["reply"] == "Opening the search results for github."
-
-
-def test_unknown_first_result_method_falls_back_to_google(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FIRST_RESULT_METHOD", "nonsense")
-    url, method = web.first_result_url("github")
-    assert method == "google" and url.startswith(web.GOOGLE_LUCKY_URL)
+    monkeypatch.setattr(web, "fetch_first_result", lambda _q: "")
+    fallback = web.open_first_result("python tutorial")
+    assert opened[-1] == "https://www.google.com/search?q=python+tutorial"
+    assert fallback["method"] == "search"
+    assert fallback["reply"] == web.FIRST_RESULT_FAILED_REPLY
 
 
-def test_google_is_the_default_method(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FIRST_RESULT_METHOD", raising=False)
-    url, method = web.first_result_url("github")
-    assert method == "google" and url.endswith("&btnI=1")
+def test_first_result_url_never_uses_btnI() -> None:
+    assert web.first_result_url("github") == ("https://github.com", "canonical")
+    url, method = web.first_result_url("python tutorial")
+    assert method == "search" and url.startswith("https://www.google.com/search?q=")
+    assert "btnI" not in url
+
+
+def test_youtube_first_video_parses_a_video_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        web,
+        "_fetch_page",
+        lambda _url, _timeout=8.0: '{"videoId":"abcDEF12345","title":"F1"}',
+    )
+    assert web.fetch_youtube_first_video("f1") == "https://www.youtube.com/watch?v=abcDEF12345"
 
 
 def test_first_result_reports_a_browser_failure(monkeypatch: pytest.MonkeyPatch) -> None:

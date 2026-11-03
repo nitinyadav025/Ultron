@@ -290,7 +290,7 @@ def test_dynamic_app_can_be_opened_and_closed(fake_desktop_dir: Path, monkeypatc
     assert opened["ok"] is True and opened["app_name"] == "Test Editor"
     assert launched == [["test-editor"]]
     assert closed["ok"] is True and closed["closed"] is True
-    assert close_reply_for("test editor") == "Closed Test Editor."
+    assert close_reply_for("test editor") == "I've closed Test Editor for you."
 
 
 def close_reply_for(name: str) -> str:
@@ -318,7 +318,7 @@ def test_switch_app_focuses_a_running_window(fake_desktop_dir: Path, monkeypatch
     assert result["ok"] is True
     assert result["running"] is True and result["focused"] is True
     assert calls == [["pgrep", "-x", "test-editor"], ["wmctrl", "-a", "Test Editor"]]
-    assert code_reply_for_tool("switch_app", {"ok": True, "raw_summary": result}) == "Switching to Test Editor."
+    assert code_reply_for_tool("switch_app", {"ok": True, "raw_summary": result}) == "I've switched to Test Editor."
 
 
 def test_real_desktop_catalog_is_large() -> None:
@@ -417,7 +417,7 @@ def test_brightness_uses_gnome_dbus(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[0][:3] == ["gdbus", "call", "--session"]
     assert calls[0][-1] == "<int32 50>"
     assert code_reply_for_tool("set_brightness", {"ok": True, "raw_summary": result}) == (
-        "Brightness is now 50 percent."
+        "I've set the brightness to 50 percent."
     )
 
 
@@ -458,7 +458,7 @@ def test_screenshot_saves_to_the_workspace(tmp_path: Path, monkeypatch: pytest.M
 
     assert result["ok"] is True
     assert Path(result["path"]).is_file()
-    assert "Screenshot saved to" in code_reply_for_tool("take_screenshot", {"ok": True, "raw_summary": result})
+    assert "I've saved the screenshot to" in code_reply_for_tool("take_screenshot", {"ok": True, "raw_summary": result})
 
 
 # --------------------------------------------------------------------------------------
