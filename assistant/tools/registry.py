@@ -80,43 +80,38 @@ _COMPACT_DESCRIPTIONS: dict[str, str] = {
     "web_search": "Search the web.",
     "open_first_result": "Open first web result.",
     "type_text": "Type text in the focused window.",
+    "press_key": "Press enter, tab, escape, arrows or page keys.",
     "scroll_page": "Scroll the page.",
     "browser_tab_control": "Control browser tabs.",
     "window_control": "Control windows.",
     "set_brightness": "Set screen brightness.",
     "media_control": "Play, pause or skip media.",
-    "system_info": "Read battery, time or status.",
+    "system_info": "Read battery, date, time or status.",
     "take_screenshot": "Take a screenshot.",
+    "set_timer": "Set a countdown timer.",
     "learn_skill": "Learn a phrase and its actions.",
 }
 
-# The local model only sees these; every other command is handled by fast_path or the
-# deterministic desktop tools without a model round.
-LOCAL_SCHEMA_TOOLS = frozenset(
-    {
-        "open_app",
-        "close_app",
-        "web_search",
-        "open_first_result",
-        "type_text",
-        "scroll_page",
-        "set_volume",
-        "mute_audio",
-        "learn_skill",
-    }
-)
+# Phase 7 exposes EVERY registered desktop tool to the local model. The fast path still
+# handles common whole sentences first, and the static system prompt is cached once.
+LOCAL_SCHEMA_TOOLS = frozenset()
 
 # Optional parameters the local model may genuinely need. Everything else optional is
 # omitted: the Python default is still used when the model leaves it out.
 _LOCAL_OPTIONAL_PARAMS: dict[str, frozenset[str]] = {
-    "web_search": frozenset({"browser", "site"}),
-    "open_first_result": frozenset({"browser"}),
-    "scroll_page": frozenset({"direction"}),
+    "list_files": frozenset({"pattern"}),
+    "read_file": frozenset({"max_chars"}),
+    "web_search": frozenset({"browser", "site", "in_current_tab"}),
+    "open_first_result": frozenset({"browser", "site", "first_video"}),
+    "type_text": frozenset({"press_enter"}),
+    "press_key": frozenset(),
+    "scroll_page": frozenset({"direction", "amount"}),
     "set_volume": frozenset({"percent"}),
     "mute_audio": frozenset({"muted"}),
-    "set_brightness": frozenset({"percent"}),
+    "set_brightness": frozenset({"percent", "delta"}),
     "media_control": frozenset({"action"}),
     "system_info": frozenset({"kind"}),
+    "set_timer": frozenset({"label"}),
 }
 
 
@@ -212,7 +207,7 @@ class ToolRegistry:
         out: list[dict[str, Any]] = []
         for spec in self._tools.values():
             decl = spec.declaration
-            if compact and decl.name not in LOCAL_SCHEMA_TOOLS:
+            if compact and LOCAL_SCHEMA_TOOLS and decl.name not in LOCAL_SCHEMA_TOOLS:
                 continue
             parameters = decl.parameters
             required = list(parameters.required or []) if parameters else []

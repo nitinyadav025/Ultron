@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from assistant.config import AssistantConfig, load_config
+from assistant.config import WORKSPACE_DIR, AssistantConfig, load_config
 from assistant.safety.redact import redact_secrets
 from assistant.tools.registry import tool
 
@@ -79,6 +79,19 @@ _TEACH_PATTERNS = (
     ),
 )
 
+_MEMORY_ALIAS_PATTERN = re.compile(
+    r"^(?:ultron[ ,]+)?(?:please\s+)?remember\s+(?:that\s+)?(?P<alias>.+?)\s+means\s+(?P<target>.+)$",
+    re.I,
+)
+_MEMORY_FACT_PATTERN = re.compile(
+    r"^(?:ultron[ ,]+)?(?:please\s+)?remember\s+(?:that\s+)?(?P<key>my\s+.+?)\s+(?:is|are)\s+(?P<value>.+)$",
+    re.I,
+)
+_CHATML_SYSTEM = (
+    "You are Ultron, a sharp, warm, local Fedora GNOME voice assistant. "
+    "Reply in one or two complete spoken sentences and use tools when an action is needed."
+)
+
 _ACTIVE_CONFIG: AssistantConfig | None = None
 
 
@@ -111,6 +124,108 @@ def split_actions(text: str) -> tuple[str, ...]:
     """Split "open code; open github" or "open code and open github" into actions."""
     parts = [part.strip(" .") for part in _ACTION_SPLIT.split(text or "") if part.strip(" .")]
     return tuple(dict.fromkeys(part for part in parts if part))
+
+
+def _memory_file(config: AssistantConfig | None = None) -> Path:
+    cfg = _config(config)
+    return Path(getattr(cfg, "user_memory_file", WORKSPACE_DIR / "user_memory.json")).expanduser()
+
+
+def load_user_memory(config: AssistantConfig | None = None) -> dict[str, Any]:
+    """Read workspace/user_memory.json (facts and spoken aliases); never raises."""
+    try:
+        data = json.loads(_memory_file(config).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"facts": {}, "aliases": {}}
+    if not isinstance(data, dict):
+        return {"facts": {}, "aliases": {}}
+    facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
+    aliases = data.get("aliases") if isinstance(data.get("aliases"), dict) else {}
+    return {"facts": dict(facts), "aliases": dict(aliases)}
+
+
+def save_user_memory(config: AssistantConfig | None, memory: dict[str, Any]) -> Path:
+    """Atomically persist the user memory file."""
+    target = _memory_file(config)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": SKILL_FILE_VERSION,
+        "facts": dict(memory.get("facts") or {}),
+        "aliases": dict(memory.get("aliases") or {}),
+    }
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(target)
+    return target
+
+
+def memory_key(name: str) -> str:
+    cleaned = normalise(name)
+    return re.sub(r"^(?:my|the)\s+", "", cleaned).replace(" ", "_")
+
+
+def save_user_fact(config: AssistantConfig | None, key: str, value: str) -> str:
+    """Store a fact such as ``email = nitin@example.com``."""
+    cleaned_key = memory_key(key)
+    cleaned_value = re.sub(r"\s+", " ", value or "").strip().strip(" .")
+    if not cleaned_key or not cleaned_value:
+        raise ValueError("A memory needs a name and a value.")
+    memory = load_user_memory(config)
+    memory["facts"][cleaned_key] = cleaned_value
+    save_user_memory(config, memory)
+    return cleaned_key
+
+
+def save_user_alias(config: AssistantConfig | None, alias: str, target: str) -> tuple[str, str]:
+    """Store ``"loot risk" -> "lutris"`` so a misheard app name resolves later."""
+    cleaned_alias = normalise(alias)
+    cleaned_target = normalise(target)
+    cleaned_target = re.sub(r"^(?:open|launch|start|run)\s+", "", cleaned_target).strip()
+    if not cleaned_alias or not cleaned_target:
+        raise ValueError("An alias needs a spoken name and a target app.")
+    memory = load_user_memory(config)
+    memory["aliases"][cleaned_alias] = cleaned_target
+    save_user_memory(config, memory)
+    return cleaned_alias, cleaned_target
+
+
+def runtime_alias(name: str, config: AssistantConfig | None = None) -> str:
+    """Resolve a user-taught spoken alias (empty string when there is no match)."""
+    cleaned = normalise(name)
+    if not cleaned:
+        return ""
+    return str(load_user_memory(config)["aliases"].get(cleaned) or "")
+
+
+def memory_value(name: str, config: AssistantConfig | None = None) -> str:
+    """Return a stored fact (``"email"``), or '' when it was never taught."""
+    cleaned = memory_key(name)
+    if not cleaned:
+        return ""
+    return str(load_user_memory(config)["facts"].get(cleaned) or "")
+
+
+def parse_memory_teaching(text: str) -> tuple[str, str, str] | None:
+    """Parse "remember that <alias> means <app>" or "remember that my email is ...".
+
+    Returns ``("alias", spoken_name, target)`` or ``("fact", key, value)``.
+    """
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return None
+    alias_match = _MEMORY_ALIAS_PATTERN.match(cleaned)
+    if alias_match:
+        alias = alias_match.group("alias").strip(" ,.")
+        target = alias_match.group("target").strip(" ,.")
+        if alias and target:
+            return "alias", alias, target
+    fact_match = _MEMORY_FACT_PATTERN.match(cleaned)
+    if fact_match:
+        key = fact_match.group("key").strip(" ,.")
+        value = fact_match.group("value").strip(" ,.")
+        if key and value:
+            return "fact", key, value
+    return None
 
 
 def parse_teaching_command(text: str) -> tuple[str, tuple[str, ...]] | None:
@@ -290,6 +405,80 @@ def log_experience(
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError as exc:  # never break a voice turn because the log is unwritable
         logger.warning("Could not write the training dataset: %s", exc)
+
+
+def export_chatml_dataset(
+    config: AssistantConfig | None = None,
+    output: Path | str | None = None,
+) -> dict[str, Any]:
+    """Convert the experience log and learned skills into ChatML JSONL for fine-tuning.
+
+    One JSON object per line, each with a system/user/assistant ``messages`` list. Only
+    accepted commands and taught skills are included; secrets are redacted, audio and
+    ignored speech never existed in these files. The output is ready for Unsloth/QLoRA
+    ``messages`` fine-tuning.
+    """
+    cfg = _config(config)
+    source = Path(cfg.training_dataset_file).expanduser()
+    target = Path(output).expanduser() if output else (
+        WORKSPACE_DIR / "ultron_finetune_chatml.jsonl"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = source.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        user = str(record.get("repaired_transcript") or record.get("raw_transcript") or "").strip()
+        reply = str(record.get("reply") or "").strip()
+        if not user or not reply:
+            continue
+        tools = [str(name) for name in (record.get("tools_called") or []) if str(name)]
+        system = _CHATML_SYSTEM
+        if tools:
+            system += f" Tools used in this example: {', '.join(tools)}."
+        rows.append(
+            {
+                "messages": [
+                    {"role": "system", "content": redact_secrets(system)},
+                    {"role": "user", "content": redact_secrets(user)},
+                    {"role": "assistant", "content": redact_secrets(reply)},
+                ]
+            }
+        )
+
+    for skill in load_skills(cfg):
+        actions = "; ".join(skill.actions)
+        rows.append(
+            {
+                "messages": [
+                    {"role": "system", "content": _CHATML_SYSTEM},
+                    {"role": "user", "content": redact_secrets(skill.trigger)},
+                    {
+                        "role": "assistant",
+                        "content": redact_secrets(f"Running your saved actions: {actions}."),
+                    },
+                ]
+            }
+        )
+
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    temporary.replace(target)
+    return {"written": len(rows), "output": str(target)}
 
 
 @tool(risk_level="safe", read_only=False)

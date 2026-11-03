@@ -17,6 +17,84 @@ _UNTERMINATED_TOKEN = re.compile(r"<\|[A-Za-z0-9_]*")
 _LLAMA_TAG = re.compile(r"</?s>")
 _STRAY_ANGLE = re.compile(r"(?<!\w)<(?=\s|[A-Za-z])")
 
+# A reply cut off by the token limit often ends on one of these words. The list is the
+# one the live logs showed ("...goals on.", "...use for.") plus the usual connectors.
+_DANGLING_TAIL = frozenset(
+    {
+        "on",
+        "for",
+        "to",
+        "with",
+        "and",
+        "or",
+        "the",
+        "a",
+        "an",
+        "in",
+        "of",
+        "by",
+        "at",
+        "from",
+        "that",
+        "as",
+        "into",
+        "about",
+        "but",
+    }
+)
+_CLAUSE_BREAK = re.compile(r"[,;:]\s+")
+
+
+def _ends_with_terminal(text: str) -> bool:
+    return bool(text) and text.rstrip()[-1:] in _TERMINAL
+
+
+def _finish_sentence(text: str) -> str:
+    cleaned = text.rstrip(" ,;:-")
+    if not cleaned:
+        return ""
+    return cleaned if _ends_with_terminal(cleaned) else cleaned + "."
+
+
+def clean_llm_reply(text: str) -> str:
+    """Clean a local model reply and repair a sentence cut off by the token limit.
+
+    A reply that ends with a dangling preposition or conjunction ("...goals on.",
+    "...use for.") is trimmed back to the last complete sentence, then the last complete
+    clause, and finally to the last non-dangling word. The result always ends with clean
+    punctuation, so Piper never speaks a half sentence.
+    """
+    cleaned = clean_model_text(text)
+    if not cleaned:
+        return ""
+    # A complete question/exclamation may legitimately end on "for?" or "on!". Only a
+    # statement-shaped tail is treated as a token cut.
+    if cleaned.rstrip().endswith(("?", "!")):
+        return cleaned
+    words = cleaned.split()
+    if not words:
+        return ""
+    tail = words[-1].strip(".,;:!?\"'").lower()
+    if tail not in _DANGLING_TAIL:
+        return _finish_sentence(cleaned)
+
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    if len(sentences) > 1:
+        kept = " ".join(sentences[:-1]).strip()
+        if kept and _ends_with_terminal(kept):
+            return kept
+
+    breaks = list(_CLAUSE_BREAK.finditer(cleaned))
+    if breaks:
+        clause = cleaned[: breaks[-1].start()].strip()
+        if clause:
+            return _finish_sentence(clause)
+
+    trimmed = list(words)
+    while trimmed and trimmed[-1].strip(".,;:!?\"'").lower() in _DANGLING_TAIL:
+        trimmed.pop()
+    return _finish_sentence(" ".join(trimmed))
+
 
 def _sentence_key(sentence: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", sentence.lower()).strip()

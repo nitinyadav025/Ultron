@@ -121,8 +121,12 @@ class AssistantConfig:
     listen_debug: bool = False
     first_result_method: str = "google"
     search_engine: str = "google"
+    # auto: fast deterministic confirmations for actions, LLM for explanations/open
+    # questions. "fast" prefers the fast path even more; "llm" skips the fast path.
+    brain_replies: str = "auto"
     learned_skills_file: Path = PROJECT_ROOT / "config" / "learned_skills.json"
     user_skills_file: Path = WORKSPACE_DIR / "learned_skills.json"
+    user_memory_file: Path = WORKSPACE_DIR / "user_memory.json"
     training_dataset_file: Path = WORKSPACE_DIR / "training_dataset.jsonl"
     daily_token_cap: int = 500000
     save_screenshots: bool = False
@@ -232,6 +236,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
                 "WAKE_",
                 "SEARCH_",
                 "FIRST_RESULT_",
+                "ULTRON_",
             )
         ):
             merged[k] = v
@@ -329,6 +334,9 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     search_engine = (merged.get("SEARCH_ENGINE") or "google").strip().lower()
     if search_engine not in ("google", "duckduckgo", "bing"):
         search_engine = "google"
+    brain_replies = (merged.get("ULTRON_BRAIN_REPLIES") or "auto").strip().lower()
+    if brain_replies not in ("auto", "fast", "llm"):
+        brain_replies = "auto"
 
     backend = (merged.get("BACKEND") or "local").strip().lower()
     if backend not in ("local", "gemini"):
@@ -422,8 +430,10 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         listen_debug=listen_debug,
         first_result_method=first_result_method,
         search_engine=search_engine,
+        brain_replies=brain_replies,
         learned_skills_file=PROJECT_ROOT / "config" / "learned_skills.json",
         user_skills_file=WORKSPACE_DIR / "learned_skills.json",
+        user_memory_file=WORKSPACE_DIR / "user_memory.json",
         training_dataset_file=WORKSPACE_DIR / "training_dataset.jsonl",
         daily_token_cap=int(merged.get("DAILY_TOKEN_CAP", "500000")),
         save_screenshots=merged.get("SAVE_SCREENSHOTS", "false").lower() == "true",

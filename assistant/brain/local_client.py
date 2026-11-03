@@ -17,7 +17,7 @@ import httpx
 from google.genai import types
 
 from assistant.brain.gemini_client import TokenUsageStats
-from assistant.brain.reply_style import clean_model_text
+from assistant.brain.reply_style import clean_llm_reply
 from assistant.config import AssistantConfig
 from assistant.safety.redact import redact_secrets
 
@@ -158,7 +158,7 @@ class LocalAdapter:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
-        max_tokens: int = 512,
+        max_tokens: int = 220,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.select_model(),
@@ -169,6 +169,10 @@ class LocalAdapter:
             "stop": list(LOCAL_STOP_SEQUENCES),
             "stream": False,
             "max_tokens": max_tokens,
+            # Pin the request to slot 0 and reuse the cached static prompt prefix. The
+            # system message never changes, so llama-server keeps it in VRAM.
+            "id_slot": 0,
+            "cache_prompt": True,
         }
         if tools:
             payload["tools"] = tools
@@ -184,7 +188,7 @@ class LocalAdapter:
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("Local LLM server returned an unexpected response shape.") from exc
 
-        text = clean_model_text(str(message.get("content") or "").strip())
+        text = clean_llm_reply(str(message.get("content") or "").strip())
         usage = data.get("usage") or {}
         calls: list[dict[str, Any]] = []
         for index, raw_call in enumerate(message.get("tool_calls") or []):
@@ -239,7 +243,7 @@ class LocalAdapter:
         max_output_tokens: int | None = None,
     ) -> tuple[types.GenerateContentResponse, TokenUsageStats]:
         """Run one chat-completions turn against llama-server and return an SDK-shaped response."""
-        max_tokens = int(max_output_tokens or 512)
+        max_tokens = int(max_output_tokens or 220)
         messages = [{"role": "system", "content": redact_secrets(system_instruction)}]
         messages.extend(translate_history(contents))
 

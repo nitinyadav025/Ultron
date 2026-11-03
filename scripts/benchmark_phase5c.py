@@ -282,7 +282,23 @@ def _agent_reply(case: BenchCase, registry: BenchmarkRegistry) -> str:
     )
     adapter: Any = NeverAdapter() if case.mode == "timed_mute" else StubChatAdapter(case.expected_reply)
     loop = AgentLoop(config, adapter, registry, watchdog)  # type: ignore[arg-type]
-    return loop.run_task(case.text).reply
+    # The benchmark is fully mocked: never query gdbus/wmctrl/pgrep on the real desktop.
+    import assistant.brain.agent_loop as agent_loop_module
+
+    original = agent_loop_module.get_screen_context
+    agent_loop_module.get_screen_context = lambda: {
+        "windows": [],
+        "browser": "",
+        "site": "",
+        "focused_window": "",
+        "focused_app": "",
+        "app": "",
+        "last_action": "",
+    }
+    try:
+        return loop.run_task(case.text).reply
+    finally:
+        agent_loop_module.get_screen_context = original
 
 
 def _run_one(case: BenchCase) -> dict[str, Any]:

@@ -148,6 +148,12 @@ def close_app_reply(result: dict[str, Any]) -> str | None:
     display = _app_display(app) if app else "That app"
     if raw.get("unknown"):
         return f"I couldn't find an app named {app or 'that'}."
+    if raw.get("tab_closed"):
+        if not _result_ok(result):
+            return str(raw.get("error") or "I couldn't close that tab.")
+        if app.lower() in ("", "that", "tab", "this", "current"):
+            return "I've closed that tab for you."
+        return f"I've closed the {_app_display(app)} tab."
     if not _result_ok(result):
         return f"I couldn't close {display}."
     if raw.get("closed") is True:
@@ -176,6 +182,13 @@ def type_text_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't type that.")
     return str(raw.get("reply") or "I've typed that into the active window.")
+
+
+def press_key_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't press that key.")
+    return str(raw.get("reply") or "I've pressed that key.")
 
 
 def scroll_page_reply(result: dict[str, Any]) -> str | None:
@@ -283,11 +296,20 @@ def web_search_reply(result: dict[str, Any]) -> str | None:
     query = str(raw.get("query") or "").strip()
     site = str(raw.get("site") or "").strip()
     browser = str(raw.get("browser") or "").strip()
+    if site and not query:
+        return str(raw.get("reply") or f"Opening {_SITE_DISPLAY.get(site, site.title())}.")
     if site:
         return f"Searching {_SITE_DISPLAY.get(site, site.title())} for {query} right now."
     if browser:
         return f"Searching the web for {query} in {browser.title()} right now."
     return f"Searching the web for {query} right now."
+
+
+def set_timer_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't set that timer.")
+    return str(raw.get("reply") or "I've set the timer.")
 
 
 def open_first_result_reply(result: dict[str, Any]) -> str | None:
@@ -334,6 +356,8 @@ def code_reply_for_tool(tool_name: str, result: dict[str, Any]) -> str | None:
         return switch_app_reply(result)
     if tool_name == "type_text":
         return type_text_reply(result)
+    if tool_name == "press_key":
+        return press_key_reply(result)
     if tool_name == "scroll_page":
         return scroll_page_reply(result)
     if tool_name == "browser_tab_control":
@@ -348,6 +372,8 @@ def code_reply_for_tool(tool_name: str, result: dict[str, Any]) -> str | None:
         return system_info_reply(result)
     if tool_name == "take_screenshot":
         return screenshot_reply(result)
+    if tool_name == "set_timer":
+        return set_timer_reply(result)
     if tool_name == "web_search":
         return web_search_reply(result)
     if tool_name == "open_first_result":

@@ -21,8 +21,11 @@ from assistant.tools.apps import close_app, open_app, switch_app
 from assistant.tools.desktop_control import (
     browser_tab_control,
     media_control,
+    press_key,
     scroll_page,
     set_brightness,
+    set_timer,
+    set_timer_speaker,
     system_info,
     take_screenshot,
     type_text,
@@ -55,6 +58,7 @@ def run_gui_dashboard(config: AssistantConfig) -> int:
         set_volume,
         mute_audio,
         type_text,
+        press_key,
         scroll_page,
         browser_tab_control,
         window_control,
@@ -62,6 +66,7 @@ def run_gui_dashboard(config: AssistantConfig) -> int:
         media_control,
         system_info,
         take_screenshot,
+        set_timer,
         learn_skill,
     ):
         registry.register(fn)
@@ -91,6 +96,7 @@ def run_gui_dashboard(config: AssistantConfig) -> int:
         return "yes" if ans else "no"
 
     gate.confirm_callback = gui_confirm
+    set_timer_speaker(lambda text: voice.speak_sync(text))
     loop = AgentLoop(config, adapter, registry, watchdog, step_callback=lambda s: root.after(0, status_var.set, s))
 
     # Top Control Bar (Model Switcher, Thinking Level Switcher, Mode Switcher)

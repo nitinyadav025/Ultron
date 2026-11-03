@@ -167,6 +167,11 @@ class TextAdapter:
                 ),
                 "system": system_instruction,
                 "max_tokens": max_output_tokens,
+                "contents_text": "\n".join(
+                    getattr(part, "text", None) or ""
+                    for content in messages
+                    for part in (getattr(content, "parts", None) or [])
+                ),
             }
         )
         content = types.Content(role="model", parts=[types.Part.from_text(text=self.reply)])
@@ -420,7 +425,8 @@ def test_iron_search_for_youtube_routes_to_web_search() -> None:
 def test_third_youtube_routes_to_search() -> None:
     registry = FakeRegistry()
     reply = try_fast_path(registry, "Third YouTube")
-    assert registry.calls == [("web_search", {"query": "youtube", "browser": None})]
+    # Phase 7: a bare site name opens that site (an empty site query).
+    assert registry.calls == [("web_search", {"query": "", "site": "youtube"})]
     assert "youtube" in reply.lower()
 
 
@@ -471,19 +477,23 @@ def test_history_is_capped_and_old_tool_json_is_stripped(tmp_path: Path) -> None
     )
 
 
-def test_screen_and_skills_hint_reach_the_prompt(tmp_path: Path) -> None:
+def test_screen_and_skills_hint_reach_the_turn_not_the_static_prompt(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     from assistant.brain.skills import save_user_skill
 
     save_user_skill(cfg, "work mode", ["do magic"])
     adapter = TextAdapter()
     loop = _loop(cfg, FakeRegistry(), adapter)
-    loop.run_task("work mode open something")
+    loop.run_task("activate work mode")
 
     prompt = adapter.seen[-1]["system"]
-    assert "Screen:" in prompt
-    assert "Skills:" in prompt
-    assert "work mode" in prompt
+    turn = adapter.seen[-1]["contents_text"]
+    # Phase 7 moved all volatile text out of the system message so the KV cache survives.
+    assert "Screen:" not in prompt
+    assert "Skills:" not in prompt
+    assert "[Context:" in turn
+    assert "Skills:" in turn
+    assert "work mode" in turn
 
 
 # 6 — skills and experience dataset ----------------------------------------------------

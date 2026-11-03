@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from assistant.brain.context import SESSION, get_screen_context
+from assistant.brain.context import SESSION, ensure_wayland_introspect, get_screen_context
 from assistant.brain.fast_path import match_fast_command
 from assistant.brain.skills import configure_runtime, learn_skill, log_experience
 from assistant.config import AssistantConfig
@@ -122,7 +122,33 @@ MIN_SPEECH_MS = 250
 TRAILING_SILENCE_MS = 300
 STEADY_SPEECH_LIMIT_MS = 8000
 STEADY_LEVEL_CV = 0.06
-STOP_COMMANDS = {"stop listening", "stop"}
+STOP_COMMANDS = {
+    "stop listening",
+    "stop",
+    "go to sleep",
+    "exit",
+    "quit",
+    "shut down",
+}
+_STOP_FILLERS = re.compile(
+    r"^(?:(?:is|please|now|just|okay|ok|can|could|would|will|you|ultron)\b[ ,]*)+",
+    re.I,
+)
+
+
+def normalise_stop_command(command: str) -> str:
+    """Strip leading filler verbs: "is stop listening" -> "stop listening"."""
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", (command or "").lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    previous = None
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = _STOP_FILLERS.sub("", cleaned).strip()
+    return cleaned
+
+
+def is_stop_command(command: str) -> bool:
+    return normalise_stop_command(command) in STOP_COMMANDS
 
 
 @dataclass(frozen=True)
@@ -861,7 +887,7 @@ class HandsFreeListener:
             self._speak(YES_REPLY)
             return
 
-        if command.strip(" .!?").lower() in STOP_COMMANDS:
+        if is_stop_command(command):
             self._log_utterance("stop_command")
             self.detector.reset()
             self.stop_requested = True
@@ -969,9 +995,12 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.tools.desktop_control import (
         browser_tab_control,
         media_control,
+        press_key,
         scroll_page,
         set_brightness,
         set_terminal_context,
+        set_timer,
+        set_timer_speaker,
         start_ydotool,
         system_info,
         take_screenshot,
@@ -990,6 +1019,7 @@ def run_listen(config: AssistantConfig) -> int:
     # One keyboard daemon for the whole session, and focus the last app before key actions.
     start_ydotool()
     set_terminal_context(True)
+    ensure_wayland_introspect()
 
     gate = PermissionGate(config=config, mode=config.default_mode)
     registry = ToolRegistry(config=config, gate=gate, allow_prompts=False)
@@ -1006,6 +1036,7 @@ def run_listen(config: AssistantConfig) -> int:
         web_search,
         open_first_result,
         type_text,
+        press_key,
         scroll_page,
         browser_tab_control,
         window_control,
@@ -1013,6 +1044,7 @@ def run_listen(config: AssistantConfig) -> int:
         media_control,
         system_info,
         take_screenshot,
+        set_timer,
         learn_skill,
     ):
         registry.register(fn)
@@ -1059,12 +1091,25 @@ def run_listen(config: AssistantConfig) -> int:
         except KeyboardInterrupt:
             voice.stop_speaking()
 
+    # A finished timer speaks through the same loaded Piper voice (no second model load).
+    set_timer_speaker(lambda text: speak(text))
+
     def run_command(command: str) -> tuple[str, bool]:
         registry.needs_confirmation_seen = False
-        fast_reply = try_fast_path(registry, command)
-        if fast_reply is not None:
-            SESSION.note_turn(command, fast_reply)
-            return fast_reply, False
+        if getattr(config, "brain_replies", "auto") != "llm":
+            fast_reply = try_fast_path(registry, command)
+            if fast_reply is not None:
+                # Split-brain fix: the fast path writes into the SAME LLM history, so
+                # "yes write it" and "what did you say" see the real previous turn.
+                info = match_fast_command(command) or {}
+                loop.record_external_turn(
+                    command,
+                    str(info.get("tool") or ""),
+                    dict(info.get("arguments") or {}),
+                    fast_reply,
+                )
+                SESSION.note_turn(command, fast_reply)
+                return fast_reply, False
         result = loop.run_task(command)
         if registry.needs_confirmation_seen:
             return CONFIRMATION_REPLY, True

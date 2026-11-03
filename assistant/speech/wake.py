@@ -102,6 +102,12 @@ _SPOKEN_COMMAND_FIXES = (
         r"search \1 in youtube",
     ),
     (re.compile(r"\b(?:third|hurt|sir)\s+youtube\b", re.I), "search youtube"),
+    # Whisper homophones for "write": "right it", "yes right it", "okay right <topic>".
+    # Specific forms run first so "okay right it" is not read as the topic "it".
+    (re.compile(r"^\s*(?:okay|ok)[, ]+yes[, ]+right(?:\s+it)?$", re.I), "yes write it"),
+    (re.compile(r"^\s*yes[, ]+right(?:\s+it)?$", re.I), "yes write it"),
+    (re.compile(r"^\s*(?:okay|ok)[, ]+right(?:\s+it)?$", re.I), "write it"),
+    (re.compile(r"^\s*(?:okay|ok)[, ]+right\s+(.+)$", re.I), r"write \1"),
     # "Right hello" in a typing context = "write hello". Ordinary phrases stay unchanged.
     (
         re.compile(r"^\s*right\s+(?!(?:now|away|here|there|back)\b)(.+)$", re.I),

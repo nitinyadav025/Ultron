@@ -7,8 +7,8 @@ import re
 
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
-from assistant.brain.context import SESSION
-from assistant.brain.fast_path import try_fast_path
+from assistant.brain.context import SESSION, ensure_wayland_introspect
+from assistant.brain.fast_path import match_fast_command, try_fast_path
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.brain.skills import configure_runtime, learn_skill
 from assistant.config import LOGS_DIR, AssistantConfig
@@ -24,9 +24,12 @@ from assistant.tools.apps import close_app, open_app, switch_app
 from assistant.tools.desktop_control import (
     browser_tab_control,
     media_control,
+    press_key,
     scroll_page,
     set_brightness,
     set_terminal_context,
+    set_timer,
+    set_timer_speaker,
     start_ydotool,
     system_info,
     take_screenshot,
@@ -101,6 +104,8 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
     # One keyboard daemon for the whole session, and focus the last app before key actions.
     start_ydotool()
     set_terminal_context(True)
+    # Native Wayland windows are invisible to wmctrl until GNOME introspection is enabled.
+    ensure_wayland_introspect()
 
     gate = PermissionGate(config=config, mode=initial_mode or config.default_mode)
     registry = ToolRegistry(config=config, gate=gate)
@@ -117,6 +122,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         web_search,
         open_first_result,
         type_text,
+        press_key,
         scroll_page,
         browser_tab_control,
         window_control,
@@ -124,6 +130,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         media_control,
         system_info,
         take_screenshot,
+        set_timer,
         learn_skill,
     ):
         registry.register(fn)
@@ -145,6 +152,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         ok_mouth, mouth_msg = voice.load_mouth()
         print(f"  Mouth: {'ready' if ok_mouth else 'unavailable'} — {mouth_msg}", flush=True)
     loop = AgentLoop(config, adapter, registry, watchdog, step_callback=lambda s: print(f"  -> {s}", flush=True))
+    set_timer_speaker(lambda text: voice.speak_sync(text))
     dry_run = dry_run_default
 
     print(f"{config.assistant_name} ready on Fedora 44. Model: [{config.current_model}] | Thinking: [{config.active_thinking_level}] | Mode: [{gate.mode}]")
@@ -241,10 +249,19 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
             print(UNKNOWN_COMMAND_MESSAGE)
             continue
 
-        if is_voice_turn:
+        if is_voice_turn and getattr(config, "brain_replies", "auto") != "llm":
             fast_reply = try_fast_path(registry, user_in)
             if fast_reply is not None:
                 print(f"\n{config.assistant_name}: {fast_reply}\n")
+                info = match_fast_command(user_in) or {}
+                record_turn = getattr(loop, "record_external_turn", None)
+                if callable(record_turn):
+                    record_turn(
+                        user_in,
+                        str(info.get("tool") or ""),
+                        dict(info.get("arguments") or {}),
+                        fast_reply,
+                    )
                 SESSION.note_turn(user_in, fast_reply)
                 try:
                     ok_s, msg_s = voice.speak_sync(fast_reply)

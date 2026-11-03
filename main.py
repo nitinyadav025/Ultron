@@ -73,6 +73,20 @@ def _dispatch(args: argparse.Namespace, config: AssistantConfig) -> int:
             return 1
         print(f"Imported {len(imported)} skill(s) into {config.user_skills_file}")
         return 0
+    if args.command == "export-dataset":
+        from assistant.brain.skills import configure_runtime, export_chatml_dataset
+
+        configure_runtime(config)
+        output = args.args[0] if args.args else None
+        try:
+            exported = export_chatml_dataset(config, output)
+        except (OSError, ValueError) as exc:
+            print(f"[ERROR] {exc}")
+            return 1
+        print(
+            f"Exported {exported['written']} ChatML sample(s) to {exported['output']}"
+        )
+        return 0
     if args.command == "benchmark":
         from scripts.benchmark_phase5c import run_benchmark
 
@@ -120,9 +134,14 @@ def main() -> int:
             "download-models",
             "teach",
             "import-skills",
+            "export-dataset",
         ],
     )
-    parser.add_argument("args", nargs="*", help="teach: trigger and actions; import-skills: path")
+    parser.add_argument(
+        "args",
+        nargs="*",
+        help="teach: trigger and actions; import-skills: path; export-dataset: optional output path",
+    )
     parser.add_argument("--mode", choices=["ask", "auto-safe", "human-only"], default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

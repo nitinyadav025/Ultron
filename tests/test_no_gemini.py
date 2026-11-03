@@ -127,7 +127,7 @@ def test_local_system_prompt_asks_for_one_short_sentence(tmp_path: Path) -> None
 
     local = _local_cfg(tmp_path)
     assert VOICE_RULE in build_system_prompt(local, "ask")
-    assert "ONE short plain sentence" in VOICE_RULE
+    assert "one or two complete spoken sentences" in VOICE_RULE
 
     local.backend = "gemini"
     assert VOICE_RULE not in build_system_prompt(local, "ask")

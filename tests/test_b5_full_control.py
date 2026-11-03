@@ -347,14 +347,16 @@ def _capture_ydotool(monkeypatch: pytest.MonkeyPatch, *, ok: bool = True) -> lis
     return calls
 
 
-def test_type_text_uses_ydotool(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_type_text_uses_clipboard_then_ctrl_v(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_ydotool(monkeypatch)
-    monkeypatch.setattr(dc, "_copy_clipboard", lambda _text: True)
+    copied: list[str] = []
+    monkeypatch.setattr(dc, "_copy_clipboard", lambda text: copied.append(text) or True)
 
     result = dc.type_text("hello world")
 
-    assert result["ok"] is True and result["method"] == "ydotool"
-    assert calls == [["type", "--key-delay", "12", "--", "hello world"]]
+    assert result["ok"] is True and result["method"] == "clipboard_paste"
+    assert copied == ["hello world"]
+    assert calls == [["key", "29:1", "47:1", "47:0", "29:0"]]
     assert result["clipboard"] is True
 
 
@@ -367,21 +369,23 @@ def test_type_text_refuses_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == []
 
 
-def test_type_text_clipboard_fallback_is_not_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_type_text_falls_back_to_ydotool_when_the_clipboard_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[list[str]] = []
 
     def runner(argv: list[str]) -> tuple[bool, str]:
         calls.append(argv)
-        return (False, "no socket") if argv[0] == "type" else (True, "")
+        return True, ""
 
     monkeypatch.setattr(dc, "_ydotool_runner", runner)
-    monkeypatch.setattr(dc, "_copy_clipboard", lambda _text: True)
+    monkeypatch.setattr(dc, "_copy_clipboard", lambda _text: False)
 
     result = dc.type_text("hello")
-    assert calls[0][0] == "type"
 
-    assert result["ok"] is True and result["method"] == "clipboard_paste"
-    assert result["reply"] == "I pasted the text from the clipboard."
+    assert calls == [["type", "--key-delay", "8", "--", "hello"]]
+    assert result["ok"] is True and result["method"] == "ydotool"
+    assert result["reply"] == "I've typed that into the active window."
 
 
 def test_scroll_tab_window_and_media_keys(monkeypatch: pytest.MonkeyPatch) -> None:

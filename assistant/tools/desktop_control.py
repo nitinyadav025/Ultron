@@ -12,6 +12,7 @@ import atexit
 import glob
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -48,11 +49,20 @@ KEY_END = 107
 KEY_PAGEUP = 104
 KEY_PAGEDOWN = 109
 KEY_ENTER = 28
+KEY_ESCAPE = 1
+KEY_BACKSPACE = 14
+KEY_SPACE = 57
+KEY_DELETE = 111
 KEY_PLAYPAUSE = 164
 KEY_NEXTSONG = 163
 KEY_PREVIOUSSONG = 165
 
-MAX_TYPE_CHARS = 200
+MAX_TYPE_CHARS = 4000
+# Wayland compositors need a short beat between focus, Ctrl+L/Ctrl+V and Enter.
+_navigate_tab_delay_s = 0.06
+_navigate_paste_delay_s = 0.04
+_clipboard_paste_delay_s = 0.04
+
 ProcessRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 
@@ -257,12 +267,12 @@ def _looks_secret(text: str) -> bool:
 
 
 def _copy_clipboard(text: str) -> bool:
+    """Put text on the Wayland clipboard; ``wl-copy -- <text>`` is the fast path."""
     if shutil.which("wl-copy") is None:
         return False
     try:
         result = subprocess.run(
-            ["wl-copy"],
-            input=text,
+            ["wl-copy", "--", text],
             text=True,
             capture_output=True,
             timeout=5,
@@ -292,8 +302,12 @@ def navigate_current_tab(url: str, browser: str | None = None) -> dict[str, Any]
         return {"ok": False, "error": "The clipboard is unavailable."}
     if not _ydotool(["key", *_combo([KEY_LEFTCTRL, KEY_L])])[0]:
         return {"ok": False, "error": "Could not focus the address bar."}
+    if _navigate_tab_delay_s > 0:
+        time.sleep(_navigate_tab_delay_s)
     if not _ydotool(["key", *_combo([KEY_LEFTCTRL, KEY_V])])[0]:
         return {"ok": False, "error": "Could not paste the address."}
+    if _navigate_paste_delay_s > 0:
+        time.sleep(_navigate_paste_delay_s)
     if not _ydotool(["key", *_tap(KEY_ENTER)])[0]:
         return {"ok": False, "error": "Could not press Enter."}
     return {"ok": True, "method": "current_tab", "url": url, "browser": target}
@@ -301,42 +315,56 @@ def navigate_current_tab(url: str, browser: str | None = None) -> dict[str, Any]
 
 @tool(risk_level="safe", read_only=False)
 def type_text(text: str, press_enter: bool = False) -> dict[str, Any]:
-    """Type the given text into the focused window."""
+    """Write text into the focused document or browser field."""
     cleaned = " ".join((text or "").replace("\r", " ").replace("\n", " ").split())
     if not cleaned:
         return {"ok": False, "error": "There was no text to type."}
     if len(cleaned) > MAX_TYPE_CHARS:
-        return {"ok": False, "error": f"That text is longer than {MAX_TYPE_CHARS} characters."}
+        return {
+            "ok": False,
+            "error": f"That text is longer than {MAX_TYPE_CHARS} characters.",
+        }
     if _looks_secret(cleaned):
         return {"ok": False, "error": "I won't type passwords, keys or tokens."}
 
     _focus_target()
+
+    # Wayland fast path: one clipboard write + Ctrl+V is instant, even for a 4,000
+    # character paragraph. ydotool type is naturally slow and breaks on some layouts, so
+    # it is now the fallback only.
     copied = _copy_clipboard(cleaned)
-    # --key-delay 12 keeps a 200-character sentence well under 0.15 s instead of the
-    # default per-character delay. The persistent daemon removes the ~500 ms spawn.
-    ok, _err = _ydotool(["type", "--key-delay", "12", "--", cleaned])
+    if copied:
+        if _clipboard_paste_delay_s > 0:
+            time.sleep(_clipboard_paste_delay_s)
+        pasted, _paste_err = _ydotool(["key", *_combo([KEY_LEFTCTRL, KEY_V])])
+        if pasted:
+            if press_enter:
+                _ydotool(["key", *_tap(KEY_ENTER)])
+            SESSION.last_typed_text = cleaned
+            SESSION.note_action("typed text")
+            return {
+                "ok": True,
+                "method": "clipboard_paste",
+                "text_chars": len(cleaned),
+                "clipboard": True,
+                "reply": "I've written that into your document.",
+            }
+
+    # Clipboard unavailable (or paste injection failed): type it directly.
+    ok, _err = _ydotool(["type", "--key-delay", "8", "--", cleaned])
     if ok:
         if press_enter:
             _ydotool(["key", *_tap(KEY_ENTER)])
+        SESSION.last_typed_text = cleaned
+        SESSION.note_action("typed text")
         return {
             "ok": True,
             "method": "ydotool",
             "text_chars": len(cleaned),
             "clipboard": copied,
-            "reply": "Typed that.",
+            "reply": "I've typed that into the active window.",
         }
-
-    if not copied:
-        copied = _copy_clipboard(cleaned)
     if copied:
-        pasted, _paste_err = _ydotool(["key", *_combo([KEY_LEFTCTRL, KEY_V])])
-        if pasted:
-            return {
-                "ok": True,
-                "method": "clipboard_paste",
-                "text_chars": len(cleaned),
-                "reply": "I pasted the text from the clipboard.",
-            }
         return {
             "ok": True,
             "method": "clipboard",
@@ -346,6 +374,155 @@ def type_text(text: str, press_enter: bool = False) -> dict[str, Any]:
     return {
         "ok": False,
         "error": "I couldn't type that: keyboard injection and the clipboard are unavailable.",
+    }
+
+
+_timer_speaker: Callable[[str], None] | None = None
+_active_timers: list[threading.Timer] = []
+_timer_lock = threading.Lock()
+
+_NUMBER_WORDS: dict[str, int] = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "ninety": 90,
+}
+_DURATION_PART = re.compile(
+    r"(?P<number>\d+|[a-z]+(?:[- ][a-z]+)?)\s*"
+    r"(?P<unit>seconds?|secs?|minutes?|mins?|hours?|hrs?)\b",
+    re.I,
+)
+
+
+def set_timer_speaker(speaker: Callable[[str], None] | None) -> None:
+    """Wire the Piper mouth into the timer so it can speak when the countdown ends."""
+    global _timer_speaker
+    _timer_speaker = speaker
+
+
+def _word_number(value: str) -> int | None:
+    cleaned = (value or "").strip().lower().replace("-", " ")
+    cleaned = re.sub(r"^(?:and|a|an)\s+", "", cleaned)
+    if cleaned in ("a", "an"):
+        return 1
+    if cleaned.isdigit():
+        return int(cleaned)
+    if cleaned in _NUMBER_WORDS:
+        return _NUMBER_WORDS[cleaned]
+    pieces = cleaned.split()
+    if len(pieces) == 2 and pieces[0] in _NUMBER_WORDS and pieces[1] in _NUMBER_WORDS:
+        return _NUMBER_WORDS[pieces[0]] + _NUMBER_WORDS[pieces[1]]
+    return None
+
+
+def parse_duration_seconds(text: str) -> int | None:
+    """Parse "5 seconds", "2 minutes", "1 minute 30 seconds" (digits or words)."""
+    cleaned = re.sub(r"\s+", " ", (text or "").lower()).strip(" .")
+    if not cleaned:
+        return None
+    total = 0
+    for match in _DURATION_PART.finditer(cleaned):
+        amount = _word_number(match.group("number"))
+        if amount is None:
+            continue
+        unit = match.group("unit").lower()
+        if unit.startswith("h"):
+            total += amount * 3600
+        elif unit.startswith("m"):
+            total += amount * 60
+        else:
+            total += amount
+    if total > 0:
+        return total
+    plain = _word_number(cleaned)
+    return plain if plain and plain > 0 else None
+
+
+def format_duration(seconds: int) -> str:
+    """Human duration: 5 -> "5 seconds", 90 -> "1 minute 30 seconds"."""
+    remaining = max(0, int(seconds))
+    hours, remainder = divmod(remaining, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours} hour" + ("" if hours == 1 else "s"))
+    if minutes:
+        parts.append(f"{minutes} minute" + ("" if minutes == 1 else "s"))
+    if secs or not parts:
+        parts.append(f"{secs} second" + ("" if secs == 1 else "s"))
+    return " ".join(parts)
+
+
+def _timer_finished(seconds: int, label: str) -> None:
+    duration = format_duration(seconds)
+    message = f"Your {duration} timer is up."
+    if label:
+        message = f"Your {duration} timer for {label} is up."
+    if shutil.which("notify-send"):
+        try:
+            subprocess.run(
+                ["notify-send", "Ultron Timer", message],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    speaker = _timer_speaker
+    if speaker is not None:
+        try:
+            speaker(message)
+        except Exception:  # a broken speaker must not break the timer thread
+            logger.warning("Timer could not speak its notification.")
+
+
+@tool(risk_level="safe", read_only=False)
+def set_timer(seconds: int, label: str = "") -> dict[str, Any]:
+    """Set a non-blocking countdown timer that notifies and speaks when it ends."""
+    try:
+        duration = int(seconds)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Say how long the timer should be."}
+    if duration < 1 or duration > 86400:
+        return {"ok": False, "error": "A timer must be between 1 second and 24 hours."}
+    cleaned_label = re.sub(r"\s+", " ", (label or "")).strip()[:80]
+    timer = threading.Timer(duration, _timer_finished, args=(duration, cleaned_label))
+    timer.daemon = True
+    timer.start()
+    with _timer_lock:
+        _active_timers[:] = [item for item in _active_timers if item.is_alive()]
+        _active_timers.append(timer)
+    spoken = format_duration(duration)
+    if cleaned_label:
+        spoken += f" for {cleaned_label}"
+    return {
+        "ok": True,
+        "seconds": duration,
+        "label": cleaned_label,
+        "reply": f"I've set a timer for {spoken}.",
     }
 
 
@@ -507,6 +684,47 @@ def set_brightness(percent: int = -1, delta: int = 0) -> dict[str, Any]:
         "percent": target,
         "error": "I couldn't change the screen brightness: no writable brightness control is available.",
     }
+
+
+_PRESS_KEYS = {
+    "enter": KEY_ENTER,
+    "return": KEY_ENTER,
+    "escape": KEY_ESCAPE,
+    "esc": KEY_ESCAPE,
+    "tab": KEY_TAB,
+    "space": KEY_SPACE,
+    "backspace": KEY_BACKSPACE,
+    "delete": KEY_DELETE,
+    "up": KEY_UP,
+    "down": KEY_DOWN,
+    "left": KEY_LEFT,
+    "right": KEY_RIGHT,
+    "home": KEY_HOME,
+    "end": KEY_END,
+    "pageup": KEY_PAGEUP,
+    "page up": KEY_PAGEUP,
+    "pagedown": KEY_PAGEDOWN,
+    "page down": KEY_PAGEDOWN,
+    "f11": KEY_F11,
+}
+
+
+@tool(risk_level="safe", read_only=False)
+def press_key(key: str) -> dict[str, Any]:
+    """Press one allow-listed navigation key (enter, tab, escape, arrows, page keys)."""
+    choice = re.sub(r"\s+", " ", (key or "").strip().lower())
+    code = _PRESS_KEYS.get(choice)
+    if code is None:
+        return {
+            "ok": False,
+            "error": f"I don't press the '{key}' key. I can press enter, tab, escape, space, arrows or page keys.",
+        }
+    _focus_target()
+    ok, err = _ydotool(["key", *_tap(code)])
+    if not ok:
+        return {"ok": False, "error": f"I couldn't press {choice}: {err}"}
+    SESSION.note_action(f"pressed {choice}")
+    return {"ok": True, "key": choice, "reply": f"I've pressed {choice}."}
 
 
 _MEDIA_KEYS = {

@@ -33,6 +33,10 @@ APP_ALIASES: dict[str, str] = {
     "nautilus": "files",
     "texteditor": "text editor",
     "text editor": "text editor",
+    "document editor": "text editor",
+    "gedit": "text editor",
+    "notepad": "text editor",
+    "gnome text editor": "text editor",
     "vs code": "code",
     "vscode": "code",
     "visual studio": "code",
@@ -56,6 +60,12 @@ APP_ALIASES: dict[str, str] = {
     "chrome": "chrome",
     "spotify": "spotify",
     "vlc": "vlc",
+    "lutris": "lutris",
+    "loot risk": "lutris",
+    "lootris": "lutris",
+    "lu tris": "lutris",
+    "loot res": "lutris",
+    "hermes": "lutris",
     "web browser": "firefox",
     "browser": "firefox",
 }
@@ -72,7 +82,54 @@ APP_DISPLAY: dict[str, str] = {
     "chrome": "Chrome",
     "spotify": "Spotify",
     "vlc": "VLC",
+    "lutris": "Lutris",
+    "discord": "Discord",
+    "github": "GitHub",
+    "youtube": "YouTube",
+    "google": "Google",
+    "gmail": "Gmail",
+    "reddit": "Reddit",
+    "chatgpt": "ChatGPT",
+    "whatsapp": "WhatsApp",
+    "instagram": "Instagram",
+    "netflix": "Netflix",
+    "claude": "Claude",
 }
+
+# Flatpak application IDs. ``flatpak kill <id>`` closes the whole sandbox cgroup; a raw
+# ``pkill`` kills the bwrap/zypak stdio helper first and makes Electron's console.warn
+# hit a broken pipe (the "write EPIPE" popup in the Nov 3 screenshot).
+FLATPAK_APP_IDS: dict[str, tuple[str, ...]] = {
+    "discord": ("com.discordapp.Discord",),
+    "spotify": ("com.spotify.Client",),
+    "steam": ("com.valvesoftware.Steam",),
+    "brave": ("com.brave.Browser",),
+    "chrome": ("com.google.Chrome",),
+    "code": ("com.visualstudio.code",),
+    "text editor": ("org.gnome.TextEditor",),
+    "files": ("org.gnome.Nautilus",),
+    "calculator": ("org.gnome.Calculator",),
+    "settings": ("org.gnome.Settings",),
+    "vlc": ("org.videolan.VLC",),
+}
+
+# Browser-only destinations: when one of these is not running as a native app and a
+# browser is open, "close GitHub" means "close that tab", not "find an app".
+WEB_ONLY_SITES = frozenset(
+    {
+        "github",
+        "youtube",
+        "google",
+        "gmail",
+        "reddit",
+        "chatgpt",
+        "whatsapp",
+        "instagram",
+        "netflix",
+        "claude",
+    }
+)
+_TAB_WORDS = frozenset({"tab", "this tab", "that tab", "current tab", "the tab"})
 
 # Popular web apps with no local .desktop entry on this machine. They are opened in the
 # session browser, never passed to xdg-open. Local installs always win (checked first).
@@ -190,6 +247,81 @@ def _default_process_runner(argv: list[str]) -> subprocess.CompletedProcess[str]
 _process_runner: ProcessRunner = _default_process_runner
 
 
+def _default_flatpak_runner(
+    argv: list[str], timeout: float = 2.0
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=timeout,
+    )
+
+
+# Separate runner so a fake pgrep/kill runner never intercepts Flatpak sandbox handling.
+_flatpak_runner: Callable[..., subprocess.CompletedProcess[str]] = _default_flatpak_runner
+
+
+def _flatpak_running_apps() -> set[str]:
+    """Return the running Flatpak application IDs (empty when Flatpak is unavailable)."""
+    runner = _flatpak_runner
+    if runner is _default_flatpak_runner and os.environ.get("PYTEST_CURRENT_TEST"):
+        return set()
+    try:
+        result = runner(["flatpak", "ps", "--columns=application"], timeout=0.5)
+    except (OSError, subprocess.SubprocessError, TypeError):
+        return set()
+    if getattr(result, "returncode", 1) != 0:
+        return set()
+    return {
+        line.strip()
+        for line in (getattr(result, "stdout", "") or "").splitlines()
+        if line.strip()
+    }
+
+
+def _flatpak_ids_for(key: str, match: AppMatch | None = None) -> tuple[str, ...]:
+    """Every Flatpak ID that could belong to this spoken app name."""
+    ids: list[str] = list(FLATPAK_APP_IDS.get(key, ()))
+    if match is not None:
+        entry = match.yaml_entry or {}
+        explicit = str(entry.get("flatpak_id") or "").strip()
+        if explicit:
+            ids.append(explicit)
+        source = (match.source or "").lower()
+        desktop_id = (match.desktop_id or "").removesuffix(".desktop")
+        if "flatpak" in source and "." in desktop_id:
+            ids.append(desktop_id)
+    return tuple(dict.fromkeys(item for item in ids if item))
+
+
+def _flatpak_kill(app_id: str) -> bool:
+    """Close the whole Flatpak sandbox in one go (no broken zypak pipe)."""
+    try:
+        result = _flatpak_runner(["flatpak", "kill", app_id], timeout=2.0)
+    except (OSError, subprocess.SubprocessError, TypeError):
+        return False
+    return getattr(result, "returncode", 1) == 0
+
+
+def _tab_site(target: str) -> str:
+    cleaned = normalise_app_name(target)
+    # "close Google Chrome" names a browser, not the Google site. An explicit "tab" word
+    # still reaches Ctrl+W through the caller's explicit-tab flag.
+    if re.search(r"\b(?:firefox|brave|chrome|browser)\b", cleaned):
+        return ""
+    for site in WEB_ONLY_SITES:
+        if re.search(rf"\b{re.escape(site)}\b", cleaned):
+            return site
+    return ""
+
+
+def _browser_session_open() -> bool:
+    return bool(SESSION.last_browser or SESSION.active_site or SESSION.open_windows)
+
+
 def normalise_app_name(app_name: str) -> str:
     """Lowercase, collapse spaces, drop a leading article and punctuation."""
     cleaned = re.sub(r"[^a-z0-9 ]+", " ", (app_name or "").lower())
@@ -200,7 +332,17 @@ def normalise_app_name(app_name: str) -> str:
 def app_key(app_name: str) -> str:
     """Resolve a spoken app name to the catalog key (or the cleaned name)."""
     cleaned = normalise_app_name(app_name)
-    return APP_ALIASES.get(cleaned, cleaned)
+    mapped = APP_ALIASES.get(cleaned)
+    if mapped:
+        return mapped
+    # User-taught aliases ("remember that loot risk means lutris") win over the catalog.
+    try:
+        from assistant.brain.skills import runtime_alias
+
+        learned = runtime_alias(cleaned)
+    except Exception:
+        learned = ""
+    return learned or cleaned
 
 
 def _catalog() -> dict[str, Any]:
@@ -502,23 +644,30 @@ def _launch_match(match: AppMatch) -> tuple[dict[str, Any], list[str]]:
         )
     cmd, resolved = resolved_command
     try:
+        # NEVER give a detached GUI/Electron/Flatpak process a pipe. When the Popen handle
+        # is collected, Electron's console.warn writes into a closed pipe and throws
+        # "Error: write EPIPE" (the Flatpak Discord popup at 19:20:19). All three streams
+        # go to the null device and the child owns a new session.
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
         )
-        try:
-            _, err = proc.communicate(timeout=0.4)
-            if proc.returncode not in (0, None):
-                return (
-                    {
-                        "ok": False,
-                        "app_name": match.display,
-                        "command": cmd,
-                        "error": err.decode("utf-8", errors="replace").strip(),
-                    },
-                    cmd,
-                )
-        except subprocess.TimeoutExpired:
-            pass
+        poll = getattr(proc, "poll", None)
+        returncode = poll() if callable(poll) else None
+        if returncode not in (None, 0):
+            return (
+                {
+                    "ok": False,
+                    "app_name": match.display,
+                    "command": cmd,
+                    "error": f"{match.display} exited immediately ({returncode}).",
+                },
+                cmd,
+            )
         SESSION.note_app(match.key)
         if match.key in BROWSERS:
             from assistant.speech.mic_input import schedule_mic_volume_restore
@@ -583,10 +732,83 @@ def open_app(app_name: str) -> dict[str, Any]:
     return payload
 
 
+def _kill_argv(pids: set[int]) -> list[str]:
+    """SIGTERM the main process group when possible, else the individual PIDs."""
+    groups: set[int] = set()
+    for pid in pids:
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            continue
+        if pgid == pid and pgid not in (0, 1, os.getpgrp()):
+            groups.add(pgid)
+    if groups:
+        return ["kill", "-TERM", *[f"-{group}" for group in sorted(groups)]]
+    return ["kill", "-TERM", *[str(pid) for pid in sorted(pids)]]
+
+
 @tool(risk_level="safe", read_only=False)
 def close_app(app_name: str) -> dict[str, Any]:
-    """Close a running desktop app."""
+    """Close a running desktop app or a browser tab."""
     cleaned = normalise_app_name(app_name)
+    key = app_key(app_name)
+    tab_site = _tab_site(cleaned)
+    explicit_tab = (
+        cleaned in _TAB_WORDS
+        or cleaned.endswith(" tab")
+        or " tab " in f" {cleaned} "
+    )
+
+    # A Flatpak Electron app is closed through ``flatpak kill``: killing bwrap/zypak with
+    # pkill breaks the sandbox's stdio pipes and Electron shows a "write EPIPE" dialog.
+    running_flatpak = _flatpak_running_apps() if _flatpak_ids_for(key) else set()
+    native_flatpak = ""
+    for app_id in _flatpak_ids_for(key):
+        if app_id in running_flatpak:
+            native_flatpak = app_id
+            break
+
+    # "close GitHub" / "close this GitHub tab" while a browser is open means Ctrl+W.
+    if (explicit_tab or tab_site) and not native_flatpak and _browser_session_open():
+        from assistant.tools.desktop_control import browser_tab_control
+
+        result = browser_tab_control("close_tab")
+        display = APP_DISPLAY.get(tab_site, tab_site.title()) if tab_site else "that"
+        if result.get("ok"):
+            SESSION.note_action(f"closed {display} tab")
+            return {
+                "ok": True,
+                "tab_closed": True,
+                "app_name": display,
+                "running": True,
+                "closed": True,
+                "action": "close_tab",
+            }
+        return {
+            "ok": False,
+            "tab_closed": True,
+            "app_name": display,
+            "error": result.get("error") or "I couldn't close that tab.",
+        }
+
+    if native_flatpak:
+        if _flatpak_kill(native_flatpak):
+            display = APP_DISPLAY.get(key, key.title())
+            SESSION.note_closed(key)
+            logger.info("Closed Flatpak %s", native_flatpak)
+            return {
+                "ok": True,
+                "running": True,
+                "closed": True,
+                "app_name": display,
+                "flatpak": native_flatpak,
+            }
+        return {
+            "ok": False,
+            "app_name": APP_DISPLAY.get(key, key.title()),
+            "error": f"I couldn't close the Flatpak {native_flatpak}.",
+        }
+
     match = find_app(app_name)
     if match is None:
         return {
@@ -596,6 +818,27 @@ def close_app(app_name: str) -> dict[str, Any]:
             "error": f"I couldn't find an app named {cleaned}.",
         }
     key, display = match.key, match.display
+
+    flatpak_ids = _flatpak_ids_for(key, match)
+    if flatpak_ids and not running_flatpak:
+        running_flatpak = _flatpak_running_apps()
+    for app_id in flatpak_ids:
+        if app_id in running_flatpak:
+            if _flatpak_kill(app_id):
+                SESSION.note_closed(key)
+                return {
+                    "ok": True,
+                    "running": True,
+                    "closed": True,
+                    "app_name": display,
+                    "flatpak": app_id,
+                }
+            return {
+                "ok": False,
+                "app_name": display,
+                "error": f"I couldn't close the Flatpak {app_id}.",
+            }
+
     executables = _process_names_for(match)
     if cleaned in NEVER_CLOSE or key in NEVER_CLOSE or any(name in NEVER_CLOSE for name in executables):
         return {
@@ -604,6 +847,16 @@ def close_app(app_name: str) -> dict[str, Any]:
             "app_name": cleaned,
             "error": "Refusing to close a system process.",
         }
+
+    # XWayland windows can be asked to close politely first.
+    if shutil.which("wmctrl") and any(
+        display.lower() in title.lower() for title in SESSION.open_windows
+    ):
+        try:
+            _process_runner(["wmctrl", "-c", display])
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     if not executables:
         # No process name (for example a DBus-only desktop app): close by window title.
         if shutil.which("wmctrl"):
@@ -635,7 +888,7 @@ def close_app(app_name: str) -> dict[str, Any]:
         return {"ok": True, "running": False, "closed": False, "app_name": display}
 
     try:
-        killed = _process_runner(["kill", "-TERM", *[str(pid) for pid in sorted(pids)]])
+        killed = _process_runner(_kill_argv(pids))
     except (OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "app_name": display, "error": f"Could not close {display}: {exc}"}
     if killed.returncode != 0:

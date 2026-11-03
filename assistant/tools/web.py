@@ -70,6 +70,13 @@ CANONICAL_SITES: dict[str, str] = {
     "twitter": "https://x.com",
     "google": "https://www.google.com",
     "claude": "https://claude.ai",
+    # Expanded canonical brands: opening these directly avoids a search redirect.
+    "lutris": "https://lutris.net",
+    "f1": "https://www.formula1.com",
+    "formula 1": "https://www.formula1.com",
+    "formula one": "https://www.formula1.com",
+    "steam": "https://store.steampowered.com",
+    "gmail mail": "https://mail.google.com",
 }
 
 DISPLAY_NAMES: dict[str, str] = {
@@ -89,6 +96,10 @@ DISPLAY_NAMES: dict[str, str] = {
     "twitter": "X",
     "google": "Google",
     "claude": "Claude",
+    "lutris": "Lutris",
+    "f1": "F1",
+    "formula 1": "Formula 1",
+    "steam": "Steam",
 }
 
 SITE_ALIASES: dict[str, str] = {
@@ -108,15 +119,26 @@ SITE_ALIASES: dict[str, str] = {
     "x.com": "twitter",
 }
 
+GOOGLE_RESULTS_URL = "https://www.google.com/search?q="
+# Sites that a spoken "search <site>" is allowed to target. A generic word such as
+# "instagram" or "google" is still a normal web query unless the user says "in/on".
+REQUEST_SEARCH_SITES = frozenset(
+    {"youtube", "github", "reddit", "wikipedia", "discord", "spotify"}
+)
 DUCKY_URL = "https://duckduckgo.com/?q=!ducky+"
 FIRST_RESULT_URL = "https://html.duckduckgo.com/html/?q="
 YOUTUBE_SEARCH_URL = SITE_SEARCH_URLS["youtube"]
-USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) Ultron/1.0"
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
 MAX_QUERY = 200
 TIMEOUT_S = 8.0
+FIRST_RESULT_TIMEOUT_S = 2.5
 FIRST_RESULT_FAILED_REPLY = (
     "I couldn't pick the first result, so I opened the Google results."
 )
+# Both of these render a blank white redirect screen in Firefox/Brave. Never open them.
+_BLANK_REDIRECT_MARKERS = ("btni", "!ducky", "ducky+")
 
 
 def clean_query(query: str) -> str:
@@ -147,11 +169,29 @@ def search_url(query: str, engine: str | None = None) -> str:
 
 
 def site_search_url(site: str, query: str) -> str:
-    """Build a search URL inside a known site (YouTube, GitHub, ...)."""
+    """Build a search URL inside a known site (YouTube, GitHub, ...).
+
+    An empty query opens the site itself (the task's ``search YouTube`` case). A site
+    with no public search URL (Discord, Instagram, ...) searches Google with a
+    ``site:`` filter instead of opening a blank search page.
+    """
     key = normalise_site(site)
-    if not key or key not in SITE_SEARCH_URLS:
-        return search_url(query)
-    return SITE_SEARCH_URLS[key] + urllib.parse.quote_plus(clean_query(query))
+    cleaned = clean_query(query)
+    if not key:
+        return search_url(cleaned)
+    if not cleaned:
+        canonical = CANONICAL_SITES.get(key)
+        if canonical:
+            return canonical
+        base = SITE_SEARCH_URLS.get(key, "")
+        return base.split("?")[0] if base else search_url(cleaned)
+    if key in SITE_SEARCH_URLS:
+        return SITE_SEARCH_URLS[key] + urllib.parse.quote_plus(cleaned)
+    canonical = CANONICAL_SITES.get(key)
+    if canonical:
+        domain = urllib.parse.urlparse(canonical).netloc
+        return search_url(f"site:{domain} {cleaned}")
+    return search_url(cleaned)
 
 
 def canonical_site_for(query: str) -> str:
@@ -160,9 +200,60 @@ def canonical_site_for(query: str) -> str:
     return CANONICAL_SITES.get(key, "")
 
 
+def parse_search_request(text: str) -> tuple[str, str] | None:
+    """Parse a natural site search into ``(query, site)``.
+
+    Handles the live phrasings ``"search f1 in youtube"``,
+    ``"search on youtube for f1"``, ``"search what is server in github"``,
+    ``"search youtube"`` (empty query opens the site) and the same forms for Reddit,
+    Wikipedia, Discord and Spotify. A browser name (``firefox``) is not a site, so the
+    caller's normal browser-search path still applies.
+    """
+    cleaned = re.sub(r"\s+", " ", (text or "").strip()).rstrip(" .!?")
+    if not cleaned:
+        return None
+
+    on_first = re.match(
+        r"(?i)^(?:please\s+)?search\s+(?:on|in)\s+(?P<site>[a-z0-9 .]+?)"
+        r"(?:\s+for\s+(?P<query>.+))?$",
+        cleaned,
+    )
+    if on_first:
+        site = normalise_site(on_first.group("site"))
+        if site in REQUEST_SEARCH_SITES:
+            return (on_first.group("query") or "").strip(), site
+
+    in_last = re.match(
+        r"(?i)^(?:please\s+)?search\s+(?:for\s+)?(?P<query>.+?)\s+"
+        r"(?:on|in)\s+(?P<site>[a-z0-9 .]+)$",
+        cleaned,
+    )
+    if in_last:
+        site = normalise_site(in_last.group("site"))
+        if site in REQUEST_SEARCH_SITES:
+            return in_last.group("query").strip(), site
+
+    bare = re.match(r"(?i)^(?:please\s+)?search\s+(?P<site>[a-z0-9 .]+)$", cleaned)
+    if bare:
+        site = normalise_site(bare.group("site"))
+        if site in REQUEST_SEARCH_SITES:
+            return "", site
+    return None
+
+
 def _safe_http_url(url: str) -> bool:
     parsed = urllib.parse.urlparse(url or "")
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def is_blank_redirect(url: str) -> bool:
+    """True for the two redirect URLs that render a blank white page.
+
+    Google ``btnI=1`` shows "if you are not redirected..." and DuckDuckGo ``!ducky``
+    shows an empty page before its redirect. Neither is ever opened.
+    """
+    lowered = (url or "").lower()
+    return any(marker in lowered for marker in _BLANK_REDIRECT_MARKERS)
 
 
 def choose_browser(browser: str | None = None) -> str:
@@ -181,6 +272,8 @@ def open_url(url: str, browser: str | None = None) -> dict[str, Any]:
     """Open a URL with the named browser, else with the system opener (argv lists only)."""
     if not _safe_http_url(url):
         return {"ok": False, "error": f"Refused a non-http(s) URL: {url!r}"}
+    if is_blank_redirect(url):
+        return {"ok": False, "error": "Refused a blank redirect URL."}
     if browser:
         resolved_command = resolve_known_app(browser) or resolve_app_launch_command(browser)
         cmd, resolved = resolved_command
@@ -195,7 +288,14 @@ def open_url(url: str, browser: str | None = None) -> dict[str, Any]:
     else:
         return {"ok": False, "error": "No URL opener found (xdg-open or gio is missing)."}
     try:
-        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
     except OSError as exc:
         return {"ok": False, "error": f"Could not open the browser: {exc}"}
     # Brave's WebRTC AGC can boost the mic as soon as the browser starts. Re-apply the
@@ -217,13 +317,25 @@ class _FirstResultParser(html.parser.HTMLParser):
             return
         values = dict(attrs)
         classes = (values.get("class") or "").split()
-        href = values.get("href") or ""
-        if href and "result__a" in classes:
+        href = (values.get("href") or "").strip()
+        if not href:
+            return
+        # DuckDuckGo result links, Google /url?q= links, and direct http(s) results.
+        if (
+            "result__a" in classes
+            or href.startswith("/url?q=")
+            or href.startswith("/url?")
+            or "google.com/url?q=" in href
+        ):
             self.hrefs.append(href)
 
 
 def unwrap_result_url(href: str) -> str:
-    """Turn DuckDuckGo's ``//duckduckgo.com/l/?uddg=...`` redirect into the real URL."""
+    """Turn a search-engine redirect into the real URL.
+
+    Handles DuckDuckGo ``//duckduckgo.com/l/?uddg=...`` and Google ``/url?q=...`` (both
+    keep the target in a query parameter). Direct URLs pass through unchanged.
+    """
     url = href.strip()
     if url.startswith("//"):
         url = "https:" + url
@@ -231,16 +343,20 @@ def unwrap_result_url(href: str) -> str:
     if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
         encoded = urllib.parse.parse_qs(parsed.query).get("uddg", [""])[0]
         return urllib.parse.unquote(encoded)
+    if parsed.path in ("/url", "/url/"):
+        encoded = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+        if encoded:
+            return urllib.parse.unquote(encoded)
     return url
 
 
 def parse_first_result(page: str) -> str:
-    """Return the first real http(s) result URL in a DuckDuckGo HTML page, or ""."""
+    """Return the first real http(s) result URL in a search HTML page, or ""."""
     parser = _FirstResultParser()
     parser.feed(page)
     for href in parser.hrefs:
         url = unwrap_result_url(href)
-        if _safe_http_url(url):
+        if _safe_http_url(url) and not is_blank_redirect(url):
             return url
     return ""
 
@@ -256,9 +372,25 @@ def _fetch_page(url: str, timeout: float = TIMEOUT_S) -> str:
         return ""
 
 
-def fetch_first_result(query: str, timeout: float = TIMEOUT_S) -> str:
-    """One read-only HTTPS GET; return the first result URL or ""."""
-    return parse_first_result(_fetch_page(FIRST_RESULT_URL + urllib.parse.quote_plus(clean_query(query)), timeout))
+def fetch_first_result(query: str, timeout: float = FIRST_RESULT_TIMEOUT_S) -> str:
+    """Read the results HTML and return the first real URL, or "".
+
+    DuckDuckGo's HTML endpoint is tried first (its markup is stable), then Google. Both
+    receive a real browser User-Agent and are capped at 2.5 s so a blocked network can
+    never stall a spoken command.
+    """
+    cleaned = clean_query(query)
+    if not cleaned:
+        return ""
+    encoded = urllib.parse.quote_plus(cleaned)
+    for url in (FIRST_RESULT_URL + encoded, GOOGLE_RESULTS_URL + encoded):
+        page = _fetch_page(url, timeout)
+        if not page:
+            continue
+        found = parse_first_result(page)
+        if found and not is_blank_redirect(found):
+            return found
+    return ""
 
 
 def fetch_youtube_first_video(query: str, timeout: float = TIMEOUT_S) -> str:
@@ -294,19 +426,32 @@ def web_search(
 ) -> dict[str, Any]:
     """Search the web or a site in a browser."""
     cleaned = clean_query(query)
-    if not cleaned:
-        return {"ok": False, "error": "The search text was empty."}
-
     # Refresh the live screen once: if the site is already open, search inside it.
     get_screen_context()
     requested_site = normalise_site(site)
     resolved_site = requested_site or active_search_site()
+    if not cleaned and not resolved_site:
+        return {"ok": False, "error": "The search text was empty."}
     chosen = choose_browser(browser)
     url = site_search_url(resolved_site, cleaned) if resolved_site else search_url(cleaned)
 
-    site_open = bool(resolved_site) and SESSION.active_site == resolved_site
+    site_open = bool(resolved_site) and resolved_site in (
+        SESSION.active_site,
+        SESSION.last_site,
+    )
     same_browser = not chosen or not SESSION.last_browser or chosen == SESSION.last_browser
-    use_current_tab = bool(in_current_tab) or (site_open and same_browser)
+    # "Already in a browser session" includes the browser we opened earlier even if its
+    # current title does not name the site (for example a fresh blank tab).
+    browser_session = bool(
+        chosen and (SESSION.last_browser or SESSION.active_site or SESSION.last_site)
+    )
+    # In-tab navigation is for a SITE search. A plain Google query still opens the
+    # browser normally, so the first search after a launch cannot hijack the old tab.
+    use_current_tab = bool(
+        chosen
+        and resolved_site
+        and (in_current_tab or site_open or (browser_session and same_browser))
+    )
 
     if use_current_tab and chosen:
         opened = _open_in_current_tab(url, chosen)
@@ -323,6 +468,10 @@ def web_search(
     if chosen:
         SESSION.note_app(chosen, browser=True)
     SESSION.note_search(cleaned, chosen or None)
+    if resolved_site:
+        SESSION.active_site = resolved_site
+        SESSION.last_site = resolved_site
+        SESSION.note_action(f"searched {resolved_site} for {cleaned}".strip())
     return {
         "ok": True,
         "query": cleaned,
@@ -331,6 +480,11 @@ def web_search(
         "url": url,
         "in_current_tab": bool(opened.get("method") == "current_tab"),
         "opened_with": opened.get("opened_with"),
+        "reply": (
+            f"Opening {DISPLAY_NAMES.get(resolved_site, resolved_site.title())}."
+            if resolved_site and not cleaned
+            else None
+        ),
     }
 
 
@@ -388,12 +542,27 @@ def open_first_result(
                 method = "search"
                 reply = FIRST_RESULT_FAILED_REPLY
 
-    opened = open_url(url, chosen or None)
+    if is_blank_redirect(url):  # defence in depth: never show a white redirect page
+        url = search_url(cleaned)
+        method = "search"
+        reply = FIRST_RESULT_FAILED_REPLY
+
+    site_open = bool(requested_site) and requested_site in (
+        SESSION.active_site,
+        SESSION.last_site,
+    )
+    if site_open and chosen and method == "site_search":
+        opened = _open_in_current_tab(url, chosen)
+    else:
+        opened = open_url(url, chosen or None)
     if not opened.get("ok"):
         return {"ok": False, "query": cleaned, "browser": chosen, "error": opened.get("error")}
     if chosen:
         SESSION.note_app(chosen, browser=True)
     SESSION.note_search(cleaned, chosen or None)
+    if requested_site:
+        SESSION.active_site = requested_site
+        SESSION.last_site = requested_site
     return {
         "ok": True,
         "query": cleaned,
@@ -402,4 +571,5 @@ def open_first_result(
         "url": url,
         "method": method,
         "reply": reply,
+        "in_current_tab": bool(opened.get("method") == "current_tab"),
     }

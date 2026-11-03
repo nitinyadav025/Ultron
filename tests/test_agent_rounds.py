@@ -101,8 +101,9 @@ def test_local_backend_caps_tool_rounds_at_three() -> None:
     assert EXEC_COUNT["n"] == 3  # exactly three tool rounds, never a 4th
     assert adapter.tools_seen[-1] is None  # final turn runs without tools
     assert adapter.calls == 4
-    # Local generation stays short: 128 tokens for the first call, 96 after a tool ran.
-    assert adapter.max_output_tokens_seen == [128, 96, 96, 96]
+    # Phase 7: 220 tokens on every local call so spoken replies and type_text paragraphs
+    # are never cut mid-sentence.
+    assert adapter.max_output_tokens_seen == [220, 220, 220, 220]
 
 
 class SetVolumeAdapter:

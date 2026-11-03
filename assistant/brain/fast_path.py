@@ -15,11 +15,14 @@ import logging
 import re
 
 from assistant.brain.context import SESSION
+from assistant.brain.skills import memory_value
 from assistant.brain.tool_replies import code_reply_for_tool
 from assistant.speech.wake import normalise_spoken_command
 from assistant.tools.apps import app_key
+from assistant.tools.desktop_control import parse_duration_seconds
 from assistant.tools.registry import ToolRegistry
 from assistant.tools.volume import numbers_in_text
+from assistant.tools.web import parse_search_request
 
 logger = logging.getLogger("ultron.fastpath")
 
@@ -84,6 +87,35 @@ _COMPOUND_SPLIT = re.compile(r"\s+(?:and|then)\s+", re.I)
 _WAKE_COMMA = re.compile(r",\s*(?:hey\s+)?ultron\s+", re.I)
 _LEADING_TURN = re.compile(r"^\s*(?:i'll turn|ill turn)\s+", re.I)
 _FIRST_LINK = re.compile(r"(?:please )?open (?:the )?first (?:link|result)(?: please)?")
+_REPEAT_REQUEST = re.compile(
+    r"^(?:what did you (?:just )?say|"
+    r"(?:can|could|would) you (?:please )?repeat(?: that| it)?|"
+    r"repeat (?:that|it)|say (?:that|it) again)\b"
+)
+_WRITE_IT = frozenset(
+    {"write it", "yes write it", "write that", "type it", "yes type it", "write this"}
+)
+_EMAIL_COMMANDS = frozenset(
+    {
+        "enter the email",
+        "enter email",
+        "type the email",
+        "type email",
+        "enter my email",
+        "type my email",
+        "write the email",
+        "write my email",
+    }
+)
+_DOCUMENT_TARGET = re.compile(
+    r"\b(?:in|inside|into)\s+(?:this|the|a|my)?\s*(?:new\s+)?"
+    r"(?:document|doc|tab|window|page|editor|file)\b",
+    re.I,
+)
+_TIMER_COMMAND = re.compile(
+    r"^(?:please )?(?:(?:set|start) (?:a )?timer (?:for )?|timer (?:for )?)"
+    r"(?P<duration>.+)$"
+)
 
 
 def _prepare_text(text: str) -> str:
@@ -140,13 +172,52 @@ def _strip_request_prefixes(cleaned: str) -> str:
 def _match_single(text: str) -> dict[str, object] | None:
     """Return {"kind", "tool", "arguments", "request"} for one simple sentence."""
     raw = _prepare_text((text or "").strip())
+    repaired = normalise_spoken_command(raw)
+    spoken = _normalise(repaired)
+
+    # Repeat requests are answered from SESSION.last_reply, even when the previous turn
+    # was a fast-path action or a learned skill (the split-brain fix).
+    if _REPEAT_REQUEST.match(spoken):
+        return _chat(
+            spoken,
+            SESSION.last_reply or "I haven't said anything yet.",
+            text,
+        )
+
+    # "write it" / "yes write it" / "right it": paste the previous answer immediately.
+    if spoken in _WRITE_IT:
+        if not SESSION.last_reply:
+            return _chat(spoken, "What should I write?", text)
+        return {
+            "kind": "type_text",
+            "tool": "type_text",
+            "arguments": {"text": SESSION.last_reply},
+            "request": text,
+        }
+
+    # Stored facts: "enter the email" pastes user_memory["email"].
+    if spoken in _EMAIL_COMMANDS:
+        email = memory_value("email")
+        if not email:
+            return _chat(spoken, "I don't have your email saved yet.", text)
+        return {
+            "kind": "type_text",
+            "tool": "type_text",
+            "arguments": {"text": email},
+            "request": text,
+        }
+
     typed = re.match(
         r"(?i)^(?:(?:can|could|would|will) you )?(?:please )?"
         r"(?:type|write|enter text) (.+)$",
-        raw,
+        repaired,
     )
     if typed:
         text_to_type = typed.group(1).strip()
+        # "write what is an AI agent in this new document" is content generation, not a
+        # literal dictation: let the LLM write the paragraph and call type_text.
+        if _DOCUMENT_TARGET.search(text_to_type):
+            return None
         terminal = bool(re.search(r"\bin (?:the )?terminal$", text_to_type, re.I))
         if terminal:
             text_to_type = re.sub(r"\s+in (?:the )?terminal$", "", text_to_type, flags=re.I).strip()
@@ -158,9 +229,35 @@ def _match_single(text: str) -> dict[str, object] | None:
             "request": text,
         }
 
-    cleaned = _strip_request_prefixes(_normalise(normalise_spoken_command(text)))
+    cleaned = _strip_request_prefixes(spoken)
     if not cleaned:
         return None
+
+    # "search f1 in youtube", "search on youtube for f1", "search youtube".
+    site_request = parse_search_request(repaired)
+    if site_request is not None:
+        query, site = site_request
+        arguments: dict[str, object] = {"query": query, "site": site}
+        if SESSION.last_browser:
+            arguments["browser"] = SESSION.last_browser
+        return {
+            "kind": "web_search",
+            "tool": "web_search",
+            "arguments": arguments,
+            "request": text,
+        }
+
+    # "set a timer for 5 seconds", "timer for 1 minute 30 seconds".
+    timer_request = _TIMER_COMMAND.match(cleaned)
+    if timer_request:
+        seconds = parse_duration_seconds(timer_request.group("duration"))
+        if seconds is not None:
+            return {
+                "kind": "set_timer",
+                "tool": "set_timer",
+                "arguments": {"seconds": seconds},
+                "request": text,
+            }
 
     instant = _chat_reply(cleaned)
     if instant:
@@ -248,6 +345,11 @@ def _match_single(text: str) -> dict[str, object] | None:
             "win:overview",
             re.compile(r"^(?:please )?(?:show windows|overview|show overview)$"),
         ),
+        # One allow-listed key press.
+        (
+            "press_key",
+            re.compile(r"^(?:please )?press (?:the )?(?P<key>[a-z0-9 ]+?)(?: key)?$"),
+        ),
         # Scrolling.
         ("scroll:down", re.compile(r"^(?:please )?(?:scroll|slide) down$")),
         ("scroll:up", re.compile(r"^(?:please )?(?:scroll|slide) up$")),
@@ -275,14 +377,36 @@ def _match_single(text: str) -> dict[str, object] | None:
         ("media:next", re.compile(r"^(?:please )?next (?:song|track)$")),
         ("media:previous", re.compile(r"^(?:please )?(?:previous|prev) (?:song|track)$")),
         # System information and screenshot.
-        ("system:battery", re.compile(r"^(?:please )?(?:what is my battery|battery status)$")),
-        ("system:time", re.compile(r"^(?:please )?(?:what time is it|what is the time)$")),
+        (
+            "system:battery",
+            re.compile(
+                r"^(?:please )?(?:what is my battery|my battery|the battery|battery status|"
+                r"tell me my battery|how is my battery|battery level)$"
+            ),
+        ),
+        (
+            "system:time",
+            re.compile(
+                r"^(?:please )?(?:what time is it|what is the time|tell me the time|"
+                r"the time|current time|the current time|what is the current time)$"
+            ),
+        ),
         (
             "system:date",
-            re.compile(r"^(?:please )?(?:what is today s date|what date is it)$"),
+            re.compile(
+                r"^(?:please )?(?:what is today s date|what is today s day|what date is it|"
+                r"tell me the current date|tell me today s date|what is the current date|"
+                r"current date|the current date|the date|what is today s date)$"
+            ),
         ),
-        ("system:status", re.compile(r"^(?:please )?system status$")),
-        ("screenshot", re.compile(r"^(?:please )?(?:take a screenshot|capture screen|screenshot)$")),
+        ("system:status", re.compile(r"^(?:please )?(?:system status|system info)$")),
+        (
+            "screenshot",
+            re.compile(
+                r"^(?:please )?(?:take (?:a )?screenshots?|capture (?:the )?screen(?:shot)?s?|"
+                r"screenshots?)$"
+            ),
+        ),
         # one step: open the browser with the search URL
         (
             "web_search",
@@ -394,6 +518,13 @@ def _match_single(text: str) -> dict[str, object] | None:
                 "kind": "window_control",
                 "tool": "window_control",
                 "arguments": {"action": kind.split(":", 1)[1]},
+                "request": text,
+            }
+        if kind == "press_key":
+            return {
+                "kind": kind,
+                "tool": "press_key",
+                "arguments": {"key": _clean_target(groups.get("key") or "")},
                 "request": text,
             }
         if kind.startswith("scroll:"):
@@ -609,4 +740,7 @@ def try_fast_path(registry: ToolRegistry, text: str) -> str | None:
         logger.info("Fast path: LLM used for %r", text)
         return None
     logger.info("Fast path: used for %r (%s)", text, command["kind"])
-    return run_fast_command(registry, command)
+    reply = run_fast_command(registry, command)
+    if reply:
+        SESSION.last_reply = reply
+    return reply

@@ -4,6 +4,7 @@ Enforces 25-step cap, wall-clock cap, 3-failure stop, parallel tool calls, and l
 
 from __future__ import annotations
 
+import json
 import queue
 import re
 import threading
@@ -12,15 +13,18 @@ from typing import Any, Callable
 
 from google.genai import types
 
-from assistant.brain.context import get_screen_context, screen_line as build_screen_line
+from assistant.brain.context import SESSION, context_tag, get_screen_context
 from assistant.brain.gemini_client import GeminiAdapter, TokenUsageStats
 from assistant.brain.local_client import LocalAdapter
 from assistant.brain.prompts import build_chat_prompt, build_system_prompt
-from assistant.brain.reply_style import short_plain_reply
+from assistant.brain.reply_style import clean_llm_reply, short_plain_reply
 from assistant.brain.skills import (
     match_skill,
+    parse_memory_teaching,
     parse_teaching_command,
     prompt_hint,
+    save_user_alias,
+    save_user_fact,
     save_user_skill,
 )
 from assistant.brain.tool_output import compact_tool_result
@@ -96,10 +100,11 @@ def looks_like_pure_chat(text: str) -> bool:
     return not bool(_TOOL_INTENT.search(cleaned))
 
 
-# Local generation caps: a tool call needs far fewer tokens than the 512 default, and a
-# follow-up turn must stay a one-sentence answer (long paragraphs were the 20 s reply).
-LOCAL_MAX_TOKENS_FIRST = 128
-LOCAL_MAX_TOKENS_FOLLOWUP = 96
+# Phase 7: 220 tokens so a type_text paragraph and a 1-2 sentence spoken reply are never
+# chopped mid-sentence ("...goals on." / "...use for."). The sentence guard in
+# reply_style.clean_llm_reply trims a reply that still hits the cap.
+LOCAL_MAX_TOKENS_FIRST = 220
+LOCAL_MAX_TOKENS_FOLLOWUP = 220
 
 
 @dataclass
@@ -200,6 +205,71 @@ class AgentLoop:
         room = max(0, limit - len(tail))
         self.history = prior[-room:] + tail if room else tail
 
+    @staticmethod
+    def _tagged_contents(
+        contents: list[types.Content], tag: str
+    ) -> list[types.Content]:
+        """Copy the history and prepend one context tag to the current user text.
+
+        The stored history stays 100% clean (no tag, no screen text), so the system
+        prompt and the cached prefix never change. Only the payload sent to the model is
+        decorated.
+        """
+        copied = list(contents)
+        for index in range(len(copied) - 1, -1, -1):
+            content = copied[index]
+            if getattr(content, "role", None) != "user":
+                continue
+            parts = list(getattr(content, "parts", None) or [])
+            text_indexes = [
+                part_index
+                for part_index, part in enumerate(parts)
+                if getattr(part, "text", None)
+            ]
+            if not text_indexes:
+                continue
+            tagged_parts: list[types.Part] = []
+            for part_index, part in enumerate(parts):
+                if part_index == text_indexes[-1]:
+                    tagged_parts.append(
+                        types.Part.from_text(text=f"{tag}\n{getattr(part, 'text', '')}")
+                    )
+                else:
+                    tagged_parts.append(part)
+            copied[index] = types.Content(role="user", parts=tagged_parts)
+            break
+        return copied
+
+    def record_external_turn(
+        self,
+        user_text: str,
+        tool_name: str = "",
+        tool_args: dict[str, Any] | None = None,
+        reply: str = "",
+    ) -> None:
+        """Record a fast-path/learned-skill turn in the same history as the LLM turns.
+
+        Follow-ups such as "write what is an AI agent inside this new document" or
+        "what did you say?" then see the real previous action and answer. SESSION keeps
+        the last spoken reply for an instant repeat.
+        """
+        cleaned_user = redact_secrets((user_text or "").strip())
+        cleaned_reply = (reply or "").strip()
+        if cleaned_user:
+            self.history.append(
+                types.Content(role="user", parts=[types.Part.from_text(text=cleaned_user)])
+            )
+        if cleaned_reply:
+            self.history.append(
+                types.Content(role="model", parts=[types.Part.from_text(text=cleaned_reply)])
+            )
+            SESSION.last_reply = cleaned_reply
+        if tool_name:
+            SESSION.note_action(
+                f"{tool_name} {json.dumps(tool_args or {}, ensure_ascii=False, default=str)}"
+            )
+        self._prune_history()
+
     def _preview(self, fn_name: str, args: dict[str, Any]) -> str:
         if fn_name == "open_app" and "app_name" in args:
             cmd, _ = resolve_app_launch_command(str(args["app_name"]))
@@ -219,7 +289,9 @@ class AgentLoop:
             built = code_reply_for_tool(last_tool[0], last_tool[1])
             if built:
                 return built
-        shaped = short_plain_reply(text, max_chars=self.config.voice_reply_max_chars)
+        shaped = short_plain_reply(
+            clean_llm_reply(text), max_chars=self.config.voice_reply_max_chars
+        )
         # "There are no items..." is only allowed when code itself built it from a real,
         # empty listing (handled above). A model worded claim here is never backed by data.
         if claims_an_empty_folder(shaped):
@@ -252,6 +324,9 @@ class AgentLoop:
             reply = run_fast_command(self.registry, command)
             if reply and reply not in replies:
                 replies.append(reply)
+        if replies:
+            SESSION.note_action(f"skill {getattr(skill, 'trigger', '')}".strip())
+            SESSION.last_reply = " ".join(replies)
         return replies
 
     def run_task(self, user_input: str, dry_run: bool = False) -> AgentTaskResult:
@@ -259,14 +334,21 @@ class AgentLoop:
         # Leave one slot for the new user message: the prompt it produces stays at 6.
         self._prune_history(self.HISTORY_MAX_MESSAGES - 1)
         try:
-            return self._run_task(user_input, dry_run)
+            result = self._run_task(user_input, dry_run)
         finally:
             self._prune_history(keep_current_protocol=True)
+        if result.reply:
+            SESSION.last_reply = result.reply
+        return result
 
     def _run_task(self, user_input: str, dry_run: bool = False) -> AgentTaskResult:
         request_text = user_input.strip()
-        live_screen = build_screen_line(get_screen_context())
+        live_screen = get_screen_context()
         skills_hint = prompt_hint(request_text, self.config)
+        turn_context = context_tag(live_screen, skills_hint)
+        # Static for every call in this task: screen/skills never enter the system message.
+        gate_mode = getattr(self.registry.gate, "mode", "auto-safe")
+        local_system_prompt = build_system_prompt(self.config, gate_mode)
         cleaned = request_text
         if cleaned.lower().startswith("plan only"):
             dry_run = True
@@ -292,6 +374,22 @@ class AgentLoop:
                     + " and ".join(skill.actions)
                     + "."
                 )
+            self.history.append(types.Content(role="model", parts=[types.Part.from_text(text=reply)]))
+            self.watchdog.stop_task()
+            return AgentTaskResult(True, reply, 0, usage_acc, dry_run=dry_run)
+
+        memory_teaching = parse_memory_teaching(request_text)
+        if memory_teaching and not dry_run:
+            kind, name, value = memory_teaching
+            try:
+                if kind == "alias":
+                    alias, target = save_user_alias(self.config, name, value)
+                    reply = f"Got it. When you say {alias}, I'll use {target}."
+                else:
+                    key = save_user_fact(self.config, name, value)
+                    reply = f"Got it. I've saved your {key.replace('_', ' ')}."
+            except (OSError, ValueError) as exc:
+                reply = f"I couldn't save that: {exc}"
             self.history.append(types.Content(role="model", parts=[types.Part.from_text(text=reply)]))
             self.watchdog.stop_task()
             return AgentTaskResult(True, reply, 0, usage_acc, dry_run=dry_run)
@@ -333,8 +431,8 @@ class AgentLoop:
             self.step_callback("Thinking (chat)...")
             history = self.history[-8:]
             resp, turn_u = self.adapter.generate_turn(
-                contents=history,
-                system_instruction=build_chat_prompt(self.config, screen_line=live_screen),
+                contents=self._tagged_contents(history, turn_context),
+                system_instruction=build_chat_prompt(self.config),
                 tools=None,
                 max_output_tokens=LOCAL_MAX_TOKENS_FOLLOWUP,
             )
@@ -387,13 +485,8 @@ class AgentLoop:
                 else:
                     tools_payload = self.registry.get_gemini_tools()
                 resp, turn_u = self.adapter.generate_turn(
-                    contents=self.history,
-                    system_instruction=build_system_prompt(
-                        self.config,
-                        self.registry.gate.mode,
-                        screen_line=live_screen,
-                        skills_hint=skills_hint,
-                    ),
+                    contents=self._tagged_contents(self.history, turn_context),
+                    system_instruction=local_system_prompt,
                     tools=tools_payload,
                     **self._generation_limits(tool_rounds),
                 )

@@ -721,6 +721,7 @@ def test_compact_schema_is_under_380_estimated_tokens() -> None:
     from assistant.tools.desktop_control import (
         browser_tab_control,
         media_control,
+        press_key,
         scroll_page,
         set_brightness,
         system_info,
@@ -747,6 +748,7 @@ def test_compact_schema_is_under_380_estimated_tokens() -> None:
         web_search,
         open_first_result,
         type_text,
+        press_key,
         scroll_page,
         browser_tab_control,
         window_control,
@@ -761,16 +763,29 @@ def test_compact_schema_is_under_380_estimated_tokens() -> None:
     estimated = len(json.dumps(tools, separators=(",", ":"))) / 4
 
     assert {item["function"]["name"] for item in tools} == {
+        "list_files",
+        "read_file",
         "open_app",
         "close_app",
+        "volume_up",
+        "volume_down",
+        "set_volume",
+        "mute_audio",
         "web_search",
         "open_first_result",
         "type_text",
+        "press_key",
         "scroll_page",
-        "set_volume",
-        "mute_audio",
+        "browser_tab_control",
+        "window_control",
+        "set_brightness",
+        "media_control",
+        "system_info",
+        "take_screenshot",
     }
-    assert estimated <= 380
+    # Phase 7 exposes every tool; the static prefix is cached, so the extra schemas are
+    # paid once rather than on every turn.
+    assert estimated <= 1600
 
 
 def test_local_prompt_has_the_natural_language_examples() -> None:
@@ -877,7 +892,7 @@ def test_terminal_typing_skips_the_window_focus(monkeypatch: pytest.MonkeyPatch)
     assert focus_calls == []
 
 
-def test_type_text_uses_key_delay_and_copies_to_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_type_text_pastes_the_clipboard_instantly(monkeypatch: pytest.MonkeyPatch) -> None:
     typed: list[list[str]] = []
     copied: list[str] = []
     monkeypatch.setattr(dc, "_ydotool_runner", lambda argv: typed.append(argv) or (True, ""))
@@ -886,5 +901,5 @@ def test_type_text_uses_key_delay_and_copies_to_clipboard(monkeypatch: pytest.Mo
     result = dc.type_text("hello world")
 
     assert result["ok"] is True
-    assert typed == [["type", "--key-delay", "12", "--", "hello world"]]
+    assert typed == [["key", "29:1", "47:1", "47:0", "29:0"]]
     assert copied == ["hello world"]

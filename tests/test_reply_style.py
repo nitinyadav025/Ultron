@@ -262,15 +262,14 @@ def test_local_prompt_is_short_and_static_prefix_comes_first() -> None:
     cfg = load_config()
     cfg.backend = "local"
     prompt = build_system_prompt(cfg, "auto-safe")
-    # B6 adds four natural-language tool examples; the whole prompt is still under 800
-    # characters (~180 tokens) and the volatile Ctx line stays last for prompt caching.
-    assert len(prompt) < 800
+    # Phase 7 adds the natural persona, writing and system-tool rules. The text is
+    # 100% static (no Screen/Skills/Ctx line), so llama-server caches it once in slot 0
+    # and it is not re-evaluated on later turns.
+    assert len(prompt) < 1600
+    assert "Screen:" not in prompt
+    assert "Ctx:" not in prompt
     assert prompt.startswith("You are Ultron")
     assert "Answer questions directly" in prompt
-    # Anything volatile (mode, roots, date) sits at the very end for prompt-cache reuse.
-    assert prompt.rstrip().splitlines()[-1].startswith("Ctx:")
-    other = build_system_prompt(cfg, "human-only")
-    first_line = prompt.splitlines()[0]
-    assert other.splitlines()[0] == first_line
-    # The home root already covers Desktop/Documents/Downloads, so it is not repeated.
-    assert prompt.count("~/Desktop") == 0
+    # Even the safety mode is not in the local prompt: the entire message is the cached
+    # prefix, and the per-turn mode/screen/skills travel in the [Context: ...] tag.
+    assert build_system_prompt(cfg, "human-only") == prompt
