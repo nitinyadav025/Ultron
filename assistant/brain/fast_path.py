@@ -307,6 +307,13 @@ def _match_single(text: str) -> dict[str, object] | None:
                 r"^(?:please )?search (?:for )?(?P<query>.+?) and open (?:the )?first (?:link|result)$"
             ),
         ),
+        (
+            "open_first_video",
+            re.compile(
+                r"^(?:please )?(?:play|open|click) (?:the )?first video"
+                r"(?: (?:for|of|on) (?P<query>.+))?$"
+            ),
+        ),
         # Direct and conversational close requests, before any "open" pattern.
         (
             "close_app",
@@ -479,20 +486,51 @@ def _match_single(text: str) -> dict[str, object] | None:
             if not folder or _bad_app_target(folder):
                 return None
             return {"kind": kind, "tool": "list_files", "arguments": {"directory": folder}, "request": text}
+        if kind == "open_first_video":
+            query = _clean_target(groups.get("query") or SESSION.last_query)
+            if not query:
+                return _chat(cleaned, "What should I play on YouTube?", text)
+            return {
+                "kind": "open_first_result",
+                "tool": "open_first_result",
+                "arguments": {"query": query, "site": "youtube", "first_video": True},
+                "request": text,
+            }
         if kind == "web_search":
             query = _clean_target(groups["query"])
-            raw_browser = _clean_target(groups.get("browser") or "")
-            browser = app_key(raw_browser) if raw_browser else ""
+            raw_target = _clean_target(groups.get("browser") or "")
             if not query:
                 return None
-            if raw_browser and browser not in _BROWSER_NAMES:
-                # "open a new tab and search for github" is two actions, not a browser
-                # named "a new tab". Let the compound splitter handle it.
-                return None
+            if raw_target:
+                browser = app_key(raw_target)
+                if browser in _BROWSER_NAMES:
+                    return {
+                        "kind": kind,
+                        "tool": "web_search",
+                        "arguments": {"query": query, "browser": browser},
+                        "request": text,
+                    }
+                # "search f1 in youtube" searches the site, not a browser named youtube.
+                from assistant.tools.web import normalise_site
+
+                site = normalise_site(raw_target)
+                if not site:
+                    # "open a new tab and search for github" is two actions, not a
+                    # browser/site named "a new tab". Let the compound splitter handle it.
+                    return None
+                site_args: dict[str, object] = {"query": query, "site": site}
+                if SESSION.last_browser:
+                    site_args["browser"] = SESSION.last_browser
+                return {
+                    "kind": kind,
+                    "tool": "web_search",
+                    "arguments": site_args,
+                    "request": text,
+                }
             return {
                 "kind": kind,
                 "tool": "web_search",
-                "arguments": {"query": query, "browser": browser or None},
+                "arguments": {"query": query, "browser": None},
                 "request": text,
             }
         if kind == "open_first_result":

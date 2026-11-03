@@ -1,14 +1,16 @@
-"""Web search helpers: open a search page, or open the first real result.
+"""Web search helpers: open a search page, a site search, or the first real result.
 
-Only two actions exist:
+Actions:
 
-* ``web_search(query, browser=None)`` builds the URL in code and opens it;
-* ``open_first_result(query)`` does ONE read-only HTTPS GET to DuckDuckGo's HTML page,
-  picks the first real result, unwraps DuckDuckGo's redirect and opens it.
+* ``web_search(query, browser=None, site=None, in_current_tab=False)`` builds the URL
+  in code and opens it. Known sites use their own search URL; a site already on screen is
+  searched in the active tab instead of spawning a duplicate tab.
+* ``open_first_result(query, ...)`` never uses Google's ``btnI=1`` (it showed a blank
+  redirect page). Known brands open their canonical site, YouTube can open its first
+  parsed video, and other queries use a clean first-result fetch or the Google results.
 
 Safety: subprocess argument lists only (never ``shell=True``), only http/https URLs,
-queries capped at 200 characters with control characters removed, and nothing is typed
-or pressed.
+queries capped at 200 characters, and nothing is typed outside the in-tab helper.
 """
 
 from __future__ import annotations
@@ -23,7 +25,11 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from assistant.brain.context import SESSION
+from assistant.brain.context import (
+    SESSION,
+    active_search_site,
+    get_screen_context,
+)
 from assistant.tools.apps import resolve_app_launch_command, resolve_known_app
 from assistant.tools.registry import tool
 
@@ -34,18 +40,82 @@ SEARCH_ENGINES = {
     "google": "https://www.google.com/search?q=",
     "bing": "https://www.bing.com/search?q=",
 }
-DEFAULT_ENGINE = "duckduckgo"
-FIRST_RESULT_METHODS = ("ducky", "google", "search")
-# The user confirmed the Google "I'm feeling lucky" redirect works on this machine.
-DEFAULT_FIRST_RESULT_METHOD = "google"
+DEFAULT_ENGINE = "google"
+
+SITE_SEARCH_URLS: dict[str, str] = {
+    "youtube": "https://www.youtube.com/results?search_query=",
+    "github": "https://github.com/search?q=",
+    "reddit": "https://www.reddit.com/search/?q=",
+    "wikipedia": "https://en.wikipedia.org/w/index.php?search=",
+    "google": "https://www.google.com/search?q=",
+    "amazon": "https://www.amazon.com/s?k=",
+    "spotify": "https://open.spotify.com/search/",
+    "gmail": "https://mail.google.com/mail/u/0/#search/",
+}
+
+CANONICAL_SITES: dict[str, str] = {
+    "youtube": "https://www.youtube.com",
+    "github": "https://github.com",
+    "instagram": "https://www.instagram.com",
+    "discord": "https://discord.com/app",
+    "reddit": "https://www.reddit.com",
+    "wikipedia": "https://en.wikipedia.org",
+    "chatgpt": "https://chatgpt.com",
+    "gmail": "https://mail.google.com",
+    "netflix": "https://www.netflix.com",
+    "spotify": "https://open.spotify.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "amazon": "https://www.amazon.com",
+    "linkedin": "https://www.linkedin.com",
+    "twitter": "https://x.com",
+    "google": "https://www.google.com",
+    "claude": "https://claude.ai",
+}
+
+DISPLAY_NAMES: dict[str, str] = {
+    "youtube": "YouTube",
+    "github": "GitHub",
+    "instagram": "Instagram",
+    "discord": "Discord",
+    "reddit": "Reddit",
+    "wikipedia": "Wikipedia",
+    "chatgpt": "ChatGPT",
+    "gmail": "Gmail",
+    "netflix": "Netflix",
+    "spotify": "Spotify",
+    "whatsapp": "WhatsApp",
+    "amazon": "Amazon",
+    "linkedin": "LinkedIn",
+    "twitter": "X",
+    "google": "Google",
+    "claude": "Claude",
+}
+
+SITE_ALIASES: dict[str, str] = {
+    "you tube": "youtube",
+    "youtube.com": "youtube",
+    "yt": "youtube",
+    "git hub": "github",
+    "github.com": "github",
+    "insta": "instagram",
+    "ig": "instagram",
+    "reddit.com": "reddit",
+    "wiki": "wikipedia",
+    "chat gpt": "chatgpt",
+    "google mail": "gmail",
+    "gmail.com": "gmail",
+    "x twitter": "twitter",
+    "x.com": "twitter",
+}
+
 DUCKY_URL = "https://duckduckgo.com/?q=!ducky+"
-GOOGLE_LUCKY_URL = "https://www.google.com/search?q="
 FIRST_RESULT_URL = "https://html.duckduckgo.com/html/?q="
+YOUTUBE_SEARCH_URL = SITE_SEARCH_URLS["youtube"]
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) Ultron/1.0"
 MAX_QUERY = 200
 TIMEOUT_S = 8.0
 FIRST_RESULT_FAILED_REPLY = (
-    "I couldn't pick the first result, so I opened the search results."
+    "I couldn't pick the first result, so I opened the Google results."
 )
 
 
@@ -56,11 +126,38 @@ def clean_query(query: str) -> str:
     return cleaned[:MAX_QUERY]
 
 
+def normalise_site(site: str | None) -> str:
+    """Resolve a spoken site name to a key we know how to search, or ''."""
+    cleaned = re.sub(r"[^a-z0-9. ]+", " ", (site or "").lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"^(?:the|on|in) ", "", cleaned)
+    cleaned = SITE_ALIASES.get(cleaned, cleaned)
+    if cleaned in SITE_SEARCH_URLS or cleaned in CANONICAL_SITES:
+        return cleaned
+    if cleaned.endswith(".com") and cleaned[:-4] in SITE_SEARCH_URLS:
+        return cleaned[:-4]
+    return ""
+
+
 def search_url(query: str, engine: str | None = None) -> str:
-    """Build the search URL for SEARCH_ENGINE (default duckduckgo)."""
+    """Build the normal web-search URL (Google by default)."""
     chosen = (engine or os.environ.get("SEARCH_ENGINE") or DEFAULT_ENGINE).lower()
     base = SEARCH_ENGINES.get(chosen, SEARCH_ENGINES[DEFAULT_ENGINE])
     return base + urllib.parse.quote_plus(clean_query(query))
+
+
+def site_search_url(site: str, query: str) -> str:
+    """Build a search URL inside a known site (YouTube, GitHub, ...)."""
+    key = normalise_site(site)
+    if not key or key not in SITE_SEARCH_URLS:
+        return search_url(query)
+    return SITE_SEARCH_URLS[key] + urllib.parse.quote_plus(clean_query(query))
+
+
+def canonical_site_for(query: str) -> str:
+    """Return the site URL when the whole query is a known brand, else ''."""
+    key = normalise_site(query)
+    return CANONICAL_SITES.get(key, "")
 
 
 def _safe_http_url(url: str) -> bool:
@@ -89,7 +186,6 @@ def open_url(url: str, browser: str | None = None) -> dict[str, Any]:
         cmd, resolved = resolved_command
         if not shutil.which(cmd[0]):
             return {"ok": False, "error": f"Browser '{browser}' was not found."}
-        # Exact browser only: never xdg-open (the live Brave bug).
         argv = [*cmd, url]
         name = resolved or browser
     elif shutil.which("xdg-open"):
@@ -102,6 +198,11 @@ def open_url(url: str, browser: str | None = None) -> dict[str, Any]:
         proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as exc:
         return {"ok": False, "error": f"Could not open the browser: {exc}"}
+    # Brave's WebRTC AGC can boost the mic as soon as the browser starts. Re-apply the
+    # safe source level once the browser has settled.
+    from assistant.speech.mic_input import schedule_mic_volume_restore
+
+    schedule_mic_volume_restore()
     logger.info("Opened %s with %s (pid %s)", url, name, proc.pid)
     return {"ok": True, "url": url, "opened_with": name, "pid": proc.pid}
 
@@ -144,18 +245,30 @@ def parse_first_result(page: str) -> str:
     return ""
 
 
-def fetch_first_result(query: str, timeout: float = TIMEOUT_S) -> str:
-    """One read-only HTTPS GET; return the first result URL or ""."""
-    url = FIRST_RESULT_URL + urllib.parse.quote_plus(clean_query(query))
+def _fetch_page(url: str, timeout: float = TIMEOUT_S) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - https constant
             charset = response.headers.get_content_charset() or "utf-8"
-            page = response.read().decode(charset, "replace")
+            return response.read().decode(charset, "replace")
     except Exception as exc:  # network, HTTP, timeout, decoding
-        logger.warning("First-result fetch failed: %s", type(exc).__name__)
+        logger.warning("Page fetch failed: %s", type(exc).__name__)
         return ""
-    return parse_first_result(page)
+
+
+def fetch_first_result(query: str, timeout: float = TIMEOUT_S) -> str:
+    """One read-only HTTPS GET; return the first result URL or ""."""
+    return parse_first_result(_fetch_page(FIRST_RESULT_URL + urllib.parse.quote_plus(clean_query(query)), timeout))
+
+
+def fetch_youtube_first_video(query: str, timeout: float = TIMEOUT_S) -> str:
+    """Return the first ordinary YouTube video URL parsed from a search page, or ''."""
+    page = _fetch_page(YOUTUBE_SEARCH_URL + urllib.parse.quote_plus(clean_query(query)), timeout)
+    found = re.search(r'"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"', page or "")
+    if not found:
+        return ""
+    url = f"https://www.youtube.com/watch?v={found.group(1)}"
+    return url if _safe_http_url(url) else ""
 
 
 def domain_of(url: str) -> str:
@@ -163,17 +276,50 @@ def domain_of(url: str) -> str:
     return netloc[4:] if netloc.startswith("www.") else netloc
 
 
+def _open_in_current_tab(url: str, browser: str) -> dict[str, Any]:
+    from assistant.tools.desktop_control import navigate_current_tab
+
+    navigated = navigate_current_tab(url, browser)
+    if navigated.get("ok"):
+        return {**navigated, "opened": False}
+    return open_url(url, browser or None)
+
+
 @tool(risk_level="safe", read_only=False)
-def web_search(query: str, browser: str | None = None) -> dict[str, Any]:
-    """Search the web in a browser."""
+def web_search(
+    query: str,
+    browser: str | None = None,
+    site: str | None = None,
+    in_current_tab: bool = False,
+) -> dict[str, Any]:
+    """Search the web or a site in a browser."""
     cleaned = clean_query(query)
     if not cleaned:
         return {"ok": False, "error": "The search text was empty."}
+
+    # Refresh the live screen once: if the site is already open, search inside it.
+    get_screen_context()
+    requested_site = normalise_site(site)
+    resolved_site = requested_site or active_search_site()
     chosen = choose_browser(browser)
-    url = search_url(cleaned)
-    opened = open_url(url, chosen or None)
+    url = site_search_url(resolved_site, cleaned) if resolved_site else search_url(cleaned)
+
+    site_open = bool(resolved_site) and SESSION.active_site == resolved_site
+    same_browser = not chosen or not SESSION.last_browser or chosen == SESSION.last_browser
+    use_current_tab = bool(in_current_tab) or (site_open and same_browser)
+
+    if use_current_tab and chosen:
+        opened = _open_in_current_tab(url, chosen)
+    else:
+        opened = open_url(url, chosen or None)
     if not opened.get("ok"):
-        return {"ok": False, "query": cleaned, "browser": chosen, "error": opened.get("error")}
+        return {
+            "ok": False,
+            "query": cleaned,
+            "browser": chosen,
+            "site": resolved_site,
+            "error": opened.get("error"),
+        }
     if chosen:
         SESSION.note_app(chosen, browser=True)
     SESSION.note_search(cleaned, chosen or None)
@@ -181,47 +327,78 @@ def web_search(query: str, browser: str | None = None) -> dict[str, Any]:
         "ok": True,
         "query": cleaned,
         "browser": chosen,
+        "site": resolved_site,
         "url": url,
+        "in_current_tab": bool(opened.get("method") == "current_tab"),
         "opened_with": opened.get("opened_with"),
     }
 
 
 def first_result_url(query: str, method: str | None = None) -> tuple[str, str]:
-    """Return (url, method). No scraping: the browser follows the redirect."""
-    chosen = (method or os.environ.get("FIRST_RESULT_METHOD") or DEFAULT_FIRST_RESULT_METHOD).lower()
-    if chosen not in FIRST_RESULT_METHODS:
-        chosen = DEFAULT_FIRST_RESULT_METHOD
-    encoded = urllib.parse.quote_plus(clean_query(query))
-    if chosen == "ducky":
-        return DUCKY_URL + encoded, chosen
-    if chosen == "google":
-        return GOOGLE_LUCKY_URL + encoded + "&btnI=1", chosen
-    return search_url(query), chosen
+    """Return (url, method) without any redirect trick: canonical site or search page."""
+    canonical = canonical_site_for(query)
+    if canonical:
+        return canonical, "canonical"
+    return search_url(query), "search"
 
 
 @tool(risk_level="safe", read_only=False)
-def open_first_result(query: str, browser: str | None = None) -> dict[str, Any]:
-    """Search the web and open the first result."""
+def open_first_result(
+    query: str,
+    browser: str | None = None,
+    site: str | None = None,
+    first_video: bool = False,
+) -> dict[str, Any]:
+    """Search the web and open the first result, or a known site directly."""
     cleaned = clean_query(query)
     if not cleaned:
         return {"ok": False, "error": "The search text was empty."}
     chosen = choose_browser(browser)
-    url, method = first_result_url(cleaned)
+    requested_site = normalise_site(site)
+
+    url = ""
+    method = ""
+    reply = ""
+    if first_video or (requested_site == "youtube" and first_video):
+        url = fetch_youtube_first_video(cleaned)
+        if url:
+            method = "youtube_video"
+            reply = f"Playing the first YouTube video for {cleaned}."
+        else:
+            url = site_search_url("youtube", cleaned)
+            method = "site_search"
+            reply = f"I opened the YouTube results for {cleaned}."
+    elif requested_site:
+        url = site_search_url(requested_site, cleaned)
+        method = "site_search"
+        reply = f"Opening the {DISPLAY_NAMES.get(requested_site, requested_site.title())} results for {cleaned}."
+    else:
+        canonical = canonical_site_for(cleaned)
+        if canonical:
+            url = canonical
+            method = "canonical"
+            reply = f"Opening {DISPLAY_NAMES.get(normalise_site(cleaned), cleaned.title())} for you."
+        else:
+            url = fetch_first_result(cleaned)
+            if url:
+                method = "first"
+                reply = f"Opening the first result for {cleaned}."
+            else:
+                url = search_url(cleaned)
+                method = "search"
+                reply = FIRST_RESULT_FAILED_REPLY
+
     opened = open_url(url, chosen or None)
     if not opened.get("ok"):
         return {"ok": False, "query": cleaned, "browser": chosen, "error": opened.get("error")}
     if chosen:
         SESSION.note_app(chosen, browser=True)
     SESSION.note_search(cleaned, chosen or None)
-    reply = (
-        f"Opening the search results for {cleaned}."
-        if method == "search"
-        else f"Opening the first result for {cleaned}."
-    )
     return {
         "ok": True,
         "query": cleaned,
         "browser": chosen,
+        "site": requested_site,
         "url": url,
         "method": method,
         "reply": reply,

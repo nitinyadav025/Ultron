@@ -37,6 +37,7 @@ KEY_W = 17
 KEY_R = 19
 KEY_V = 47
 KEY_H = 35
+KEY_L = 38
 KEY_F11 = 87
 KEY_UP = 103
 KEY_DOWN = 108
@@ -269,6 +270,33 @@ def _copy_clipboard(text: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def navigate_current_tab(url: str, browser: str | None = None) -> dict[str, Any]:
+    """Focus the active browser tab and navigate it with Ctrl+L, paste, Enter.
+
+    Falls back honestly (``ok=False``) when clipboard or key injection is unavailable;
+    the caller then opens a normal URL instead. No new tab is spawned.
+    """
+    target = (browser or SESSION.last_browser or SESSION.last_app or "").strip()
+    if not target:
+        return {"ok": False, "error": "No active browser window to navigate."}
+    if shutil.which("wmctrl") is not None:
+        try:
+            _run(["wmctrl", "-a", _display_name(target)], timeout=2.0)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if _focus_delay_s > 0:
+            time.sleep(_focus_delay_s)
+    if not _copy_clipboard(url):
+        return {"ok": False, "error": "The clipboard is unavailable."}
+    if not _ydotool(["key", *_combo([KEY_LEFTCTRL, KEY_L])])[0]:
+        return {"ok": False, "error": "Could not focus the address bar."}
+    if not _ydotool(["key", *_combo([KEY_LEFTCTRL, KEY_V])])[0]:
+        return {"ok": False, "error": "Could not paste the address."}
+    if not _ydotool(["key", *_tap(KEY_ENTER)])[0]:
+        return {"ok": False, "error": "Could not press Enter."}
+    return {"ok": True, "method": "current_tab", "url": url, "browser": target}
 
 
 @tool(risk_level="safe", read_only=False)

@@ -51,6 +51,8 @@ _PARAM_HINTS: dict[str, str] = {
     "step_percent": "5-20 step",
     "percent": "0-100 target",
     "muted": "true=mute",
+    "trigger": "spoken phrase",
+    "actions": "actions separated by ;",
 }
 
 _SCHEMA_TYPE_TO_JSON: dict[Any, str] = {
@@ -85,6 +87,7 @@ _COMPACT_DESCRIPTIONS: dict[str, str] = {
     "media_control": "Play, pause or skip media.",
     "system_info": "Read battery, time or status.",
     "take_screenshot": "Take a screenshot.",
+    "learn_skill": "Learn a phrase and its actions.",
 }
 
 # The local model only sees these; every other command is handled by fast_path or the
@@ -99,13 +102,14 @@ LOCAL_SCHEMA_TOOLS = frozenset(
         "scroll_page",
         "set_volume",
         "mute_audio",
+        "learn_skill",
     }
 )
 
 # Optional parameters the local model may genuinely need. Everything else optional is
 # omitted: the Python default is still used when the model leaves it out.
 _LOCAL_OPTIONAL_PARAMS: dict[str, frozenset[str]] = {
-    "web_search": frozenset({"browser"}),
+    "web_search": frozenset({"browser", "site"}),
     "open_first_result": frozenset({"browser"}),
     "scroll_page": frozenset({"direction"}),
     "set_volume": frozenset({"percent"}),

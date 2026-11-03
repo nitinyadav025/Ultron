@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 import yaml
 
-from assistant.brain.context import SESSION
+from assistant.brain.context import BROWSERS, SESSION
 from assistant.config import PROJECT_ROOT
 from assistant.tools.registry import tool
 
@@ -520,6 +520,10 @@ def _launch_match(match: AppMatch) -> tuple[dict[str, Any], list[str]]:
         except subprocess.TimeoutExpired:
             pass
         SESSION.note_app(match.key)
+        if match.key in BROWSERS:
+            from assistant.speech.mic_input import schedule_mic_volume_restore
+
+            schedule_mic_volume_restore()
         return (
             {
                 "ok": True,
@@ -567,7 +571,7 @@ def open_app(app_name: str) -> dict[str, Any]:
                 "app_name": display,
                 "browser": browser,
                 "url": url,
-                "reply": f"Opening {display} in {where}.",
+                "reply": f"I've opened {display} in {where}.",
             }
         return {
             "ok": False,
