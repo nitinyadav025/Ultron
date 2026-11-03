@@ -27,8 +27,10 @@
 | GPU | GTX 1650 4 GB, reserved for the LLM only |
 | Default backend | `BACKEND=local` (no API key needed) |
 | Rollback | `BACKEND=gemini` must keep working |
-| Branch (Phase 6) | `phase6-intelligent-agent` (created from `phase5-b6-smart-brain` @ `8e2646f`) |
-| Test state at Phase 6 start | **415 passed, 0 failed, 0 errors** (`pytest -q`, 46.79 s) |
+| Branch (Phase 7) | `phase7-llm-brain-wayland` (created from `phase6-intelligent-agent` @ `3ca55ba`) |
+| Implementation commit | `7306554` (27 files, 2889 insertions) |
+| Test state at Phase 7 start | **450 passed, 0 failed, 0 errors** (`pytest -q`, 46.46 s) |
+| Test state at Phase 7 end | **501 passed, 0 failed, 0 errors** (`pytest -q`, 40.61 s) |
 | Remote | Nothing is pushed. The user pushes when they choose. |
 
 ---
@@ -115,10 +117,18 @@ microphone (PipeWire, pw-record)
 
 ### 3.3 Prompt discipline
 
-The local prompt is a short static header plus a trailing `Ctx:` line. Static text stays
-byte-identical so llama-server can reuse its small cache. Phase 5 reduced the first-call
-prompt from **599 to 455 tokens** and the post-`list_files` call from **5 756 to 548 tokens**
-(−90 %). Phase 6 adds one compact `Screen:` line and caps history at three turns.
+Phase 7 makes the local system prompt **100 % static**: persona, rules and tool guidance
+never contain the screen, skills, mode, roots or date. Everything volatile travels in one
+`[Context: browser=…, site=…, app=…, focused=…, last_action=…]` tag prepended to the current
+**user** message only, while `history` stores clean text. `local_client` pins
+`id_slot: 0` and `cache_prompt: true`, so llama-server caches the prefix once in VRAM.
+
+History is capped at three text-only turns (six messages); every registered desktop tool is
+exposed to the local model, and generation is capped at 220 tokens with a
+sentence-completion guard (`clean_llm_reply`). Phase 5 had reduced the first-call prompt from
+**599 to 455 tokens** and the post-`list_files` call from **5 756 to 548 tokens** (−90 %);
+Phase 6 capped history; Phase 7 removed the per-turn cache invalidation that had pushed a
+live reply from 0.83 s to 5.16 s.
 
 ### 3.4 Safety model
 
@@ -292,6 +302,13 @@ server or `ydotoold` left running.
 | 14 | Multi-turn slowdown | history grows with tool JSON | Every turn re-evaluates a larger prompt | Phase 6 history cap (3 turns) + text-only pruning | Phase 6 tests |
 | 15 | Dry robotic replies | “Firefox is open.”, “Closed the tab.” | Code replies were terse | Phase 6 natural professional replies | Phase 6 tests |
 | 16 | 9 pytest “errors” in permission modes (user report Nov 2/3) | `415 passed, 9 errors` in `test_permission_modes.py` | **Not reproducible at `8e2646f`:** the file passes 12/12 and the full suite 415/415 | Phase 6 audits config/state isolation and adds a guard | Phase 6 tests / final report |
+| 17 | `wmctrl -l` returned 0 windows on GNOME Wayland | `"windows": [], "browser": "", "site": ""` | Native Wayland windows are invisible to X11 tools | Phase 7 `org.gnome.Shell.Introspect.GetWindows` + wmctrl + process/session fallback | `test_phase7_brain_wayland.py` Part 1 |
+| 18 | Live reply grew 0.83 s → 5.16 s | every turn mutated `Screen:` in the system prompt | The KV cache was invalidated at token 0 | Phase 7 static system prompt + `[Context: ...]` on the user message + `id_slot:0`, `cache_prompt:true` | `test_phase7_brain_wayland.py` Part 2 |
+| 19 | “write what is an AI agent inside this new document” typed the instruction literally / refused >200 chars | old `type_text` capped at 200 and no document-intent rule | Dictation and generation shared one path; split-brain history had no previous turn | Phase 7 LLM generation rule + `wl-copy`/Ctrl+V paste up to 4000 chars + `record_external_turn` | `test_phase7_brain_wayland.py` Parts 2/3/5 |
+| 20 | `close GitHub` said “couldn't find an app” | GitHub is a website, not a desktop app | No tab-close routing | Phase 7 web-only site → `browser_tab_control(close_tab)`, reply “I've closed the GitHub tab.” | `test_phase7_brain_wayland.py` Part 6 |
+| 21 | “set a timer for 5 seconds” had no real timer | no timer tool existed | Fast path had no duration parser | Phase 7 `set_timer` + background `threading.Timer` + `notify-send` + Piper | `test_phase7_brain_wayland.py` Part 6 |
+| 22 | Flatpak Discord `Uncaught exception: Error: write EPIPE at console.warn` (19:20:19) | Electron/Flatpak launched with `stderr=PIPE`; `pkill` killed zypak before Electron exited | Detached GUI children must never own a pipe; Flatpak must be stopped as a sandbox | Phase 7 all-DEVNULL launches + `flatpak kill <id>` first + XWayland `wmctrl -c` + process-group SIGTERM | `test_phase7_brain_wayland.py` EPIPE tests |
+| 23 | `"is stop listening"` did not stop hands-free mode | wake stripping left the filler “is” | Stop check compared the raw remainder | Phase 7 stops after stripping `is/please/now/just/...` | `test_phase7_brain_wayland.py` Part 6 |
 
 **Honesty note on #16:** the coding session on 2026-11-03 could not reproduce the 9 errors.
 The exact command `.venv/bin/python -m pytest tests/test_permission_modes.py -v` returned
@@ -488,7 +505,60 @@ executes both actions.
 
 ---
 
-## 7. Verification ledger (Phase 6)
+## 6A. Phase 7 — Wayland Screen Sensor, Static KV Cache, Writing, Timers & Flatpak EPIPE (Nov 3)
+
+Branch: `phase7-llm-brain-wayland` (from `phase6-intelligent-agent` @ `3ca55ba`).
+Implementation commit: `7306554`. Full details and the live-test checklist are in
+`docs/PROGRESS.md`; this section is the long-term summary.
+
+| Part | What | Result |
+|---|---|---|
+| 1 | GNOME Wayland 3-layer screen sensor | DONE — `ensure_wayland_introspect`, gdbus Introspect (0.35 s), wmctrl (0.2 s), process+session fallback; `focused_window/focused_app/last_reply/last_typed_text`; Claude site |
+| 2 | Static KV prefix and full tool arsenal | DONE — 100 % static system prompt, `[Context: ...]` tag on the user message, all 22 registered tools, `id_slot:0`, `cache_prompt:true`, `max_tokens:220`, `clean_llm_reply`, `record_external_turn` |
+| 3 | Natural executive brain | DONE — persona/writing/system/timer/tab rules, `ULTRON_BRAIN_REPLIES=auto`, instant repeat from `SESSION.last_reply`, warm code replies |
+| 4 | Google + site/in-tab search + first result | DONE — Google default, `parse_search_request`, Ctrl+L/Ctrl+V/Enter with 60/40 ms beats, expanded canonical brands, no `btnI`/`!ducky` |
+| 5 | Instant clipboard typing | DONE — 4000-char cap, `wl-copy -- <text>` + Ctrl+V, `--key-delay 8` fallback, `last_typed_text`, `write it`/`right it` |
+| 6 | Timers, tab close, aliases, stop phrase | DONE — `set_timer` background thread + notification + Piper, web-only close → Ctrl+W, Lutris/text-editor aliases, `is stop listening` |
+| 7 | Skills/memory/dataset | DONE — alias + fact teaching in `workspace/user_memory.json`, `enter the email`, `main.py export-dataset` ChatML JSONL |
+| 8 | Tests and benchmark | DONE — 51 new tests, full suite **501 passed**, benchmark **25/25**, average **1.469 ms** (mocked) |
+| + | Electron/Flatpak EPIPE | DONE — every GUI `Popen` uses all-DEVNULL + new session + close_fds; `flatpak kill` before pkill; tests pin it |
+
+**Why `assistant/llm/llama_server.py` was not created:** this codebase has no
+`assistant/llm/` package. The actual HTTP transport to `llama-server` lives in
+`assistant/brain/local_client.py`, so the required `id_slot`, `cache_prompt`, `max_tokens`
+and sentence guard were implemented there. No duplicate transport was added.
+
+**Tool-list note:** `press_key` was listed in the Phase 7 request but did not exist. It was
+added as a strictly allow-listed navigation tool (enter, tab, escape, space, backspace,
+delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injection.
+
+### 6A.1 Verification (actually run)
+
+| Check | Command | Result |
+|---|---|---|
+| Full suite | `.venv/bin/python -m pytest -q` | **501 passed** (40.61 s) |
+| Phase 7 module | `pytest tests/test_phase7_brain_wayland.py -q` | **50 passed** |
+| Benchmark | `.venv/bin/python main.py benchmark` | **25/25**, average **1.469 ms** (mocked) |
+| Compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
+| Whitespace | `git diff --check` | clean |
+| No llama-server | `ss -ltnp \| grep 9931` | empty |
+| No ydotool daemon | `pgrep -a ydotoold` | empty |
+| Live mic/speakers/GUI | — | **UNVERIFIED** (no hardware in the coding session) |
+
+### 6A.2 Known limitations added by Phase 7
+
+- Real GNOME introspection, `ydotool` key injection, `wl-copy` paste and in-tab browser
+  navigation are offline-tested only; the live checklist in `docs/PROGRESS.md` is the proof.
+- `gdbus`/`wmctrl`/`pgrep` screen probes run once per task in production (roughly 40 ms on
+  this laptop); tests and the benchmark mock them so they stay deterministic.
+- `press_key` is intentionally limited to navigation keys; it cannot type arbitrary text or
+  press destructive shortcuts.
+- The exported ChatML dataset reflects what the experience log records (transcript, tool
+  names, reply); it does not contain hidden reasoning or audio.
+
+---
+
+## 7. Verification ledger (Phase 6/7)
 
 > Every number here must come from an actual command run in this session. Anything not run
 > is labelled UNVERIFIED.
@@ -500,7 +570,12 @@ executes both actions.
 | Full suite at HEAD | `.venv/bin/python -m pytest -q` | **415 passed** (46.79 s) |
 | Full suite after Phase 6 | `.venv/bin/python -m pytest -q` | **450 passed** (39.19 s) |
 | Phase 6 tests | `tests/test_phase6_intelligent_agent.py` | **31 passed** |
-| Benchmark | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **2.063 ms** (mocked) |
+| Benchmark after Phase 6 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **2.063 ms** (mocked) |
+| Full suite after Phase 7 | `.venv/bin/python -m pytest -q` | **501 passed** (40.61 s) |
+| Phase 7 tests | `tests/test_phase7_brain_wayland.py` | **50 passed** |
+| Benchmark after Phase 7 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **1.469 ms** (mocked) |
+| Phase 7 compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
+| Phase 7 diff check | `git diff --check` | clean |
 | Real saved clips | offline Whisper comparison | **8/8 semantic**; single wake **6/8 → 8/8**; “Hey Ultron” **2/4 both** |
 | Live screen read | `wmctrl -m` / `wmctrl -l` | GNOME Shell responds; `-l` empty because no GUI windows were open |
 | No llama-server | `ss -ltnp \| grep 9931` | verified empty in final report |
@@ -520,6 +595,13 @@ executes both actions.
   not Screen.Brightness, and `/sys/class/backlight` is root-only.
 - Playwright-style browser automation is not installed. In-tab navigation relies on
   `wmctrl` + `ydotool`; actual key injection is **UNVERIFIED** in automated tests by design.
+- Phase 7 native GNOME introspection (`gsettings`/`gdbus`), real `wl-copy` paste,
+  `flatpak kill`, and document writing are offline-tested only; the live checklist in
+  `docs/PROGRESS.md` is the proof.
+- The prompt now exposes every registered tool. The static prefix is cached once, but the
+  first call after a server restart still pays the full prompt evaluation.
+- `press_key` is limited to navigation keys; it deliberately cannot inject arbitrary text or
+  destructive shortcuts.
 - Gemini rollback is kept but not exercised in local tests beyond `test_no_gemini.py` and the
   pinned cloud tests.
 - Nothing has been pushed to a remote.
@@ -539,8 +621,9 @@ executes both actions.
    AT-SPI; never screenshot without consent.
 5. **Browser automation:** use a real tab-control mechanism if one becomes available;
    otherwise keep the honest “opened the search page” fallback.
-6. **Latency:** measure prompt tokens per turn, consider dropping tool schemas on the final
-   answer call, and cache the static prompt prefix.
+6. **Latency:** Phase 7 caches the static prefix (`id_slot:0`, `cache_prompt:true`). Next:
+   measure real llama-server prompt-token reuse and consider dropping tool schemas on the
+   final answer call.
 7. **Safety:** expand secret-path tests, add a visible audit summary command, and consider
    per-app confirmation policies.
 
@@ -565,9 +648,11 @@ cd ~/Downloads/assistant-project
 .venv/bin/python main.py doctor
 .venv/bin/python main.py voice-test
 
-# Skills
+# Skills and dataset export
 .venv/bin/python main.py teach "work mode" "open code; open github"
 .venv/bin/python main.py import-skills /path/to/skills.json
+.venv/bin/python main.py export-dataset
+# -> workspace/ultron_finetune_chatml.jsonl (ChatML messages for Unsloth/QLoRA)
 
 # Leave no processes behind
 ss -ltnp | grep 9931
@@ -598,9 +683,9 @@ pgrep -a ydotoold
 
 1. Read this file, then `docs/PROGRESS.md` (top section), then
    `docs/ULTRON_LOCAL_HANDOFF.md`, then `AGENTS.md`.
-2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 6:
-   `phase6-intelligent-agent`.
-3. `.venv/bin/python -m pytest -q` and compare with §7.
+2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 7:
+   `phase7-llm-brain-wayland` (code commit `7306554` plus the docs commit).
+3. `.venv/bin/python -m pytest -q` and compare with §7 (**501 passed** expected).
 4. Read the current phase section in `docs/PROGRESS.md`; continue from its **NEXT STEP**.
 5. Do one part at a time. Update this file and `docs/PROGRESS.md` before/after each part.
    Commit locally by file name only. Never push, never commit secrets.
@@ -617,3 +702,8 @@ pgrep -a ydotoold
 - **2026-11-03 (end):** Phase 6 verified: 450 tests pass, benchmark 25/25, real saved-clip
   prompt comparison recorded, screen/CTA caveat recorded, skills CLI verified, and the
   failure catalogue updated with the AGC, in-tab search, history and reply fixes.
+- **2026-11-03 (Phase 7):** Wayland 3-layer screen sensor, static KV cache prefix with
+  `id_slot:0`/`cache_prompt:true`, all-tool exposure, 220-token cap and sentence guard,
+  unified fast-path/LLM history, clipboard typing up to 4000 chars, timers, tab-close
+  routing, alias/fact memory, ChatML export, and the Flatpak/Electron EPIPE fix. 500 tests
+  pass; benchmark 25/25 at 1.469 ms (mocked); live hardware items stay UNVERIFIED.

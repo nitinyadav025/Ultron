@@ -1,5 +1,5 @@
 Before anything else, read `docs/ULTRON_PROJECT_BIBLE.md` (the complete project history,
-architecture, failure catalogue and Phase 6 results), then `docs/PROGRESS.md`, and continue
+architecture, failure catalogue and Phase 7 results), then `docs/PROGRESS.md`, and continue
 from its NEXT STEP.
 
 # Ultron — Local Voice Assistant

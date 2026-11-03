@@ -1,10 +1,220 @@
-# Ultron progress — Phase 6 (current)
+# Ultron progress — Phase 7 (current)
 
-Last updated: 2026-11-03 (Phase 6 code, tests and docs complete; live microphone test pending)
+Last updated: 2026-11-03 (Phase 7 code and tests complete; live GNOME/voice test pending)
 
 > **Read `docs/ULTRON_PROJECT_BIBLE.md` first.** It is the single, detailed entry point:
-> architecture, every phase, the live-failure catalogue with root causes/fixes, the Phase 6
+> architecture, every phase, the live-failure catalogue with root causes/fixes, the Phase 7
 > result, limitations, roadmap, runbook and the exact resume procedure.
+
+## Phase 7 - Wayland Brain, Static KV Cache, Writing, Timers & Flatpak EPIPE Fix (Nov 3)
+
+Work branch: `phase7-llm-brain-wayland` (from `phase6-intelligent-agent` @ `3ca55ba`,
+local only, nothing pushed). Code/tests commit: **`7306554`**.
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | GNOME Wayland 3-layer screen sensor + session focus/reply/typed tracking | DONE |
+| 2 | Static system prompt/KV prefix, all tools, slot 0, 220 tokens, unified history | DONE |
+| 3 | Natural executive replies, `ULTRON_BRAIN_REPLIES`, instant repeat | DONE |
+| 4 | Google default, natural site search, in-tab Wayland nav, safe first result | DONE |
+| 5 | Instant clipboard typing (4000 chars), write-it homophones | DONE |
+| 6 | `set_timer`, close-site-tab routing, aliases, stop-phrase fillers | DONE |
+| 7 | Alias/fact memory + `main.py export-dataset` ChatML export | DONE |
+| 8 | 51 Phase 7 tests, full suite, benchmark, docs | DONE (501 passed, 25/25) |
+| + | Electron/Flatpak `write EPIPE` crash fix | DONE |
+
+### Part 1 — GNOME Wayland live screen sensor
+
+**Live failure:** on Fedora 44 GNOME Wayland, `wmctrl -l` returned **0 windows** for native
+Wayland apps, so `screen_context` was `{"windows": [], "browser": "", "site": ""}`.
+
+`assistant/brain/context.py` now has:
+
+1. `ensure_wayland_introspect()` — runs
+   `gsettings set org.gnome.shell introspect true` **once** with a 1 s quiet timeout when
+   `XDG_SESSION_TYPE=wayland`; called at CLI/listen startup and on the first screen read.
+2. `refresh_screen_context()` with the required fallback order:
+   - **Layer 1** `gdbus call --session --dest org.gnome.Shell.Introspect --object-path
+     /org/gnome/Shell/Introspect --method org.gnome.Shell.Introspect.GetWindows`
+     (0.35 s). Parses `title`, `app-id`, `wm-class`, `has-focus`.
+   - **Layer 2** `wmctrl -l` (0.2 s) for XWayland windows.
+   - **Layer 3** `pgrep -u <uid> -a 'firefox|brave|chrome|code|gnome-text-editor|nautilus|
+     discord|spotify|lutris|vlc'` plus `SESSION.last_app`, `last_browser` and `last_site`,
+     so the snapshot is never empty after Ultron itself opened something.
+3. `SESSION` now tracks `focused_window`, `focused_app`, `last_reply`, `last_typed_text`
+   and `last_action`. `active_site` stays sticky to `last_site` when the browser is still
+   open but the current title names no site.
+4. Site detection includes YouTube, GitHub, Discord, Google, Gmail, Reddit, ChatGPT,
+   WhatsApp, Instagram, Netflix, Spotify and Claude.
+
+Tests: native parsing/focus, wmctrl merge, process+session fallback, sticky site, Claude.
+
+### Part 2 — static KV-cache prefix, zero slowdown, full tool arsenal
+
+**Root cause of 0.83 s → 5.16 s:** the old loop appended `Screen: ...` (and skills) to the
+`system` message on every turn. That changed token 0, so `llama-server` could not reuse its
+KV cache and re-evaluated the whole prompt.
+
+- `prompts.build_system_prompt()` for the local backend is **100 % static** — it ignores
+  screen, skills and mode. It contains the natural persona, writing/system/tool rules.
+- `AgentLoop._tagged_contents()` prepends one compact
+  `[Context: browser=…, site=…, app=…, focused=…, last_action=…]` (plus an optional
+  `[Skills: …]`) to the **current user message** only. `self.history` stores clean text.
+- `registry.get_openai_tools(compact=True)` now exposes **every registered desktop tool**:
+  `list_files, read_file, open_app, close_app, switch_app, volume_up, volume_down,
+  set_volume, mute_audio, web_search, open_first_result, type_text, press_key,
+  scroll_page, browser_tab_control, window_control, set_brightness, media_control,
+  system_info, take_screenshot, set_timer, learn_skill`.
+  (`press_key` did not exist before; Phase 7 adds a strict allow-list of navigation keys.)
+- `local_client._payload()` sends `"id_slot": 0` and `"cache_prompt": true`, and
+  `max_tokens` is **220** on every local call (`LOCAL_MAX_TOKENS_FIRST/FOLLOWUP = 220`).
+- `reply_style.clean_llm_reply()` repairs a token-cut sentence: a reply ending in
+  `on/for/to/with/and/or/the/a/an/in/of/by/at/from/that` is trimmed to the last complete
+  sentence, then the last clause, then the last non-dangling word, with clean punctuation.
+- `AgentLoop.record_external_turn()` writes fast-path/learned-skill turns into the same
+  `history` and updates `SESSION.last_reply`. `cli.py` and `listen.py` call it; learned
+  skills also set `SESSION.last_reply`. Follow-ups now see the real previous action.
+
+### Part 3 — natural replies and conversational intelligence
+
+- The system prompt tells Ultron to sound like a sharp, warm executive assistant (1–2
+  complete spoken sentences, natural contractions, never claim it cannot type/open tabs).
+- Rules cover: write `<topic>` in this document/tab, `write it`/`yes write it`/`right it`,
+  date/time/battery → `system_info`, screenshot → `take_screenshot`, timer → `set_timer`,
+  and `close GitHub/YouTube/<site> tab` → `browser_tab_control(close_tab)`.
+- `ULTRON_BRAIN_REPLIES=auto` (default) uses deterministic confirmations for actions and
+  the LLM for open-ended answers; `llm` skips the fast path. `.env.example` documents it.
+- `"what did you say"`, `"can you repeat that"`, `"repeat it"`, `"say that again"` are
+  answered instantly from `SESSION.last_reply`.
+- `tool_replies.py` adds warm tab/timer/press-key replies and keeps every reply built from
+  the real tool result.
+
+### Part 4 — Google default, site searches and in-tab navigation
+
+- `SEARCH_ENGINE=google` and `FIRST_RESULT_METHOD=google` are the defaults in
+  `config.py`; both keys were already present in `.env` (verified; no secret printed).
+- `web.parse_search_request()` recognizes `"search f1 in YouTube"`,
+  `"search on YouTube for F1"`, `"search what is server in GitHub"`, `"search YouTube"`
+  (empty query opens the site) and the same forms for Reddit, Wikipedia, Discord, Spotify.
+- In-tab navigation (`navigate_current_tab`) focuses the browser, copies the URL with
+  `wl-copy -- <url>`, sends **Ctrl+L**, sleeps **60 ms**, sends **Ctrl+V**, sleeps **40 ms**,
+  then **Enter**. It updates `last_query`, `active_site` and `last_site`, and never spawns
+  a duplicate tab when the site/browser session is already open.
+- `open_first_result` never opens `btnI=1` or `!ducky`. It checks expanded canonical brands
+  (Discord, YouTube, GitHub, Lutris, F1/Formula 1, Steam, …), fetches results HTML with a
+  real Firefox User-Agent for **2.5 s**, unwraps `/url?q=` / `uddg=`, and falls back to a
+  clean Google search URL. `open_url` refuses a blank-redirect URL as defence in depth.
+
+### Part 5 — instant clipboard typing and document writing
+
+- `type_text` cap is **4000** characters (the 200-character refusal is gone), saves
+  `SESSION.last_typed_text`, focuses `last_app`/`last_browser`, copies with
+  `wl-copy -- <text>`, sleeps **40 ms**, and pastes with `Ctrl+V`. It falls back to
+  `ydotool type --key-delay 8` only when clipboard paste is unavailable.
+- `wake.py` repairs `right it` → `write it`, `yes right it` → `yes write it`,
+  `okay right <topic>` → `write <topic>`.
+- `"write it"`/`"yes write it"` pastes `SESSION.last_reply`. A new topic phrase such as
+  `"write what is an AI agent inside this new document"` is **not** dictated literally; it
+  goes to the LLM, which writes 2–4 sentences and calls `type_text(text=...)`.
+
+### Part 6 — timers, tab close, aliases and stop phrases
+
+- `set_timer(seconds, label="")` is registered in CLI, GUI and listen. It validates
+  1–86 400 s, starts a daemon `threading.Timer`, sends `notify-send "Ultron Timer" ...` and
+  speaks `"Your <duration> timer is up."` through the injected Piper mouth. Fast path parses
+  `"5 seconds"`, `"2 minutes"`, `"1 minute 30 seconds"`, `"one minute and thirty seconds"`.
+- `close_app` routes `"close GitHub"`, `"close this GitHub tab"`, `"close YouTube"` (a
+  web-only site with no native process) to `browser_tab_control("close_tab")` (Ctrl+W) and
+  replies `"I've closed the GitHub tab."`. An explicit browser name such as
+  `"close Google Chrome"` is not mistaken for the Google site.
+- Aliases: `loot risk`, `lootris`, `lu tris`, `loot res`, `hermes` → `lutris`;
+  `gedit`, `notepad`, `document editor` → `text editor`.
+- `listen.py` strips leading `is/please/now/just/can you/...` before the stop check, so
+  `"Ultron is stop listening"` really stops the listener.
+
+### Part 7 — trainable skills, memory and dataset export
+
+- `workspace/user_memory.json` stores facts (`{"email": ...}`) and spoken aliases.
+  `"remember that loot risk means open lutris"` saves an alias (user aliases resolve in
+  `app_key`); `"remember that my email is ..."` saves a fact.
+- `"enter the email"` / `"type my email"` pastes `user_memory["email"]` via `type_text`.
+- `main.py export-dataset [output]` converts `workspace/training_dataset.jsonl` plus
+  learned skills into ChatML JSONL (`{"messages":[system,user,assistant]}`) at
+  `workspace/ultron_finetune_chatml.jsonl`. Invalid lines are skipped, secrets are redacted.
+
+### Part 8 — tests and verification
+
+- New `tests/test_phase7_brain_wayland.py` has **51 tests** covering every item above plus
+  the Flatpak/EPIPE rules.
+- `.venv/bin/python -m pytest -q` → **501 passed, 0 failed, 0 errors** (40.61 s final run).
+- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **1.469 ms** (mocked;
+  the benchmark now mocks the screen context so it never queries the real desktop).
+- `compileall` OK; `git diff --check` clean.
+- Live microphone, speakers, real GNOME key injection and real browser navigation remain
+  **UNVERIFIED** (no hardware access in the coding session).
+
+### Electron / Flatpak `Error: write EPIPE` fix
+
+Root cause from the 19:20:19 Discord screenshot: Flatpak Electron's `console.warn` hits a
+closed pipe when (a) it is launched with `stdout/stderr=PIPE` and (b) `bwrap`/`zypak` is
+killed before the Electron main process exits.
+
+- Every background GUI/Electron launch in `apps.py` and `web.py` now passes
+  `stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True, close_fds=True`.
+  No `subprocess.PIPE` remains in either file.
+- `close_app` checks `flatpak ps --columns=application` for known Flatpak IDs and calls
+  `flatpak kill <id>` first (0.5 s / 2 s timeouts, quiet streams), closing the sandbox
+  cgroup cleanly. Non-Flatpak apps get `wmctrl -c` when an XWayland window is known and a
+  SIGTERM to the main process group (falling back to individual PIDs).
+- Tests assert the exact Popen kwargs and that `close_app("discord")` calls
+  `flatpak kill com.discordapp.Discord`.
+
+### Files changed (Phase 7)
+
+- Brain: `agent_loop.py`, `context.py`, `fast_path.py`, `local_client.py`, `prompts.py`,
+  `reply_style.py`, `skills.py`, `tool_replies.py`.
+- Tools: `apps.py`, `desktop_control.py`, `registry.py`, `web.py`.
+- Interfaces/speech/config: `cli.py`, `gui.py`, `listen.py`, `wake.py`, `config.py`,
+  `main.py`, `scripts/benchmark_phase5c.py`, `.env.example`.
+- Tests: new `tests/test_phase7_brain_wayland.py`; updated `test_agent_rounds.py`,
+  `test_b5_full_control.py`, `test_b6_smart_brain.py`, `test_no_gemini.py`,
+  `test_phase6_intelligent_agent.py`, `test_reply_style.py`.
+- Docs: this file and `docs/ULTRON_PROJECT_BIBLE.md`.
+
+### NEXT STEP — live test (the coding tool cannot use the mic/speakers/GUI)
+
+Run from `~/Downloads/assistant-project`:
+
+1. `.venv/bin/python main.py listen`; say **“Ultron, open text editor”**, then
+   **“write what is an AI agent inside this new document”**. Expected: the editor opens and
+   a 2–4 sentence paragraph is pasted instantly (no 200-character error).
+2. Say **“Ultron, yes write it”** (or **“right it”**) after an explanation. Expected: the
+   previous answer is pasted into the active document.
+3. Open YouTube, then say **“Ultron, search f1 in youtube”**. Expected: the existing YouTube
+   tab navigates to the results (Ctrl+L, paste, Enter), no duplicate tab.
+4. Say **“Ultron, close GitHub”** while GitHub is open in the browser. Expected:
+   “I've closed the GitHub tab.” (Ctrl+W), not an app lookup.
+5. Say **“Ultron, set a timer for 5 seconds”**. Expected: “I've set a timer for 5 seconds.”
+   then a desktop notification and Piper saying “Your 5 seconds timer is up.”
+6. Say **“Ultron, take screenshots”**, **“tell me the current date”**, and ask
+   **“what did you say?”**. Expected: a screenshot path, today's date, and the last reply.
+7. Open Flatpak Discord, then say **“Ultron, open discord”** and **“close discord”**.
+   Expected: no `Error: write EPIPE` popup; Discord closes cleanly.
+8. Say **“Ultron is stop listening”**. Expected: the listener stops.
+9. Check that a native Wayland window now appears in the `[Context: ...]` tag (for example
+   `focused=...`) instead of `windows=[]`.
+
+### Head state (Phase 7)
+
+- Branch `phase7-llm-brain-wayland` (from `phase6-intelligent-agent` @ `3ca55ba`), local
+  only, **nothing pushed**.
+- Implementation commit: `7306554` (27 files, 2889 insertions).
+- Final pytest: **501 passed**; benchmark **25/25**, average **1.469 ms** (mocked).
+- No `llama-server` on 9931 and no `ydotoold` left running (checked).
+- `.env` is git-ignored and was never staged; only `.env.example` documents the new key.
+- Working tree clean after the docs commit.
+
+---
 
 ## Phase 6 - Screen-Aware LLM Brain, In-Tab Search, AGC Guard & Skill Training (Nov 3)
 
