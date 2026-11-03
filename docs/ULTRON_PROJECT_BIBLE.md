@@ -537,7 +537,7 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 | Check | Command | Result |
 |---|---|---|
 | Full suite | `.venv/bin/python -m pytest -q` | **503 passed** (38.82 s) |
-| Phase 7 module | `pytest tests/test_phase7_brain_wayland.py -q` | **50 passed** |
+| Phase 7 module | `pytest tests/test_phase7_brain_wayland.py -q` | **53 passed** |
 | Benchmark | `.venv/bin/python main.py benchmark` | **25/25**, average **1.559 ms** (mocked) |
 | Compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
 | Whitespace | `git diff --check` | clean |
@@ -572,7 +572,7 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 | Phase 6 tests | `tests/test_phase6_intelligent_agent.py` | **31 passed** |
 | Benchmark after Phase 6 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **2.063 ms** (mocked) |
 | Full suite after Phase 7 | `.venv/bin/python -m pytest -q` | **503 passed** (38.82 s) |
-| Phase 7 tests | `tests/test_phase7_brain_wayland.py` | **50 passed** |
+| Phase 7 tests | `tests/test_phase7_brain_wayland.py` | **53 passed** |
 | Benchmark after Phase 7 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **1.559 ms** (mocked) |
 | Phase 7 compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
 | Phase 7 diff check | `git diff --check` | clean |
