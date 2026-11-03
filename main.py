@@ -45,6 +45,34 @@ def _dispatch(args: argparse.Namespace, config: AssistantConfig) -> int:
         return 0
     if args.command == "download-models":
         return _download_models(config)
+    if args.command == "teach":
+        from assistant.brain.skills import configure_runtime, save_user_skill, split_actions
+
+        if len(args.args) < 2:
+            print('Usage: main.py teach "<trigger>" "<action1>; <action2>"')
+            return 2
+        configure_runtime(config)
+        try:
+            skill = save_user_skill(config, args.args[0], split_actions(args.args[1]))
+        except (OSError, ValueError) as exc:
+            print(f"[ERROR] {exc}")
+            return 1
+        print(f"Learned: {skill.trigger} -> {'; '.join(skill.actions)}")
+        return 0
+    if args.command == "import-skills":
+        from assistant.brain.skills import configure_runtime, import_skills_file
+
+        if len(args.args) < 1:
+            print("Usage: main.py import-skills <path.json>")
+            return 2
+        configure_runtime(config)
+        try:
+            imported = import_skills_file(config, args.args[0])
+        except (OSError, ValueError) as exc:
+            print(f"[ERROR] {exc}")
+            return 1
+        print(f"Imported {len(imported)} skill(s) into {config.user_skills_file}")
+        return 0
     if args.command == "benchmark":
         from scripts.benchmark_phase5c import run_benchmark
 
@@ -90,8 +118,11 @@ def main() -> int:
             "logs",
             "stop",
             "download-models",
+            "teach",
+            "import-skills",
         ],
     )
+    parser.add_argument("args", nargs="*", help="teach: trigger and actions; import-skills: path")
     parser.add_argument("--mode", choices=["ask", "auto-safe", "human-only"], default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

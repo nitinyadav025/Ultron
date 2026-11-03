@@ -138,7 +138,7 @@ def open_app_reply(result: dict[str, Any], requested: str = "") -> str | None:
         return "I couldn't open that app."
     if not app:
         return "Done."
-    return f"{_app_display(app)} is open."
+    return f"I've opened {_app_display(app)} for you."
 
 
 def close_app_reply(result: dict[str, Any]) -> str | None:
@@ -151,9 +151,9 @@ def close_app_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return f"I couldn't close {display}."
     if raw.get("closed") is True:
-        return f"Closed {display}."
+        return f"I've closed {display} for you."
     if raw.get("running") is False:
-        return f"{display} is not running."
+        return f"{display} isn't running right now."
     return None
 
 
@@ -167,15 +167,15 @@ def switch_app_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return f"I couldn't switch to {display}."
     if raw.get("opened") and not raw.get("running"):
-        return f"{display} was not running, so I opened it."
-    return f"Switching to {display}."
+        return f"{display} wasn't running, so I've opened it for you."
+    return f"I've switched to {display}."
 
 
 def type_text_reply(result: dict[str, Any]) -> str | None:
     raw = _raw_summary(result)
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't type that.")
-    return str(raw.get("reply") or "Typed that.")
+    return str(raw.get("reply") or "I've typed that into the active window.")
 
 
 def scroll_page_reply(result: dict[str, Any]) -> str | None:
@@ -183,13 +183,13 @@ def scroll_page_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't scroll.")
     return {
-        "down": "Scrolled down.",
-        "up": "Scrolled up.",
-        "page_down": "Scrolled down one page.",
-        "page_up": "Scrolled up one page.",
-        "top": "Scrolled to the top.",
-        "bottom": "Scrolled to the bottom.",
-    }.get(str(raw.get("direction") or ""), "Scrolled.")
+        "down": "I've scrolled the page down.",
+        "up": "I've scrolled the page up.",
+        "page_down": "I've scrolled down one page.",
+        "page_up": "I've scrolled up one page.",
+        "top": "I've scrolled to the top.",
+        "bottom": "I've scrolled to the bottom.",
+    }.get(str(raw.get("direction") or ""), "I've scrolled the page.")
 
 
 def browser_tab_reply(result: dict[str, Any]) -> str | None:
@@ -197,14 +197,14 @@ def browser_tab_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't control the tab.")
     return {
-        "new_tab": "Opened a new tab.",
-        "close_tab": "Closed the tab.",
-        "next_tab": "Switched to the next tab.",
-        "prev_tab": "Switched to the previous tab.",
-        "reopen_tab": "Reopened the last tab.",
-        "refresh": "Refreshed the page.",
-        "back": "Went back.",
-        "forward": "Went forward.",
+        "new_tab": "I've opened a new tab.",
+        "close_tab": "I've closed that tab.",
+        "next_tab": "I've switched to the next tab.",
+        "prev_tab": "I've switched to the previous tab.",
+        "reopen_tab": "I've reopened the last tab.",
+        "refresh": "I've refreshed the page.",
+        "back": "I've gone back.",
+        "forward": "I've gone forward.",
     }.get(str(raw.get("action") or ""), "Done.")
 
 
@@ -213,13 +213,13 @@ def window_control_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't control the window.")
     return {
-        "next_window": "Switched windows.",
-        "maximize": "Maximized the window.",
-        "minimize": "Minimized the window.",
-        "fullscreen": "Toggled fullscreen.",
-        "workspace_next": "Moved to the next workspace.",
-        "workspace_prev": "Moved to the previous workspace.",
-        "overview": "Opened the overview.",
+        "next_window": "I've switched windows.",
+        "maximize": "I've maximized the window.",
+        "minimize": "I've minimized the window.",
+        "fullscreen": "I've toggled fullscreen.",
+        "workspace_next": "I've moved to the next workspace.",
+        "workspace_prev": "I've moved to the previous workspace.",
+        "overview": "I've opened the overview.",
     }.get(str(raw.get("action") or ""), "Done.")
 
 
@@ -228,7 +228,11 @@ def brightness_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't change the brightness.")
     percent = raw.get("percent")
-    return f"Brightness is now {percent} percent." if percent is not None else "Brightness changed."
+    return (
+        f"I've set the brightness to {percent} percent."
+        if percent is not None
+        else "I've changed the brightness."
+    )
 
 
 def media_reply(result: dict[str, Any]) -> str | None:
@@ -236,11 +240,11 @@ def media_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't control the media.")
     return {
-        "play_pause": "Toggled play or pause.",
-        "play": "Toggled play or pause.",
-        "pause": "Toggled play or pause.",
-        "next": "Skipped to the next song.",
-        "previous": "Went back one song.",
+        "play_pause": "I've toggled play or pause.",
+        "play": "I've started the music.",
+        "pause": "I've paused the music.",
+        "next": "I've skipped to the next song.",
+        "previous": "I've gone back one song.",
     }.get(str(raw.get("action") or ""), "Done.")
 
 
@@ -256,7 +260,19 @@ def screenshot_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return str(raw.get("error") or "I couldn't take a screenshot.")
     path = str(raw.get("path") or "").strip()
-    return f"Screenshot saved to {path}." if path else "Screenshot saved."
+    return f"I've saved the screenshot to {path}." if path else "I've taken the screenshot."
+
+
+_SITE_DISPLAY = {
+    "youtube": "YouTube",
+    "github": "GitHub",
+    "reddit": "Reddit",
+    "wikipedia": "Wikipedia",
+    "google": "Google",
+    "amazon": "Amazon",
+    "spotify": "Spotify",
+    "gmail": "Gmail",
+}
 
 
 def web_search_reply(result: dict[str, Any]) -> str | None:
@@ -265,9 +281,13 @@ def web_search_reply(result: dict[str, Any]) -> str | None:
     if not _result_ok(result):
         return "I couldn't open the search."
     query = str(raw.get("query") or "").strip()
+    site = str(raw.get("site") or "").strip()
     browser = str(raw.get("browser") or "").strip()
-    where = browser.title() if browser else "your browser"
-    return f"Searching for {query} in {where}."
+    if site:
+        return f"Searching {_SITE_DISPLAY.get(site, site.title())} for {query} right now."
+    if browser:
+        return f"Searching the web for {query} in {browser.title()} right now."
+    return f"Searching the web for {query} right now."
 
 
 def open_first_result_reply(result: dict[str, Any]) -> str | None:
@@ -278,7 +298,7 @@ def open_first_result_reply(result: dict[str, Any]) -> str | None:
     if raw.get("reply"):
         return str(raw["reply"])
     query = str(raw.get("query") or "").strip()
-    return f"Opening the first result for {query}."
+    return f"I've opened the first result for {query}."
 
 
 def is_lead_in(text: str) -> bool:

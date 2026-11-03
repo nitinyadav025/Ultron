@@ -12,10 +12,17 @@ from typing import Any, Callable
 
 from google.genai import types
 
+from assistant.brain.context import get_screen_context, screen_line as build_screen_line
 from assistant.brain.gemini_client import GeminiAdapter, TokenUsageStats
 from assistant.brain.local_client import LocalAdapter
 from assistant.brain.prompts import build_chat_prompt, build_system_prompt
 from assistant.brain.reply_style import short_plain_reply
+from assistant.brain.skills import (
+    match_skill,
+    parse_teaching_command,
+    prompt_hint,
+    save_user_skill,
+)
 from assistant.brain.tool_output import compact_tool_result
 from assistant.brain.tool_replies import (
     FOLDER_NOT_FOUND_REPLY,
@@ -140,6 +147,59 @@ class AgentLoop:
         self._pause_event.set()
         self.step_callback(f"Redirected: {new_instruction}")
 
+    HISTORY_MAX_MESSAGES = 6
+    HISTORY_MAX_TURNS = 3
+
+    @staticmethod
+    def _text_only(content: types.Content) -> types.Content | None:
+        texts = [
+            part.text
+            for part in (getattr(content, "parts", None) or [])
+            if getattr(part, "text", None)
+        ]
+        if not texts:
+            return None
+        return types.Content(
+            role=getattr(content, "role", None) or "user",
+            parts=[types.Part.from_text(text=" ".join(texts).strip())],
+        )
+
+    def _prune_history(
+        self, max_messages: int | None = None, *, keep_current_protocol: bool = False
+    ) -> None:
+        """Keep at most three text-only turns (user + spoken reply).
+
+        At the start of a turn every old tool-call JSON blob is dropped. At the end of a
+        turn the current turn's tool protocol may stay (still capped at 6 messages), so the
+        loop can finish its own work and tests can inspect the payload it sent.
+        """
+        limit = max(2, int(max_messages or self.HISTORY_MAX_MESSAGES))
+        if not keep_current_protocol:
+            kept = [item for item in (self._text_only(c) for c in self.history) if item]
+            self.history = kept[-limit:]
+            return
+
+        last_user = -1
+        for index, content in enumerate(self.history):
+            if getattr(content, "role", None) != "user":
+                continue
+            if any(getattr(part, "text", None) for part in getattr(content, "parts", None) or []):
+                last_user = index
+        if last_user < 0:
+            kept = [item for item in (self._text_only(c) for c in self.history) if item]
+            self.history = kept[-limit:]
+            return
+        prior = [
+            item
+            for item in (self._text_only(c) for c in self.history[:last_user])
+            if item
+        ]
+        tail = list(self.history[last_user:])
+        if len(tail) > limit:
+            tail = [item for item in (self._text_only(c) for c in tail[-limit:]) if item]
+        room = max(0, limit - len(tail))
+        self.history = prior[-room:] + tail if room else tail
+
     def _preview(self, fn_name: str, args: dict[str, Any]) -> str:
         if fn_name == "open_app" and "app_name" in args:
             cmd, _ = resolve_app_launch_command(str(args["app_name"]))
@@ -179,8 +239,34 @@ class AgentLoop:
         limit = LOCAL_MAX_TOKENS_FIRST if tool_rounds == 0 else LOCAL_MAX_TOKENS_FOLLOWUP
         return {"max_output_tokens": limit}
 
+    def _run_skill(self, skill: Any) -> list[str]:
+        """Execute a learned action chain through the deterministic fast path."""
+        from assistant.brain.fast_path import match_fast_command, run_fast_command
+
+        replies: list[str] = []
+        for action in getattr(skill, "actions", ()) or ():
+            command = match_fast_command(str(action))
+            if command is None:
+                self.step_callback(f"Skill action needs the model: {action}")
+                continue
+            reply = run_fast_command(self.registry, command)
+            if reply and reply not in replies:
+                replies.append(reply)
+        return replies
+
     def run_task(self, user_input: str, dry_run: bool = False) -> AgentTaskResult:
+        """Public entry point: prune before and after so no turn can grow the transcript."""
+        # Leave one slot for the new user message: the prompt it produces stays at 6.
+        self._prune_history(self.HISTORY_MAX_MESSAGES - 1)
+        try:
+            return self._run_task(user_input, dry_run)
+        finally:
+            self._prune_history(keep_current_protocol=True)
+
+    def _run_task(self, user_input: str, dry_run: bool = False) -> AgentTaskResult:
         request_text = user_input.strip()
+        live_screen = build_screen_line(get_screen_context())
+        skills_hint = prompt_hint(request_text, self.config)
         cleaned = request_text
         if cleaned.lower().startswith("plan only"):
             dry_run = True
@@ -192,6 +278,34 @@ class AgentLoop:
         self.registry.gate.tainted_by_untrusted = False
         usage_acc = TokenUsageStats(daily_total=self.adapter.usage_meter.get_today_total(), daily_cap=self.config.daily_token_cap)
         self.history.append(types.Content(role="user", parts=[types.Part.from_text(text=redact_secrets(cleaned))]))
+
+        teaching = parse_teaching_command(request_text)
+        if teaching and not dry_run:
+            trigger, actions = teaching
+            try:
+                skill = save_user_skill(self.config, trigger, actions)
+            except (OSError, ValueError) as exc:
+                reply = f"I couldn't learn that skill: {exc}"
+            else:
+                reply = (
+                    f"I've learned that when you say {skill.trigger}, I should "
+                    + " and ".join(skill.actions)
+                    + "."
+                )
+            self.history.append(types.Content(role="model", parts=[types.Part.from_text(text=reply)]))
+            self.watchdog.stop_task()
+            return AgentTaskResult(True, reply, 0, usage_acc, dry_run=dry_run)
+
+        matched_skill = match_skill(request_text, self.config)
+        if matched_skill is not None and not dry_run:
+            replies = self._run_skill(matched_skill)
+            if replies:
+                combined = " ".join(replies)
+                self.history.append(
+                    types.Content(role="model", parts=[types.Part.from_text(text=combined)])
+                )
+                self.watchdog.stop_task()
+                return AgentTaskResult(True, combined, 0, usage_acc, dry_run=dry_run)
 
         answered_mute_offer = self._pending_mute_offer
         self._pending_mute_offer = False
@@ -220,7 +334,7 @@ class AgentLoop:
             history = self.history[-8:]
             resp, turn_u = self.adapter.generate_turn(
                 contents=history,
-                system_instruction=build_chat_prompt(self.config),
+                system_instruction=build_chat_prompt(self.config, screen_line=live_screen),
                 tools=None,
                 max_output_tokens=LOCAL_MAX_TOKENS_FOLLOWUP,
             )
@@ -274,7 +388,12 @@ class AgentLoop:
                     tools_payload = self.registry.get_gemini_tools()
                 resp, turn_u = self.adapter.generate_turn(
                     contents=self.history,
-                    system_instruction=build_system_prompt(self.config, self.registry.gate.mode),
+                    system_instruction=build_system_prompt(
+                        self.config,
+                        self.registry.gate.mode,
+                        screen_line=live_screen,
+                        skills_hint=skills_hint,
+                    ),
                     tools=tools_payload,
                     **self._generation_limits(tool_rounds),
                 )

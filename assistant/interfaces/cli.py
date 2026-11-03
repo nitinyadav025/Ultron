@@ -10,6 +10,7 @@ from assistant.brain.agent_loop import AgentLoop
 from assistant.brain.context import SESSION
 from assistant.brain.fast_path import try_fast_path
 from assistant.brain.gemini_client import TokenUsageStats
+from assistant.brain.skills import configure_runtime, learn_skill
 from assistant.config import LOGS_DIR, AssistantConfig
 from assistant.interfaces.voice import NOTHING_HEARD, VoiceController
 from assistant.safety.audit import read_audit_logs
@@ -92,6 +93,7 @@ def show_privacy_notice_once(config: AssistantConfig) -> None:
 def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_run_default: bool = False) -> int:
     """Start the interactive CLI chat loop."""
     show_privacy_notice_once(config)
+    configure_runtime(config)
     register_gnome_kill_hotkey(config.kill_hotkey_binding)
     _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
     if config.mic_source_volume:
@@ -122,6 +124,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         media_control,
         system_info,
         take_screenshot,
+        learn_skill,
     ):
         registry.register(fn)
 
