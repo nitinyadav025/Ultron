@@ -290,8 +290,11 @@ class WhisperEars:
             "condition_on_previous_text": False,
             "without_timestamps": True,
         }
-        # No hotwords/initial_prompt by default: the decoder echoed the comma-separated
-        # word list back into the transcript on unclear audio. Opt in explicitly only.
+        # A natural sentence primes the proper nouns (Ultron, YouTube, GitHub, F1) without
+        # the old comma-list echo: hotwords stay opt-in and are never auto-built.
+        prompt = (getattr(self.config, "whisper_initial_prompt", "") or "").strip()
+        if prompt:
+            decode_options["initial_prompt"] = prompt
         if vad_filter is not None:
             decode_options["vad_filter"] = bool(vad_filter)
         if hotwords is not None:

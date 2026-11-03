@@ -21,6 +21,13 @@ MODELS_DIR = PROJECT_ROOT / "models"
 
 VALID_THINKING_LEVELS = ("low", "medium", "high")
 
+# A natural sentence conditions Whisper's decoder on the project's proper nouns without
+# turning unclear audio into a comma-separated word list (the old hotwords bug).
+DEFAULT_WHISPER_INITIAL_PROMPT = (
+    "Ultron, Hey Ultron. Commands: open, close, switch, search on YouTube, Google, "
+    "GitHub, Firefox, Brave, VS Code, F1, scroll down, new tab, close tab, type."
+)
+
 
 def setup_logging() -> logging.Logger:
     """Configure file logging to logs/assistant.log."""
@@ -61,6 +68,9 @@ class AssistantConfig:
     whisper_model: str = "base.en"
     whisper_model_dir: Path = MODELS_DIR / "faster-whisper-base.en"
     whisper_hotwords: str = ""
+    # Natural lexical prompt: primes proper nouns (Ultron, YouTube, GitHub, F1). An empty
+    # value disables it; hands-free mode still adds its short wake hotwords.
+    whisper_initial_prompt: str = DEFAULT_WHISPER_INITIAL_PROMPT
     # Short hotwords used only by hands-free listen/wake-train (never the chat path).
     whisper_wake_hotwords: str = "Ultron, Firefox, GitHub, Brave, Downloads"
     whisper_min_avg_logprob: float = -1.0
@@ -110,6 +120,10 @@ class AssistantConfig:
     listen_log_ignored: bool = False
     listen_debug: bool = False
     first_result_method: str = "google"
+    search_engine: str = "google"
+    learned_skills_file: Path = PROJECT_ROOT / "config" / "learned_skills.json"
+    user_skills_file: Path = WORKSPACE_DIR / "learned_skills.json"
+    training_dataset_file: Path = WORKSPACE_DIR / "training_dataset.jsonl"
     daily_token_cap: int = 500000
     save_screenshots: bool = False
     default_mode: str = "auto-safe"
@@ -312,6 +326,9 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     first_result_method = (merged.get("FIRST_RESULT_METHOD") or "google").strip().lower()
     if first_result_method not in ("ducky", "google", "search"):
         first_result_method = "google"
+    search_engine = (merged.get("SEARCH_ENGINE") or "google").strip().lower()
+    if search_engine not in ("google", "duckduckgo", "bing"):
+        search_engine = "google"
 
     backend = (merged.get("BACKEND") or "local").strip().lower()
     if backend not in ("local", "gemini"):
@@ -336,6 +353,10 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         os.path.expanduser(merged.get("LLAMA_LOG_PATH") or str(LOGS_DIR / "llama-server.log"))
     )
     whisper_model = (merged.get("WHISPER_MODEL") or "base.en").strip() or "base.en"
+    # Present-but-empty explicitly disables the prompt; absent means the default sentence.
+    whisper_initial_prompt = (
+        str(merged.get("WHISPER_INITIAL_PROMPT", DEFAULT_WHISPER_INITIAL_PROMPT) or "").strip()
+    )
     whisper_model_dir = Path(
         os.path.expanduser(
             merged.get("WHISPER_MODEL_DIR") or str(MODELS_DIR / f"faster-whisper-{whisper_model}")
@@ -357,6 +378,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         whisper_model=whisper_model,
         whisper_model_dir=whisper_model_dir,
         whisper_hotwords=(merged.get("WHISPER_HOTWORDS") or "").strip(),
+        whisper_initial_prompt=whisper_initial_prompt,
         whisper_wake_hotwords=(
             merged.get("WHISPER_WAKE_HOTWORDS") or "Ultron, Firefox, GitHub, Brave, Downloads"
         ).strip(),
@@ -399,6 +421,10 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         listen_log_ignored=listen_log_ignored,
         listen_debug=listen_debug,
         first_result_method=first_result_method,
+        search_engine=search_engine,
+        learned_skills_file=PROJECT_ROOT / "config" / "learned_skills.json",
+        user_skills_file=WORKSPACE_DIR / "learned_skills.json",
+        training_dataset_file=WORKSPACE_DIR / "training_dataset.jsonl",
         daily_token_cap=int(merged.get("DAILY_TOKEN_CAP", "500000")),
         save_screenshots=merged.get("SAVE_SCREENSHOTS", "false").lower() == "true",
         default_mode=ast_cfg.get("default_mode", "auto-safe"),

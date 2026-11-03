@@ -32,6 +32,7 @@ from assistant.config import WORKSPACE_DIR, AssistantConfig, clamp_voice_volume
 from assistant.safety.redact import redact_secrets
 from assistant.speech.denoise import denoise_pcm16
 from assistant.speech.ears import EarsError, WhisperEars
+from assistant.speech.mic_input import agc_guard_needed, guard_mic_agc
 from assistant.speech.mouth import MouthError, PiperMouth, split_sentences
 from assistant.speech.recorder import (
     MIN_SPEECH_MS,
@@ -408,6 +409,8 @@ class VoiceController:
         before_peak, before_rms = measure_peak_rms(pcm)
         self.last_peak_before, self.last_rms_before = before_peak, before_rms
         self.last_peak, self.last_rms = before_peak, before_rms
+        if agc_guard_needed(before_peak, before_rms):
+            guard_mic_agc(before_peak, before_rms, getattr(self.config, "mic_source_volume", ""))
 
         if getattr(self.config, "voice_debug", False):
             write_pcm16_wav(WORKSPACE_DIR / "voice_input_raw.wav", pcm, rate=rate, channels=channels)

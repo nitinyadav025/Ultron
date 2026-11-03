@@ -38,6 +38,13 @@ RISKY_ALIASES = (
     "i'll turn",
     "ill turn",
     "here drone",
+    # Nov 2/3 live mishearings of "Ultron". Ordinary English words, so they are trusted
+    # only when the rest is empty or a real fast-path command (learned=True).
+    "hey everyone",
+    "iron",
+    "here drawn",
+    "altron",
+    "all drawn",
 )
 DEFAULT_ALIASES = SAFE_DEFAULT_ALIASES + RISKY_ALIASES
 RATIO = 0.75
@@ -89,6 +96,17 @@ _GENERIC_STARTERS = frozenset({"i", "hey", "what", "the", "and", "a", "to", "you
 # Common app mishearings in the saved clips (B3 wake-train table).
 _SPOKEN_COMMAND_FIXES = (
     (re.compile(r"\b(open|launch) (?:5ox|5x|file box|fire box|fire fox)\b", re.I), r"\1 firefox"),
+    # "Third YouTube" / "Hurt YouTube" / "Sir YouTube" = "search YouTube".
+    (
+        re.compile(r"^\s*(?:please\s+)?(?:third|hurt|sir)\s+youtube\s+(.+)$", re.I),
+        r"search \1 in youtube",
+    ),
+    (re.compile(r"\b(?:third|hurt|sir)\s+youtube\b", re.I), "search youtube"),
+    # "Right hello" in a typing context = "write hello". Ordinary phrases stay unchanged.
+    (
+        re.compile(r"^\s*right\s+(?!(?:now|away|here|there|back)\b)(.+)$", re.I),
+        r"write \1",
+    ),
 )
 
 

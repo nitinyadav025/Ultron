@@ -28,9 +28,11 @@ from typing import Any, Callable
 
 import numpy as np
 
-from assistant.brain.context import SESSION
+from assistant.brain.context import SESSION, get_screen_context
 from assistant.brain.fast_path import match_fast_command
+from assistant.brain.skills import configure_runtime, learn_skill, log_experience
 from assistant.config import AssistantConfig
+from assistant.speech.mic_input import agc_guard_needed, guard_mic_agc
 from assistant.speech.recorder import (
     ABS_START_RMS,
     CALIBRATION_MS,
@@ -60,6 +62,7 @@ from assistant.speech.recorder import (
     frame_rms,
     is_end_silence,
     is_steady_post_speech,
+    measure_peak_rms,
     pcm16_samples,
     normalise_mic_level,
     percentile,
@@ -594,6 +597,7 @@ class HandsFreeListener:
         self._t_endpoint = 0.0
         self._t_trans = 0.0
         self._first_tool: float | None = None
+        self._tools_called: list[str] = []
         # Reuse the 1.05 s early transcript at final when the user did not resume,
         # so a short non-fast-path command is not sent to Whisper twice.
         self._early_transcript: Transcript | None = None
@@ -601,10 +605,12 @@ class HandsFreeListener:
         self._early_started_ms = -1
         self._early_speech_frames = 0
 
-    def note_tool_call(self, _name: str = "") -> None:
+    def note_tool_call(self, name: str = "") -> None:
         """Called by the tool registry on the first tool execution of a command."""
         if self._first_tool is None:
             self._first_tool = self.clock()
+        if name and name not in self._tools_called:
+            self._tools_called.append(name)
 
     # -- public -------------------------------------------------------------------
 
@@ -774,6 +780,13 @@ class HandsFreeListener:
     def _process(self, transcript: Transcript, pcm: bytes) -> None:
         started = self.detector.last_start_ms
         in_followup = self._followup_active and started <= self.followup_until_ms
+        raw_peak, raw_rms = measure_peak_rms(pcm)
+        if agc_guard_needed(raw_peak, raw_rms):
+            # Brave/Chromium WebRTC AGC boosted the PipeWire source mid-session. Put the
+            # safe level back in the background before the next utterance.
+            guard_mic_agc(
+                raw_peak, raw_rms, getattr(self.config, "mic_source_volume", "")
+            )
         text = (transcript.text or "").strip()
         wake_text = (transcript.raw or text).strip()
         verdict = transcript.reason or ("ok" if transcript.ok else "rejected")
@@ -860,12 +873,22 @@ class HandsFreeListener:
             self.save_debug(pcm, transcript, command)
 
         self._first_tool = None
+        self._tools_called = []
         reply, refused = self.command_runner(command)
         if refused:
             reply = CONFIRMATION_REPLY
         reply_ready = self.clock()
         speech_start = self.clock() - self._t_end
         self.commands_run += 1
+        log_experience(
+            self.config,
+            raw_transcript=wake_text,
+            repaired_transcript=command,
+            tools_called=list(self._tools_called),
+            reply=reply,
+            latency_ms=(reply_ready - self._t_end) * 1000.0,
+            screen_context=get_screen_context(),
+        )
         logger.info(
             "Latency: end_to_endpoint=%.2fs transcribe=%.2fs first_tool=%s reply_ready=%.2fs speech_start=%.2fs",
             self._t_endpoint - self._t_end,
@@ -959,6 +982,7 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
     from assistant.tools.web import open_first_result, web_search
 
+    configure_runtime(config)
     register_gnome_kill_hotkey(config.kill_hotkey_binding)
     _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
     if config.mic_source_volume:
@@ -989,6 +1013,7 @@ def run_listen(config: AssistantConfig) -> int:
         media_control,
         system_info,
         take_screenshot,
+        learn_skill,
     ):
         registry.register(fn)
 
