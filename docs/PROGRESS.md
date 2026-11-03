@@ -20,7 +20,7 @@ local only, nothing pushed). Code/tests commit: **`7306554`**.
 | 5 | Instant clipboard typing (4000 chars), write-it homophones | DONE |
 | 6 | `set_timer`, close-site-tab routing, aliases, stop-phrase fillers | DONE |
 | 7 | Alias/fact memory + `main.py export-dataset` ChatML export | DONE |
-| 8 | 51 Phase 7 tests, full suite, benchmark, docs | DONE (501 passed, 25/25) |
+| 8 | 53 Phase 7 tests, full suite, benchmark, docs | DONE (503 passed, 25/25) |
 | + | Electron/Flatpak `write EPIPE` crash fix | DONE |
 
 ### Part 1 — GNOME Wayland live screen sensor
@@ -144,10 +144,10 @@ KV cache and re-evaluated the whole prompt.
 
 ### Part 8 — tests and verification
 
-- New `tests/test_phase7_brain_wayland.py` has **51 tests** covering every item above plus
+- New `tests/test_phase7_brain_wayland.py` has **53 tests** covering every item above plus
   the Flatpak/EPIPE rules.
-- `.venv/bin/python -m pytest -q` → **501 passed, 0 failed, 0 errors** (40.61 s final run).
-- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **1.469 ms** (mocked;
+- `.venv/bin/python -m pytest -q` → **503 passed, 0 failed, 0 errors** (38.82 s final run).
+- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **1.559 ms** (mocked;
   the benchmark now mocks the screen context so it never queries the real desktop).
 - `compileall` OK; `git diff --check` clean.
 - Live microphone, speakers, real GNOME key injection and real browser navigation remain
@@ -209,7 +209,7 @@ Run from `~/Downloads/assistant-project`:
 - Branch `phase7-llm-brain-wayland` (from `phase6-intelligent-agent` @ `3ca55ba`), local
   only, **nothing pushed**.
 - Implementation commit: `7306554` (27 files, 2889 insertions).
-- Final pytest: **501 passed**; benchmark **25/25**, average **1.469 ms** (mocked).
+- Final pytest: **503 passed**; benchmark **25/25**, average **1.559 ms** (mocked).
 - No `llama-server` on 9931 and no `ydotoold` left running (checked).
 - `.env` is git-ignored and was never staged; only `.env.example` documents the new key.
 - Working tree clean after the docs commit.

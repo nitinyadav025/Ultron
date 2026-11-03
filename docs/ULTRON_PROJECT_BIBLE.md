@@ -30,7 +30,7 @@
 | Branch (Phase 7) | `phase7-llm-brain-wayland` (created from `phase6-intelligent-agent` @ `3ca55ba`) |
 | Implementation commit | `7306554` (27 files, 2889 insertions) |
 | Test state at Phase 7 start | **450 passed, 0 failed, 0 errors** (`pytest -q`, 46.46 s) |
-| Test state at Phase 7 end | **501 passed, 0 failed, 0 errors** (`pytest -q`, 40.61 s) |
+| Test state at Phase 7 end | **503 passed, 0 failed, 0 errors** (`pytest -q`, 38.82 s) |
 | Remote | Nothing is pushed. The user pushes when they choose. |
 
 ---
@@ -520,7 +520,7 @@ Implementation commit: `7306554`. Full details and the live-test checklist are i
 | 5 | Instant clipboard typing | DONE — 4000-char cap, `wl-copy -- <text>` + Ctrl+V, `--key-delay 8` fallback, `last_typed_text`, `write it`/`right it` |
 | 6 | Timers, tab close, aliases, stop phrase | DONE — `set_timer` background thread + notification + Piper, web-only close → Ctrl+W, Lutris/text-editor aliases, `is stop listening` |
 | 7 | Skills/memory/dataset | DONE — alias + fact teaching in `workspace/user_memory.json`, `enter the email`, `main.py export-dataset` ChatML JSONL |
-| 8 | Tests and benchmark | DONE — 51 new tests, full suite **501 passed**, benchmark **25/25**, average **1.469 ms** (mocked) |
+| 8 | Tests and benchmark | DONE — 53 new tests, full suite **503 passed**, benchmark **25/25**, average **1.559 ms** (mocked) |
 | + | Electron/Flatpak EPIPE | DONE — every GUI `Popen` uses all-DEVNULL + new session + close_fds; `flatpak kill` before pkill; tests pin it |
 
 **Why `assistant/llm/llama_server.py` was not created:** this codebase has no
@@ -536,9 +536,9 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 
 | Check | Command | Result |
 |---|---|---|
-| Full suite | `.venv/bin/python -m pytest -q` | **501 passed** (40.61 s) |
+| Full suite | `.venv/bin/python -m pytest -q` | **503 passed** (38.82 s) |
 | Phase 7 module | `pytest tests/test_phase7_brain_wayland.py -q` | **50 passed** |
-| Benchmark | `.venv/bin/python main.py benchmark` | **25/25**, average **1.469 ms** (mocked) |
+| Benchmark | `.venv/bin/python main.py benchmark` | **25/25**, average **1.559 ms** (mocked) |
 | Compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
 | Whitespace | `git diff --check` | clean |
 | No llama-server | `ss -ltnp \| grep 9931` | empty |
@@ -571,9 +571,9 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 | Full suite after Phase 6 | `.venv/bin/python -m pytest -q` | **450 passed** (39.19 s) |
 | Phase 6 tests | `tests/test_phase6_intelligent_agent.py` | **31 passed** |
 | Benchmark after Phase 6 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **2.063 ms** (mocked) |
-| Full suite after Phase 7 | `.venv/bin/python -m pytest -q` | **501 passed** (40.61 s) |
+| Full suite after Phase 7 | `.venv/bin/python -m pytest -q` | **503 passed** (38.82 s) |
 | Phase 7 tests | `tests/test_phase7_brain_wayland.py` | **50 passed** |
-| Benchmark after Phase 7 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **1.469 ms** (mocked) |
+| Benchmark after Phase 7 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **1.559 ms** (mocked) |
 | Phase 7 compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
 | Phase 7 diff check | `git diff --check` | clean |
 | Real saved clips | offline Whisper comparison | **8/8 semantic**; single wake **6/8 → 8/8**; “Hey Ultron” **2/4 both** |
@@ -685,7 +685,7 @@ pgrep -a ydotoold
    `docs/ULTRON_LOCAL_HANDOFF.md`, then `AGENTS.md`.
 2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 7:
    `phase7-llm-brain-wayland` (code commit `7306554` plus the docs commit).
-3. `.venv/bin/python -m pytest -q` and compare with §7 (**501 passed** expected).
+3. `.venv/bin/python -m pytest -q` and compare with §7 (**503 passed** expected).
 4. Read the current phase section in `docs/PROGRESS.md`; continue from its **NEXT STEP**.
 5. Do one part at a time. Update this file and `docs/PROGRESS.md` before/after each part.
    Commit locally by file name only. Never push, never commit secrets.
@@ -706,4 +706,4 @@ pgrep -a ydotoold
   `id_slot:0`/`cache_prompt:true`, all-tool exposure, 220-token cap and sentence guard,
   unified fast-path/LLM history, clipboard typing up to 4000 chars, timers, tab-close
   routing, alias/fact memory, ChatML export, and the Flatpak/Electron EPIPE fix. 500 tests
-  pass; benchmark 25/25 at 1.469 ms (mocked); live hardware items stay UNVERIFIED.
+  pass; benchmark 25/25 at 1.559 ms (mocked); live hardware items stay UNVERIFIED.

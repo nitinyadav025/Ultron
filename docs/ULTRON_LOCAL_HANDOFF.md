@@ -4,7 +4,7 @@
 >
 > **CURRENT STATE (2026-11-03, Phase 7):** read `docs/ULTRON_PROJECT_BIBLE.md` first, then
 > the top of `docs/PROGRESS.md`. They record the branch (`phase7-llm-brain-wayland`), the
-> implementation commit (`7306554`), the **501-test** result, the 25/25 benchmark, all
+> implementation commit (`7306554`), the **503-test** result, the 25/25 benchmark, all
 > current settings and the Phase 7 live-test checklist. Nothing has been pushed.
 > Everything below this line is the original Phase 0–5 handoff and is kept as history.
 

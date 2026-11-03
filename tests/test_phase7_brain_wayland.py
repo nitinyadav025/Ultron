@@ -584,6 +584,44 @@ def test_fast_path_routes_natural_site_searches(sentence: str, arguments: dict[s
     assert registry.calls == [("web_search", arguments)]
 
 
+def test_empty_site_query_opens_the_site_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(web, "open_url", lambda url, browser=None: opened.append(url) or {"ok": True})
+
+    result = web.web_search("", site="youtube")
+
+    assert opened == ["https://www.youtube.com"]
+    assert result["ok"] is True
+    assert result["reply"] == "Opening YouTube."
+
+
+def test_close_google_chrome_is_an_app_not_the_google_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    SESSION.note_app("firefox", browser=True)
+    monkeypatch.setattr(
+        dc,
+        "browser_tab_control",
+        lambda action: pytest.fail("close Google Chrome must not press Ctrl+W"),
+    )
+    monkeypatch.setattr(
+        apps,
+        "find_app",
+        lambda _name: apps.AppMatch(key="chrome", display="Chrome", process_names=("chrome",)),
+    )
+    monkeypatch.setattr(apps, "_process_names_for", lambda _match: ("chrome",))
+
+    def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return _done(argv, 0, "4242\n")
+
+    monkeypatch.setattr(apps, "_process_runner", runner)
+
+    result = apps.close_app("google chrome")
+
+    assert result["ok"] is True and result["closed"] is True
+    assert result["app_name"] == "Chrome"
+
+
 def test_open_youtube_while_youtube_is_open_uses_the_current_tab(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
