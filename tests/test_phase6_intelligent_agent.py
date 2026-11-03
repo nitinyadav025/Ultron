@@ -160,6 +160,11 @@ class TextAdapter:
                     or getattr(part, "function_call", None) is not None
                 ),
                 "system_chars": len(system_instruction),
+                "history_chars": sum(
+                    len(getattr(part, "text", None) or "")
+                    for content in messages
+                    for part in (getattr(content, "parts", None) or [])
+                ),
                 "system": system_instruction,
                 "max_tokens": max_output_tokens,
             }
@@ -442,6 +447,8 @@ def test_history_is_capped_and_old_tool_json_is_stripped(tmp_path: Path) -> None
 
     assert max(item["messages"] for item in adapter.seen) <= 6
     assert len({item["system_chars"] for item in adapter.seen}) == 1
+    # After the cap is reached, the prompt stops growing (turns 14 and 15 are identical).
+    assert adapter.seen[-1]["history_chars"] == adapter.seen[-2]["history_chars"]
 
     loop.history = [
         types.Content(

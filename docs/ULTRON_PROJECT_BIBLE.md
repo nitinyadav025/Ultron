@@ -410,6 +410,19 @@ Design:
 
 ### 6.4 Part 4 — LLM-first brain and professional replies
 
+**Measured prompt size (deterministic stub; chars/4 estimate, not llama-server tokens):**
+
+| Point | Messages sent | JSON chars | Estimated tokens |
+|---|---|---|---|
+| Turn 1 (chat) | system + 1 | 375 | 94 |
+| Turn 15 (chat) | system + 6 | 580 | 145 |
+| Turn 14 = Turn 15 | system + 6 | 580 | 145 |
+| Compact tool schemas (tools on) | constant | 1,967 | 492 |
+
+So the static part never changes and history **plateaus after Turn 4**; it no longer grows
+with the number of commands. Actual `llama-server` prompt-token counts are **UNVERIFIED**
+in this offline run.
+
 - `AgentLoop.run_task` becomes a wrapper around the existing loop; a `finally` prunes
   history to the last **3 turns / 6 messages** and keeps only text parts (user text + spoken
   reply). Tool-call JSON never survives into the next turn.

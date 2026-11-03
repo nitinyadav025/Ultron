@@ -93,6 +93,11 @@ only, nothing pushed).
     ≤6;
   - prunes after every turn to **3 text-only turns / 6 messages**, retaining only the
     current turn’s tool protocol when it is still needed.
+- Measured with a deterministic stub (JSON chars / 4 estimate, not llama-server tokens):
+  chat prompt **Turn 1 = 375 chars (~94 tokens), Turn 15 = 580 chars (~145 tokens)** and
+  identical from Turn 4 onward (turns 14 and 15 are byte-identical). A tool turn adds the
+  constant compact schema: **1,967 chars (~492 estimated tokens)**. Actual
+  `llama-server` prompt-token counts are UNVERIFIED in this offline run.
 - Every local LLM call receives one compact `Screen: browser=…, site=…, windows=[…]` line.
 - `prompts.py` tells the model that input is STT, that screen state is live, and that
   `learn_skill` exists. Local prompt length: **784 characters** (under the 800 guard).
