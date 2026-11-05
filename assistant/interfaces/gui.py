@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
+from assistant.brain.context import ensure_accessibility
 from assistant.config import VALID_THINKING_LEVELS, AssistantConfig
 from assistant.brain.skills import configure_runtime, learn_skill
 from assistant.interfaces.voice import VoiceController
@@ -33,13 +34,17 @@ from assistant.tools.desktop_control import (
 )
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
+from assistant.tools.screen_actions import click_element, focus_and_type, read_screen
 from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
+from assistant.vision.screen_watcher import start_screen_watcher
 
 
 def run_gui_dashboard(config: AssistantConfig) -> int:
     """Launch the Ultron Dashboard window."""
     configure_runtime(config)
     register_gnome_kill_hotkey(config.kill_hotkey_binding)
+    ensure_accessibility()
+    start_screen_watcher(config.screen_watch_interval)
     root = tk.Tk()
     root.title(f"{config.assistant_name} Dashboard — Fedora 44 (Wayland)")
     root.geometry("860x600")
@@ -68,6 +73,9 @@ def run_gui_dashboard(config: AssistantConfig) -> int:
         take_screenshot,
         set_timer,
         learn_skill,
+        click_element,
+        read_screen,
+        focus_and_type,
     ):
         registry.register(fn)
 

@@ -288,7 +288,9 @@ def test_dynamic_app_can_be_opened_and_closed(fake_desktop_dir: Path, monkeypatc
     closed = apps.close_app("test editor")
 
     assert opened["ok"] is True and opened["app_name"] == "Test Editor"
-    assert launched == [["test-editor"]]
+    # Phase 8: GNOME launches .desktop entries through gio, which handles Flatpak,
+    # DBusActivatable apps and raises an already-running Wayland window.
+    assert launched == [["gio", "launch", str(fake_desktop_dir / "test-editor.desktop")]]
     assert closed["ok"] is True and closed["closed"] is True
     assert close_reply_for("test editor") == "I've closed Test Editor for you."
 

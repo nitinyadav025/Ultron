@@ -14,6 +14,10 @@ from pathlib import Path
 _SESSION_TMP = Path(tempfile.mkdtemp(prefix="ultron-tests-"))
 os.environ.setdefault("ULTRON_LOGS_DIR", str(_SESSION_TMP / "logs"))
 os.environ.setdefault("ULTRON_WORKSPACE_DIR", str(_SESSION_TMP / "workspace"))
+# A coding session may export the old model names; tests must see the project's .env
+# defaults (small.en) so the Phase 8 fallback and decode options are deterministic.
+for _shadowed in ("WHISPER_MODEL", "WHISPER_MODEL_DIR"):
+    os.environ.pop(_shadowed, None)
 
 import pytest  # noqa: E402  (after the environment redirect on purpose)
 

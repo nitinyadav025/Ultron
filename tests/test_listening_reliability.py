@@ -162,6 +162,12 @@ def _norm(text: str) -> str:
 def ears() -> WhisperEars:
     cfg = load_config()
     cfg.backend = "local"
+    # The expected transcripts in workspace/test_clips/*.json were measured with base.en.
+    # Phase 8's default is small.en; that comparison lives in the Phase 8 suite instead of
+    # changing what this legacy guard test measures.
+    cfg.whisper_model = "base.en"
+    cfg.whisper_model_dir = PROJECT_ROOT / "models" / "faster-whisper-base.en"
+    cfg.whisper_dynamic_hotwords = False
     probe = WhisperEars(cfg)
     if not probe.is_downloaded():
         pytest.skip("faster-whisper base.en model is not downloaded")

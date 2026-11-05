@@ -1,10 +1,277 @@
-# Ultron progress — Phase 7 (current)
+# Ultron progress — Phase 8 (current)
 
-Last updated: 2026-11-03 (Phase 7 code and tests complete; live GNOME/voice test pending)
+Last updated: 2026-11-05 (Phase 8 code and tests complete; live clicks/typing and the
+microphone remain UNVERIFIED)
 
+> **Working folder in this session:** `/home/nitinyadav/Downloads/ULTRON` (verified with
+> `pwd`). Older handoff text says `~/Downloads/assistant-project`; that path does not exist
+> on this machine. All commands below run from the ULTRON folder.
+>
 > **Read `docs/ULTRON_PROJECT_BIBLE.md` first.** It is the single, detailed entry point:
-> architecture, every phase, the live-failure catalogue with root causes/fixes, the Phase 7
+> architecture, every phase, the live-failure catalogue with root causes/fixes, the Phase 8
 > result, limitations, roadmap, runbook and the exact resume procedure.
+>
+> **Session handoff:** `left-work-phase8/README.md` and
+> `left-work-phase8/SESSION_STATE.md` contain the exact resume state, the remaining live
+> checklist and the user's original Phase 8 prompt verbatim.
+
+## Phase 8 — Real-Time Screen Eyes & Hands, small.en Ears, Universal `gio launch` (Nov 5)
+
+Work branch: `phase8-eyes-hands-ears` (created from `phase7-llm-brain-wayland` @ `242a57f`,
+local only, nothing pushed). Remote and `origin` were not touched.
+
+| Part | What | Status |
+|------|------|--------|
+| 1 | `agent-desktop` install + GNOME accessibility/AT-SPI bus + Chromium renderer accessibility | DONE (agent-desktop 1.2.0 installed; AT-SPI live-read verified) |
+| 2 | 3-layer eyes: native AT-SPI helper, agent-desktop adapter, OCR fallback, continuous `ScreenWatcher` | DONE (OCR live blocked: `tesseract` not installed) |
+| 3 | 3-tier `click_element`, `read_screen`, `focus_and_type` plus fast-path/prompt routing | DONE (unit-tested; live clicks/typing UNVERIFIED) |
+| 4 | faster-whisper `small.en`, fast CPU decode, screen-primed hotwords, phonetic repair | DONE (measured latency is slower than the 0.55–0.75 s target; see below) |
+| 5 | Universal `gio launch` app control + Fedora alias table | DONE (resolution verified; live launch UNVERIFIED) |
+| 6 | 34 Phase 8 tests, full pytest, benchmark, docs, process cleanup | DONE (537 passed, 25/25) |
+
+### Part 1 — accessibility bus and `agent-desktop`
+
+- `npm install -g agent-desktop --allow-scripts=agent-desktop` succeeded **without sudo**
+  into `~/.npm-global/bin/agent-desktop`; npm reported `agent-desktop@1.2.0` from
+  `github.com/vercel-labs/agent-desktop`. No offline/blocked fallback was needed.
+- Live probe (this machine, no window interaction):
+  - `agent-desktop list-windows` returned the real Nautilus window (`Downloads`, pid 16814).
+  - `agent-desktop snapshot --skeleton -i --compact` returned
+    `WINDOW_NOT_FOUND: No focused window found` while Nautilus was visible but not focused;
+    `snapshot --app nautilus -i --compact` then returned **25 refs**.
+  - The Python adapter (`agent_desktop_snapshot`) live-parsed **21 interactive elements** in
+    **337 ms**.
+- `assistant/config.py` now exports `ACCESSIBILITY_ENABLED=1` and `QT_ACCESSIBILITY=1` for
+  every child process. `assistant/brain/context.py` adds `ensure_accessibility()`:
+  `gsettings set org.gnome.desktop.interface toolkit-accessibility true` and
+  `gsettings set org.gnome.shell introspect true`.
+- **Measured GNOME 50.5 fact (important):** `gsettings get org.gnome.shell introspect`
+  returns `No such key "introspect"` and
+  `gdbus … org.gnome.Shell.Introspect.GetWindows` returns
+  `org.freedesktop.DBus.Error.AccessDenied: GetWindows is not allowed`. The Phase 7 gdbus
+  window layer is therefore not usable on this GNOME version; the AT-SPI bus is the working
+  eyes. `ensure_accessibility()` reports `introspect: false` honestly instead of claiming
+  success.
+- Chromium-family browsers (`brave`, `chrome`) are launched with
+  `--force-renderer-accessibility` (Tier-A direct executable or Flatpak; `gio launch`
+  cannot pass flags). Firefox/GTK apps publish accessibility once the toolkit setting is on.
+
+### Part 2 — the 3-layer eyes
+
+**Layer B (primary):** `assistant/vision/atspi_helper.py` runs under `/usr/bin/python3`
+(verified: `Atspi OK`, `pyatspi OK`) because the project venv has no `gi`. It keeps a
+persistent JSON-lines process, walks the focused window first and then the other visible
+frames, and returns up to 40 `@e1..@eN` elements with
+`name, role, app, x, y, w, h, focused, editable, actions`.
+
+- Verified live in this session: one Nautilus frame, **206 nodes / 14 elements in 112.5 ms**
+  for the targeted walk; the full desktop walk measured **2,001 nodes / 296 ms**, so the
+  helper filters `gnome-shell`, caps nodes/depth and ranks interactive roles.
+- GTK4 reports `x=0, y=0` in SCREEN coordinates for children; the helper uses WINDOW
+  coordinates plus the frame origin (verified: Back button `239,0 34×34`, center `256,17`).
+- `INT32_MIN` sentinels (off-screen shell items) are normalized to `0,0,0,0`.
+- Refs are renumbered `@e1..@eN` after ranking, so the LLM never sees gaps.
+
+**Layer A (optional):** `agent_desktop_snapshot()` parses `agent-desktop snapshot` JSON,
+maps roles (`button` → `push button`, `switch` → `toggle button`, `textfield` → `entry`)
+and keeps the qualified `@session:eN` in `native_ref` for semantic clicks. It is used when
+explicitly preferred or when the native helper is unavailable (agent-desktop reads the same
+AT-SPI bus, so re-querying it every 1.2 s is deliberately avoided).
+
+**Layer C (fallback):** `ocr_screen_elements()` takes a screenshot with
+`gnome-screenshot -f /tmp/ultron_screen.png` (or the GNOME Shell D-Bus screenshot method)
+and parses `tesseract <png> stdout --psm 11 tsv` into word boxes and centres.
+**`tesseract` is not installed on this machine** (`shutil.which("tesseract")` → empty), so
+the live OCR path is UNVERIFIED. The parser, screenshot fallback and click-from-OCR path are
+unit-tested with injected runners. Continuous watching never screenshots: OCR runs only when
+the user asks (`read_screen` / `click_element`).
+
+**Continuous watcher:** `ScreenWatcher` is a daemon thread started in `chat`, `gui` and
+`listen`, refreshing every **1.2 s** into `SESSION.screen_elements`,
+`SESSION.open_windows`, `SESSION.focused_window`, `SESSION.focused_app` and
+`SESSION.active_site`. Verified live: started, refreshed 14 elements, produced
+`[Context: ... | Visible UI: @e1:button:"Back", ...]`, and stopped with the helper process
+gone.
+
+**Prompt discipline:** `context_tag()` now appends
+`| Visible UI: @e1:button:"Show more", @e2:entry:"Search"` inside the existing per-turn
+`[Context: ...]` tag. The system prompt remains 100 % static (tested byte-identical across
+different screens); history stays clean.
+
+### Part 3 — hands
+
+`assistant/tools/screen_actions.py` adds three registered tools:
+
+| Tool | Behaviour |
+|---|---|
+| `click_element(target)` | Tier 1 AT-SPI action → Tier 2 `ydotool mousemove --absolute <x> <y>` + `ydotool click 0xC0` at the box centre → Tier 3 browser `Ctrl+F` → paste label → `Esc` → `Enter`. OCR boxes are tried on demand when AT-SPI finds nothing. Observe → Act is followed by a best-effort re-observe (`verified` is only true when the element disappears). |
+| `read_screen(query="")` | Summarises the active window, site, window count and top visible controls; a query returns a found element or an honest “I don't see …”. |
+| `focus_and_type(target_field, text)` | Finds an editable element (preferring entries), focuses it, then pastes with `wl-copy` + `Ctrl+V` **without re-focusing another window**. Secret-like text is refused. |
+
+- `ydotool` 1.0.4 syntax was verified from its man page: coordinates are positional
+  (`ydotool mousemove --absolute 100 100`); the `-x/-y` form in the phase request does not
+  exist and would have failed.
+- Fast-path phrases: `what is on my screen`, `what's on my screen`, `read the screen`,
+  `what can I click`, `what windows are open`, `click on <X>`, `press the <X> button`,
+  `select <X>`, `show more`, `expand the show more section`, and
+  `type <text> in the <field>`.
+- `tool_replies.py`, `registry.py` compact schemas and the static prompt all know the three
+  new tools.
+- **UNVERIFIED:** live semantic clicking, live coordinate clicking, and the browser
+  `Ctrl+F → Esc → Enter` activation. No automated test may press real keys or click a real
+  window. Tier 3 is implemented exactly as requested but its live effect is unproven.
+
+### Part 4 — `small.en`, CPU speed, screen-primed hotwords
+
+- `models/faster-whisper-small.en/model.bin` is present (483,545,366 bytes). The default is
+  now `WHISPER_MODEL=small.en` / `WHISPER_MODEL_DIR=models/faster-whisper-small.en` in
+  `config.py`, `.env.example` and `.env` (`.env` is git-ignored and was edited with `sed`,
+  never printed or staged).
+- `load_config()` falls back to `base.en` automatically when small.en's `model.bin` is
+  absent, so a missing/partial download cannot stop listening.
+- `WhisperModel`: `device="cpu"`, `compute_type="int8"`, `cpu_threads=6`, `num_workers=2`,
+  `local_files_only=True`.
+- `transcribe()` now passes `beam_size=2`, `best_of=2`, `temperature=0.0`,
+  `condition_on_previous_text=False`, `vad_filter=True` with
+  `vad_parameters={"min_silence_duration_ms": 250, "speech_pad_ms": 200}`.
+- `build_dynamic_hotwords()` = core names (`Ultron, Firefox, Brave, GitHub, YouTube,
+  Discord, Lutris, Text Editor, Screenshot`) + focused/last app + up to 8 short visible
+  button/tab/heading labels, capped at 240 chars.
+- Phonetic repairs added: `show moor` → `show more`, `expand the show more` →
+  `click show more`, `loot risk`/`loo tris`/`hermes` → `lutris`, `screen shot` →
+  `screenshot`, `dis cord` → `discord`, bare `right` → `write it`.
+
+**Measured small.en result (real saved clips, CPU int8, production options, 2026-11-05):**
+
+| Clip (stem) | Saved base.en transcript | small.en time | small.en result |
+|---|---|---|---|
+| 134409 | `Unused.` | 1.85 s | rejected (`avg_logprob=-1.40`, as before) |
+| 134437 | `unmute` | 1.99 s | `Unmute.` |
+| 134518 | `Stay silent for 10 seconds.` | 1.91 s | exact |
+| 134532 | `Yes.` | 1.75 s | exact |
+| 134543 | `Can you unmute the voice please?` | 2.03 s | exact |
+| 134606 | `list files in my download folder` | 2.03 s | exact |
+| 134642 | `What is your name?` | 2.08 s | exact |
+| 134700 | `Turn the volume to 90%.` | 1.90 s | exact |
+| 135201 (30 s fan) | `""` | 0.07 s | rejected `no_real_word` (correct) |
+| 135223 | `mute unmute` | 1.84 s | **`Mute on mute.` → rejected `repetition_loop`** |
+
+- Model load: **0.91 s**.
+- Typical per-clip transcription: **1.75–2.08 s** (clips are 3.1–10.8 s of audio).
+- **Honest deviation:** this is **not** the requested ~0.55–0.75 s. small.en with beam 2 is
+  roughly 4× slower than base.en beam 1 on this CPU. The requested settings were kept and
+  measured; the target is not met. If latency matters more than accuracy, set
+  `WHISPER_MODEL=base.en` in `.env`.
+- Accuracy: **7 of the 8 saved speech clips** pass the guard (base.en passed 8/8). The one
+  regression is the known `mute unmute` → `Mute on mute.` decode, which the repetition-loop
+  guard correctly rejects rather than running a wrong action.
+- The legacy `test_all_real_clips_pass_the_guard` test now pins **base.en** because its
+  expected transcripts were measured with base.en; the small.en comparison is recorded in
+  this table and the Phase 8 suite.
+- **Shell shadow warning:** this coding session inherited `WHISPER_MODEL=base.en` and
+  `WHISPER_MODEL_DIR=models/faster-whisper-base.en` in the environment, and `load_config`
+  gives environment variables precedence over `.env` (existing design). Tests pop those two
+  variables in `conftest.py`. If a live run still reports base.en, run
+  `unset WHISPER_MODEL WHISPER_MODEL_DIR` (or check `env | grep WHISPER`) before starting.
+
+### Part 5 — universal `gio launch`
+
+- `DesktopApp`/`AppMatch` now carry the full **`desktop_path`** and **`desktop_id`** for
+  every indexed entry. `DESKTOP_DIRS` adds `/var/lib/snapd/desktop/applications` and still
+  scans user, system and Flatpak export folders (**177 apps** discovered on this machine).
+- Launch order: **`gio launch <desktop_path>`** →
+  `gtk-launch <desktop_id>` (only when the desktop file exists) → `flatpak run <app_id>` →
+  cleaned `Exec=` executable. All launches keep the Phase 7 all-DEVNULL /
+  `start_new_session=True` / `close_fds=True` rule.
+- `resolve_app_launch_command()` deliberately stays executable-based (returns
+  `["firefox"]` or `["brave-browser", "--force-renderer-accessibility"]`) because `gio
+  launch` cannot receive a URL; `web.open_url()` now uses it directly.
+- `switch_app()` and the new `focus_target_window()` raise native Wayland windows by
+  relaunching the `.desktop` entry through `gio launch` when `wmctrl -a` fails.
+- Fedora alias table now covers: terminal (`console`, `shell`, `command prompt`),
+  settings (`system settings`, `wifi`, `bluetooth`, `sound/display/network/privacy
+  settings`), files (`file manager`, `folder`, `downloads`, `documents`), text editor
+  (`notepad`, `editor`, `document editor`), calculator, software (`app store`, `store`),
+  system monitor (`task manager`, `processes`), Lutris (`games`, `loot risk`, `loo tris`,
+  `hermes`), tweaks, extensions, plus the existing web-app fallbacks.
+- `config/apps.yaml` gains explicit entries for `software`, `system monitor`, `tweaks`,
+  `extensions` and `lutris` so their keys/desktop IDs are stable.
+- **UNVERIFIED:** actually launching every app / raising each window under GNOME Wayland.
+  Resolution (`gio launch` argv, desktop path, DEVNULL kwargs) is unit-tested; opening a real
+  app is left to Nitin's live test.
+
+### Part 6 — tests, benchmark and process state
+
+- New `tests/test_phase8_eyes_hands_ears.py` has **34 tests** covering every Part 1–5 item:
+  accessibility env/gsettings, Chromium flag, AT-SPI/agent-desktop/OCR parsing, `@ref`
+  numbering, `[Visible UI: ...]` in the user turn with a static system prompt, all three
+  click tiers, OCR click fallback, `read_screen`/`focus_and_type`, small.en defaults and the
+  base.en fallback, decode options, dynamic hotwords, phonetic repairs, `gio launch`
+  order/DEVNULL kwargs, `switch_app` raise, `focus_target_window`, and every Fedora alias.
+- `.venv/bin/python -m pytest -q` → **537 passed, 0 failed, 0 errors** (76.99 s).
+- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **2.109 ms** (mocked OS
+  and LLM; live latency UNVERIFIED).
+- `compileall` OK; `git diff --check` clean.
+- Final process state: no `llama-server` on 9931, no `ydotoold`, no `atspi_helper.py`, no
+  `agent-desktop` process left. The ScreenWatcher thread was stopped in the live probe.
+
+### Files changed (Phase 8)
+
+- New: `assistant/vision/__init__.py`, `assistant/vision/atspi_helper.py`,
+  `assistant/vision/screen_watcher.py`, `assistant/tools/screen_actions.py`,
+  `tests/test_phase8_eyes_hands_ears.py`.
+- Eyes/brain: `assistant/brain/context.py`, `assistant/brain/prompts.py`,
+  `assistant/brain/fast_path.py`, `assistant/brain/tool_replies.py`.
+- Tools/config: `assistant/tools/apps.py`, `assistant/tools/web.py`,
+  `assistant/tools/desktop_control.py`, `assistant/tools/registry.py`,
+  `assistant/config.py`, `config/apps.yaml`, `.env.example`, `.env` (not staged).
+- Speech: `assistant/speech/ears.py`, `assistant/speech/wake.py`.
+- Interfaces: `assistant/interfaces/cli.py`, `assistant/interfaces/gui.py`,
+  `assistant/interfaces/listen.py`.
+- Tests updated: `tests/conftest.py`, `tests/test_ears.py`,
+  `tests/test_listening_reliability.py`, `tests/test_b5_full_control.py`.
+- Docs: this file and `docs/ULTRON_PROJECT_BIBLE.md`.
+
+### NEXT STEP — live checklist for Nitin (the coding tool cannot click/type/use the mic)
+
+Run from `/home/nitinyadav/Downloads/ULTRON`:
+
+0. Optional OCR (needs sudo approval — the coding tool did not run it):
+   `sudo dnf install -y tesseract` then `command -v tesseract`.
+   Without it, AT-SPI still works; OCR-only apps report honestly that OCR is unavailable.
+1. `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR .venv/bin/python main.py listen`.
+   Expected ready lines, then `Ears: ready — small.en` and one `Screen watcher started`.
+2. Say **“Ultron, what is on my screen”**. Expected: the active window/site and visible
+   buttons; check `logs/assistant.log` for `Fast path: used … read_screen`.
+3. Open YouTube in Firefox, then say **“Ultron, click on show more”** or
+   **“Ultron, expand the show more section”**. Expected: the description expands (Tier 1 or
+   2 on the accessibility button; Tier 3 only if no element/coords). If nothing happens,
+   report whether `logs/assistant.log` shows `clicked` or `couldn't click`.
+4. Say **“Ultron, type f1 highlights in the search box”**. Expected: the search field is
+   focused and the text is pasted; no new app opens.
+5. Open Brave (not Chromium-only), check that a YouTube button/link appears in
+   `[Visible UI: ...]`; then repeat step 3. This proves
+   `--force-renderer-accessibility`.
+6. Say **“Ultron, open terminal”**, **“… open settings”**, **“… open files”**,
+   **“… open calculator”**, **“… open text editor”**, **“… open lutris”**. Expected: each
+   opens or raises through `gio launch`; no “I couldn't find an app”.
+7. Say **“Ultron, open YouTube”**, then **“Ultron, open youtube” again**. Expected: the
+   existing window/tab is raised, not a duplicate.
+8. Say **“Ultron is stop listening”**. Expected: listener stops; then check
+   `pgrep -a atspi_helper`, `pgrep -a ydotoold`, `ss -ltnp | grep 9931` are empty.
+
+### Head state (Phase 8)
+
+- Branch `phase8-eyes-hands-ears` (from `phase7-llm-brain-wayland` @ `242a57f`), local only,
+  **nothing pushed**; `origin` untouched.
+- Final pytest: **537 passed**; benchmark **25/25**, average **2.109 ms** (mocked).
+- `.env` is git-ignored and was never staged; only `.env.example` documents the new keys.
+- Live microphone, speakers, real clicking/typing and real app launches remain
+  **UNVERIFIED**.
+
+---
+
+# Ultron progress — Phase 7 (history)
 
 ## Phase 7 - Wayland Brain, Static KV Cache, Writing, Timers & Flatpak EPIPE Fix (Nov 3)
 

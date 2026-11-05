@@ -35,3 +35,19 @@ apps:
   vlc:
     desktop_id: "vlc.desktop"
     binary: "vlc"
+  software:
+    desktop_id: "org.gnome.Software.desktop"
+    binary: "gnome-software"
+  system monitor:
+    desktop_id: "org.gnome.SystemMonitor.desktop"
+    binary: "gnome-system-monitor"
+  tweaks:
+    desktop_id: "org.gnome.tweaks.desktop"
+    binary: "gnome-tweaks"
+  extensions:
+    desktop_id: "org.gnome.Shell.Extensions.desktop"
+    binary: "gnome-extensions-app"
+  lutris:
+    desktop_id: "net.lutris.Lutris.desktop"
+    binary: "lutris"
+    flatpak_id: "net.lutris.Lutris"

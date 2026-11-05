@@ -36,6 +36,7 @@ KEY_TAB = 15
 KEY_T = 20
 KEY_W = 17
 KEY_R = 19
+KEY_F = 33
 KEY_V = 47
 KEY_H = 35
 KEY_L = 38

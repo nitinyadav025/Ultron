@@ -323,6 +323,27 @@ def open_first_result_reply(result: dict[str, Any]) -> str | None:
     return f"I've opened the first result for {query}."
 
 
+def click_element_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't click that.")
+    return str(raw.get("reply") or f"I've clicked {raw.get('target') or 'that'}.")
+
+
+def read_screen_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("reply") or raw.get("error") or "I can't read the screen right now.")
+    return str(raw.get("reply") or "I can't see anything on the screen right now.")
+
+
+def focus_and_type_reply(result: dict[str, Any]) -> str | None:
+    raw = _raw_summary(result)
+    if not _result_ok(result):
+        return str(raw.get("error") or "I couldn't type into that field.")
+    return str(raw.get("reply") or "I've typed that into the field.")
+
+
 def is_lead_in(text: str) -> bool:
     """True for a contentless opener such as "Here are the first items in your folder".
 
@@ -378,6 +399,12 @@ def code_reply_for_tool(tool_name: str, result: dict[str, Any]) -> str | None:
         return web_search_reply(result)
     if tool_name == "open_first_result":
         return open_first_result_reply(result)
+    if tool_name == "click_element":
+        return click_element_reply(result)
+    if tool_name == "read_screen":
+        return read_screen_reply(result)
+    if tool_name == "focus_and_type":
+        return focus_and_type_reply(result)
     return None
 
 

@@ -28,6 +28,8 @@ LOCAL_RULES: tuple[str, ...] = (
     "When asked to write <topic> in this document/tab, or 'write it'/'yes write it'/'right it', write 2-4 clear sentences and call type_text(text=...). For 'write it', reuse your previous answer.",
     "Date, time, battery or system status -> system_info.",
     "Screenshot -> take_screenshot. Timer -> set_timer.",
+    "Read screen -> read_screen. Click/press a visible label -> click_element(target).",
+    "Type in a visible field -> focus_and_type(target_field, text).",
     "Close GitHub/YouTube or 'this <site> tab' while a browser is open -> browser_tab_control(action='close_tab').",
     'Map speech to tools; never invent. "Shut Firefox down" -> close_app firefox; "Put GitHub on my screen" -> open_first_result github.',
     '"Open Steam and Discord" -> two open_app calls. Two actions -> call every tool.',

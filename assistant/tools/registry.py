@@ -90,6 +90,9 @@ _COMPACT_DESCRIPTIONS: dict[str, str] = {
     "take_screenshot": "Take a screenshot.",
     "set_timer": "Set a countdown timer.",
     "learn_skill": "Learn a phrase and its actions.",
+    "click_element": "Click a visible button, link or tab.",
+    "read_screen": "Read what is on the screen.",
+    "focus_and_type": "Focus an input field and type text.",
 }
 
 # Phase 7 exposes EVERY registered desktop tool to the local model. The fast path still
@@ -112,6 +115,8 @@ _LOCAL_OPTIONAL_PARAMS: dict[str, frozenset[str]] = {
     "media_control": frozenset({"action"}),
     "system_info": frozenset({"kind"}),
     "set_timer": frozenset({"label"}),
+    "read_screen": frozenset({"query"}),
+    "focus_and_type": frozenset(),
 }
 
 

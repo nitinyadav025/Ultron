@@ -28,10 +28,11 @@ from typing import Any, Callable
 
 import numpy as np
 
-from assistant.brain.context import SESSION, ensure_wayland_introspect, get_screen_context
+from assistant.brain.context import SESSION, ensure_accessibility, get_screen_context
 from assistant.brain.fast_path import match_fast_command
 from assistant.brain.skills import configure_runtime, learn_skill, log_experience
 from assistant.config import AssistantConfig
+from assistant.speech.ears import build_dynamic_hotwords
 from assistant.speech.mic_input import agc_guard_needed, guard_mic_agc
 from assistant.speech.recorder import (
     ABS_START_RMS,
@@ -81,6 +82,7 @@ from assistant.speech.wake import (
     wake_match_anywhere,
 )
 from assistant.tools.registry import ToolRegistry
+from assistant.vision.screen_watcher import start_screen_watcher, stop_screen_watcher
 
 logger = logging.getLogger("ultron.listen")
 
@@ -1008,6 +1010,7 @@ def run_listen(config: AssistantConfig) -> int:
         window_control,
     )
     from assistant.tools.files import list_files, read_file
+    from assistant.tools.screen_actions import click_element, focus_and_type, read_screen
     from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
     from assistant.tools.web import open_first_result, web_search
 
@@ -1019,7 +1022,8 @@ def run_listen(config: AssistantConfig) -> int:
     # One keyboard daemon for the whole session, and focus the last app before key actions.
     start_ydotool()
     set_terminal_context(True)
-    ensure_wayland_introspect()
+    ensure_accessibility()
+    start_screen_watcher(config.screen_watch_interval)
 
     gate = PermissionGate(config=config, mode=config.default_mode)
     registry = ToolRegistry(config=config, gate=gate, allow_prompts=False)
@@ -1046,6 +1050,9 @@ def run_listen(config: AssistantConfig) -> int:
         take_screenshot,
         set_timer,
         learn_skill,
+        click_element,
+        read_screen,
+        focus_and_type,
     ):
         registry.register(fn)
 
@@ -1072,10 +1079,12 @@ def run_listen(config: AssistantConfig) -> int:
     print(f"  Mouth: ready \u2014 {mouth_msg}", flush=True)
 
     def transcribe(pcm: bytes) -> Transcript:
+        # Screen-primed vocabulary: core names + open apps + visible button/tab labels.
+        dynamic = build_dynamic_hotwords()
         ok, text = voice.ears.transcribe_samples(
             pcm_to_float32(pcm),
             log_text=False,
-            hotwords=config.whisper_wake_hotwords or None,
+            hotwords=dynamic or (config.whisper_wake_hotwords or None),
         )
         confidence = dict(getattr(voice.ears, "last_confidence", {}) or {})
         return Transcript(
@@ -1128,4 +1137,11 @@ def run_listen(config: AssistantConfig) -> int:
         vad=vad,
     )
     registry.on_execute = listener.note_tool_call
-    return listener.run()
+    try:
+        return listener.run()
+    finally:
+        # Never leave the watcher thread, the AT-SPI helper or ydotoold running.
+        stop_screen_watcher()
+        from assistant.tools.desktop_control import stop_ydotool
+
+        stop_ydotool()

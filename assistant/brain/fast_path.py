@@ -117,6 +117,69 @@ _TIMER_COMMAND = re.compile(
     r"(?P<duration>.+)$"
 )
 
+# Phase 8 screen commands. These run before the generic "type ..." and "open ..."
+# patterns so a visible label is never mistaken for an app or literal dictation.
+_READ_SCREEN = re.compile(
+    r"^(?:please )?(?:"
+    r"what(?: s| is) on (?:my |the )?screen|"
+    r"read (?:me )?(?:the |my )?screen|"
+    r"what (?:can|do) i click(?: on)?|"
+    r"what (?:is|are) (?:clickable|visible)(?: on (?:my |the )?screen)?|"
+    r"what windows are open|list (?:the )?(?:open )?windows|show (?:me )?(?:the )?windows"
+    r")$"
+)
+_CLICK = re.compile(r"^(?:please )?(?:click|tap)(?: on)? (?:the )?(?P<target>.+)$")
+_PRESS_LABEL = re.compile(
+    r"^(?:please )?press (?:the )?(?P<target>.+?) (?:button|link|tab|option)$"
+)
+_SELECT = re.compile(r"^(?:please )?select (?:the )?(?P<target>.+)$")
+_EXPAND = re.compile(
+    r"^(?:please )?(?:expand|open up|show)(?: the)? "
+    r"(?P<target>(?:show )?more(?: comments)?|comments?|description|details|replies|read more)"
+    r"(?: (?:section|area|button|link))?$"
+)
+_SHOW_MORE = re.compile(r"^(?:please )?show more(?: comments)?$")
+_FOCUS_TYPE = re.compile(
+    r"^(?:(?:can|could|would|will) you )?(?:please )?"
+    r"(?:type|enter|write|fill)(?: in)? (?P<text>.+?) "
+    r"(?:in|into|on) (?:the )?"
+    r"(?P<field>e ?mail|email|search|search box|username|user name|password|message|"
+    r"name|url|address|subject|comment)(?: (?:field|box|bar))?$",
+    re.I,
+)
+
+
+def _screen_command(cleaned: str, request: str) -> dict[str, object] | None:
+    """Deterministic routing for read/click/expand requests."""
+    if _READ_SCREEN.match(cleaned):
+        return {
+            "kind": "read_screen",
+            "tool": "read_screen",
+            "arguments": {},
+            "request": request,
+        }
+    if _SHOW_MORE.match(cleaned):
+        return {
+            "kind": "click_element",
+            "tool": "click_element",
+            "arguments": {"target": "show more"},
+            "request": request,
+        }
+    for pattern in (_CLICK, _PRESS_LABEL, _SELECT, _EXPAND):
+        match = pattern.match(cleaned)
+        if not match:
+            continue
+        target = _clean_target(match.group("target"))
+        if not target or _bad_app_target(target):
+            return None
+        return {
+            "kind": "click_element",
+            "tool": "click_element",
+            "arguments": {"target": target},
+            "request": request,
+        }
+    return None
+
 
 def _prepare_text(text: str) -> str:
     """Drop the "I'll turn" wake miss and turn ", Ultron" into a command joiner."""
@@ -207,6 +270,18 @@ def _match_single(text: str) -> dict[str, object] | None:
             "request": text,
         }
 
+    focus_type = _FOCUS_TYPE.match(repaired)
+    if focus_type:
+        field = _clean_target(focus_type.group("field"))
+        text_to_type = focus_type.group("text").strip()
+        if field and text_to_type:
+            return {
+                "kind": "focus_and_type",
+                "tool": "focus_and_type",
+                "arguments": {"target_field": field, "text": text_to_type},
+                "request": text,
+            }
+
     typed = re.match(
         r"(?i)^(?:(?:can|could|would|will) you )?(?:please )?"
         r"(?:type|write|enter text) (.+)$",
@@ -232,6 +307,10 @@ def _match_single(text: str) -> dict[str, object] | None:
     cleaned = _strip_request_prefixes(spoken)
     if not cleaned:
         return None
+
+    screen_command = _screen_command(cleaned, text)
+    if screen_command is not None:
+        return screen_command
 
     # "search f1 in youtube", "search on youtube for f1", "search youtube".
     site_request = parse_search_request(repaired)

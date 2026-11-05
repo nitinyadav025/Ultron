@@ -1,9 +1,10 @@
 """Ears: local speech-to-text with faster-whisper (Phase 3).
 
-Runs `base.en` on the CPU with int8 weights, beam size 1 and VAD on. The model is
-downloaded once into the project (`models/faster-whisper-base.en`) by
+Runs `small.en` on the CPU with int8 weights, beam size 2 and VAD on. The model is
+downloaded once into the project (`models/faster-whisper-small.en`) by
 `main.py download-models`; afterwards it is loaded from disk with
-`local_files_only=True`, so no internet is needed at runtime.
+`local_files_only=True`, so no internet is needed at runtime. If small.en is missing,
+`load_config` falls back to `base.en` automatically.
 
 Audio is decoded with the stdlib `wave` module into a float32 numpy array and passed
 to faster-whisper directly: faster-whisper 1.2.1 calls `av.open(..., metadata_errors=...)`
@@ -30,7 +31,36 @@ from assistant.safety.redact import redact_secrets
 logger = logging.getLogger("ultron.ears")
 
 SAMPLE_RATE = 16000
-BEAM_SIZE = 1
+# Phase 8: small.en is accurate enough for beam 2; best_of=2 keeps CPU latency low.
+BEAM_SIZE = 2
+BEST_OF = 2
+VAD_PARAMETERS = {"min_silence_duration_ms": 250, "speech_pad_ms": 200}
+# Screen-primed vocabulary: these names survive Whisper's usual near-misses.
+CORE_HOTWORDS = (
+    "Ultron",
+    "Firefox",
+    "Brave",
+    "GitHub",
+    "YouTube",
+    "Discord",
+    "Lutris",
+    "Text Editor",
+    "Screenshot",
+)
+_NOISY_UI_NAMES = frozenset(
+    {
+        "close",
+        "minimize",
+        "maximize",
+        "restore",
+        "back",
+        "forward",
+        "menu",
+        "main menu",
+        "search",
+        "settings",
+    }
+)
 NO_SPEECH = "I didn't hear anything."
 UNCLEAR_SPEECH = "I didn't catch that, please say it again."
 _BLANK_TRANSCRIPTS = {"", "[blank_audio]", "(silence)", "[silence]", "[no speech]", "[no_speech]"}
@@ -164,7 +194,74 @@ def load_wav_16k_mono(path: Path) -> np.ndarray:
 def _default_model_factory(model_dir: Path) -> Any:
     from faster_whisper import WhisperModel
 
-    return WhisperModel(str(model_dir), device="cpu", compute_type="int8", local_files_only=True)
+    return WhisperModel(
+        str(model_dir),
+        device="cpu",
+        compute_type="int8",
+        cpu_threads=6,
+        num_workers=2,
+        local_files_only=True,
+    )
+
+
+def build_dynamic_hotwords(
+    *,
+    max_screen: int = 8,
+    max_chars: int = 240,
+    core: tuple[str, ...] = CORE_HOTWORDS,
+) -> str:
+    """Core names + open app names + up to 8 short visible button/tab labels.
+
+    Read from ``SESSION`` only (never from disk). Labels are capped so an unclear
+    recording cannot echo a long on-screen paragraph, the failure the old auto-hotword
+    list produced. The returned list is logged as a length only.
+    """
+    from assistant.brain.context import SESSION
+
+    terms: list[str] = [name for name in core if name]
+
+    def add(value: str, *, limit: int = 32) -> None:
+        cleaned = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not cleaned or len(cleaned) > limit or len(cleaned.split()) > 4:
+            return
+        if cleaned.lower() in _NOISY_UI_NAMES:
+            return
+        if all(cleaned.lower() != item.lower() for item in terms):
+            terms.append(cleaned)
+
+    for app_name in (SESSION.focused_app, SESSION.last_app, SESSION.last_browser):
+        if app_name:
+            add(app_name.replace("_", " "))
+    for item in SESSION.screen_elements:
+        if len([term for term in terms if term not in CORE_HOTWORDS]) >= max_screen:
+            break
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        if role not in (
+            "push button",
+            "button",
+            "toggle button",
+            "link",
+            "page tab",
+            "menu item",
+            "heading",
+            "entry",
+            "text",
+        ):
+            continue
+        add(str(item.get("name") or ""))
+
+    hotwords = ", ".join(terms)
+    if len(hotwords) > max_chars:
+        trimmed: list[str] = []
+        for term in terms:
+            candidate = ", ".join([*trimmed, term])
+            if len(candidate) > max_chars:
+                break
+            trimmed.append(term)
+        hotwords = ", ".join(trimmed)
+    return hotwords
 
 
 def download_whisper_model(config: AssistantConfig, progress: Callable[[str], None] | None = None) -> Path:
@@ -172,7 +269,7 @@ def download_whisper_model(config: AssistantConfig, progress: Callable[[str], No
     note = progress or (lambda _msg: None)
     target = Path(config.whisper_model_dir)
     target.mkdir(parents=True, exist_ok=True)
-    note(f"downloading faster-whisper '{config.whisper_model}' into {target} (one time, ~150 MB)")
+    note(f"downloading faster-whisper '{config.whisper_model}' into {target} (one time)")
     try:
         from faster_whisper.utils import download_model
     except ImportError as exc:  # pragma: no cover - dependency is installed
@@ -286,12 +383,15 @@ class WhisperEars:
         decode_options: dict[str, Any] = {
             "language": "en",
             "beam_size": BEAM_SIZE,
+            "best_of": BEST_OF,
+            "temperature": 0.0,
             "vad_filter": True,
+            "vad_parameters": dict(VAD_PARAMETERS),
             "condition_on_previous_text": False,
             "without_timestamps": True,
         }
         # A natural sentence primes the proper nouns (Ultron, YouTube, GitHub, F1) without
-        # the old comma-list echo: hotwords stay opt-in and are never auto-built.
+        # the old comma-list echo; hotwords stay opt-in and are never auto-built.
         prompt = (getattr(self.config, "whisper_initial_prompt", "") or "").strip()
         if prompt:
             decode_options["initial_prompt"] = prompt
@@ -302,6 +402,12 @@ class WhisperEars:
                 decode_options["hotwords"] = hotwords
         elif self.config.whisper_hotwords:
             decode_options["hotwords"] = self.config.whisper_hotwords
+        elif getattr(self.config, "whisper_dynamic_hotwords", True):
+            # Screen-primed vocabulary: open apps plus the visible button/tab labels.
+            dynamic = build_dynamic_hotwords()
+            if dynamic:
+                decode_options["hotwords"] = dynamic
+                logger.info("Ears: %d dynamic hotword chars from the screen.", len(dynamic))
         try:
             model = self.load()
             segments, info = model.transcribe(audio, **decode_options)

@@ -7,7 +7,7 @@ import re
 
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
-from assistant.brain.context import SESSION, ensure_wayland_introspect
+from assistant.brain.context import SESSION, ensure_accessibility
 from assistant.brain.fast_path import match_fast_command, try_fast_path
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.brain.skills import configure_runtime, learn_skill
@@ -38,8 +38,10 @@ from assistant.tools.desktop_control import (
 )
 from assistant.tools.files import list_files, read_file
 from assistant.tools.registry import ToolRegistry
+from assistant.tools.screen_actions import click_element, focus_and_type, read_screen
 from assistant.tools.volume import mute_audio, set_volume, volume_down, volume_up
 from assistant.tools.web import open_first_result, web_search
+from assistant.vision.screen_watcher import start_screen_watcher
 
 PRIVACY_ACK_FILE = LOGS_DIR / ".privacy_notice_shown"
 
@@ -105,7 +107,10 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
     start_ydotool()
     set_terminal_context(True)
     # Native Wayland windows are invisible to wmctrl until GNOME introspection is enabled.
-    ensure_wayland_introspect()
+    # ensure_accessibility also publishes GTK/Qt/Electron widgets on the AT-SPI bus.
+    ensure_accessibility()
+    # Phase 8 eyes: refresh the @ref snapshot every 1.2 s in the background.
+    start_screen_watcher(config.screen_watch_interval)
 
     gate = PermissionGate(config=config, mode=initial_mode or config.default_mode)
     registry = ToolRegistry(config=config, gate=gate)
@@ -132,6 +137,9 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         take_screenshot,
         set_timer,
         learn_skill,
+        click_element,
+        read_screen,
+        focus_and_type,
     ):
         registry.register(fn)
 

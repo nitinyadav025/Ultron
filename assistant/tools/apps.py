@@ -44,6 +44,9 @@ APP_ALIASES: dict[str, str] = {
     "code": "code",
     "gnome terminal": "terminal",
     "console": "terminal",
+    "shell": "terminal",
+    "command prompt": "terminal",
+    "command line": "terminal",
     "terminal": "terminal",
     "ptyxis": "terminal",
     "calc": "calculator",
@@ -51,9 +54,29 @@ APP_ALIASES: dict[str, str] = {
     "control center": "settings",
     "gnome settings": "settings",
     "settings": "settings",
+    "system settings": "settings",
+    "wifi": "settings",
+    "wi fi": "settings",
+    "bluetooth": "settings",
+    "sound settings": "settings",
+    "display settings": "settings",
+    "network settings": "settings",
+    "privacy settings": "settings",
     "file browser": "files",
     "files": "files",
+    "folder": "files",
+    "downloads": "files",
+    "documents": "files",
     "system monitor": "system monitor",
+    "task manager": "system monitor",
+    "processes": "system monitor",
+    "software": "software",
+    "app store": "software",
+    "gnome software": "software",
+    "store": "software",
+    "gnome tweaks": "tweaks",
+    "tweaks": "tweaks",
+    "extensions": "extensions",
     "brave browser": "brave",
     "brave": "brave",
     "google chrome": "chrome",
@@ -61,6 +84,7 @@ APP_ALIASES: dict[str, str] = {
     "spotify": "spotify",
     "vlc": "vlc",
     "lutris": "lutris",
+    "games": "lutris",
     "loot risk": "lutris",
     "lootris": "lutris",
     "lu tris": "lutris",
@@ -83,6 +107,10 @@ APP_DISPLAY: dict[str, str] = {
     "spotify": "Spotify",
     "vlc": "VLC",
     "lutris": "Lutris",
+    "software": "Software",
+    "system monitor": "System Monitor",
+    "tweaks": "Tweaks",
+    "extensions": "Extensions",
     "discord": "Discord",
     "github": "GitHub",
     "youtube": "YouTube",
@@ -207,13 +235,21 @@ DESKTOP_DIRS = (
     Path.home() / ".local/share/applications",
     Path("/usr/share/applications"),
     Path("/var/lib/flatpak/exports/share/applications"),
+    Path("/var/lib/snapd/desktop/applications"),
 )
+
+# Chromium-family browsers only expose web-page buttons/links to AT-SPI when renderer
+# accessibility is forced at launch. gio launch cannot pass arguments, so these two prefer
+# their executable (or a Flatpak run with the flag) when a URL is not involved.
+CHROMIUM_BROWSERS = frozenset({"brave", "chrome"})
+CHROMIUM_A11Y_FLAG = "--force-renderer-accessibility"
 
 
 @dataclass(frozen=True)
 class DesktopApp:
     key: str
     desktop_id: str
+    desktop_path: str
     name: str
     generic: str
     exec_argv: tuple[str, ...]
@@ -227,6 +263,7 @@ class AppMatch:
     key: str
     display: str
     desktop_id: str = ""
+    desktop_path: str = ""
     exec_argv: tuple[str, ...] = ()
     try_exec: str = ""
     yaml_entry: dict[str, Any] | None = None
@@ -411,6 +448,7 @@ def _parse_desktop_file(path: Path) -> DesktopApp | None:
     return DesktopApp(
         key=normalise_app_name(path.stem),
         desktop_id=path.name,
+        desktop_path=str(path),
         name=name,
         generic=values.get("GenericName", "").strip(),
         exec_argv=exec_argv,
@@ -513,6 +551,20 @@ def _score_app(query: str, app: DesktopApp) -> float:
     return best
 
 
+def _desktop_path_for_id(desktop_id: str) -> str:
+    """Full path of a .desktop file from any indexed application directory."""
+    cleaned = (desktop_id or "").strip()
+    if not cleaned:
+        return ""
+    if not cleaned.endswith(".desktop"):
+        cleaned += ".desktop"
+    for directory in DESKTOP_DIRS:
+        candidate = directory / cleaned
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 def find_app(app_name: str) -> AppMatch | None:
     """Resolve a spoken name against apps.yaml (high priority) and .desktop files."""
     cleaned = normalise_app_name(app_name)
@@ -523,27 +575,34 @@ def find_app(app_name: str) -> AppMatch | None:
     entry = catalog.get(key)
     if isinstance(entry, dict):
         display = APP_DISPLAY.get(key, str(entry.get("name") or key.title()))
+        desktop_id = str(entry.get("desktop_id") or "")
+        desktop_path = _desktop_path_for_id(desktop_id)
         return AppMatch(
             key=key,
             display=display,
-            desktop_id=str(entry.get("desktop_id") or ""),
+            desktop_id=desktop_id,
+            desktop_path=desktop_path,
             yaml_entry=entry,
             source="apps.yaml",
             process_names=CLOSE_EXECUTABLES.get(key, ()),
         )
 
     best: tuple[float, DesktopApp] | None = None
+    # An alias ("app store" -> "software") must scan the resolved catalog key, not the
+    # spoken words, or the fuzzy match never finds the real desktop entry.
+    scan_query = normalise_app_name(key) or cleaned
     for app in scan_desktop_apps():
-        score = _score_app(cleaned, app)
+        score = _score_app(scan_query, app)
         if best is None or score > best[0]:
             best = (score, app)
     if best is None or best[0] < 0.86:
         return None
     app = best[1]
     return AppMatch(
-        key=normalise_app_name(app.key),
+        key=key or normalise_app_name(app.key),
         display=app.name,
         desktop_id=app.desktop_id,
+        desktop_path=app.desktop_path,
         exec_argv=app.exec_argv,
         try_exec=app.try_exec,
         source=app.source,
@@ -552,6 +611,7 @@ def find_app(app_name: str) -> AppMatch | None:
                 key=app.key,
                 display=app.name,
                 desktop_id=app.desktop_id,
+                desktop_path=app.desktop_path,
                 exec_argv=app.exec_argv,
                 try_exec=app.try_exec,
                 source=app.source,
@@ -560,25 +620,58 @@ def find_app(app_name: str) -> AppMatch | None:
     )
 
 
+def _flatpak_id_for_match(match: AppMatch) -> str:
+    entry = match.yaml_entry or {}
+    explicit = str(entry.get("flatpak_id") or "").strip()
+    if explicit:
+        return explicit
+    desktop_id = (match.desktop_id or "").removesuffix(".desktop")
+    if "flatpak" in (match.source or "").lower() and "." in desktop_id:
+        return desktop_id
+    return ""
+
+
+def _direct_executable(match: AppMatch) -> list[str] | None:
+    entry = match.yaml_entry or {}
+    candidates: list[str] = []
+    for key in ("binary", "alt_binary"):
+        binary = str(entry.get(key) or "").strip()
+        if binary:
+            candidates.append(binary)
+    if not candidates and match.try_exec:
+        candidates.append(match.try_exec)
+    if not candidates and match.exec_argv:
+        candidates.append(match.exec_argv[0])
+    for binary in candidates:
+        if shutil.which(binary):
+            return [binary]
+    return None
+
+
 def _launch_command_for(match: AppMatch) -> tuple[list[str], str] | None:
-    entry = match.yaml_entry
-    if entry:
-        for key in ("binary", "alt_binary"):
-            binary = str(entry.get(key) or "")
-            if binary and shutil.which(binary):
-                return [binary], binary
-        desktop_id = str(entry.get("desktop_id") or "")
-        if desktop_id and shutil.which("gtk-launch"):
-            return ["gtk-launch", desktop_id], desktop_id
-        flatpak_id = str(entry.get("flatpak_id") or "")
+    """GNOME-native launch order: gio launch, gtk-launch, flatpak run, then Exec."""
+    flatpak_id = _flatpak_id_for_match(match)
+
+    # Chromium-family browsers need the renderer accessibility flag, which gio launch
+    # cannot pass. Prefer the executable (or Flatpak with the flag) for these two only.
+    if match.key in CHROMIUM_BROWSERS:
+        direct = _direct_executable(match)
+        if direct:
+            return [*direct, CHROMIUM_A11Y_FLAG], Path(direct[0]).name
         if flatpak_id and shutil.which("flatpak"):
-            return ["flatpak", "run", flatpak_id], flatpak_id
-    if match.desktop_id and shutil.which("gtk-launch"):
+            return ["flatpak", "run", flatpak_id, CHROMIUM_A11Y_FLAG], flatpak_id
+
+    desktop_path = match.desktop_path or _desktop_path_for_id(match.desktop_id)
+    if desktop_path and shutil.which("gio"):
+        return ["gio", "launch", desktop_path], match.desktop_id or Path(desktop_path).name
+    # gtk-launch needs the .desktop file to exist; without it, go straight to Flatpak.
+    if match.desktop_id and desktop_path and shutil.which("gtk-launch"):
         return ["gtk-launch", match.desktop_id], match.desktop_id
-    if match.exec_argv:
-        argv = list(match.exec_argv)
-        if shutil.which(argv[0]) or (Path(argv[0]).is_file() and os.access(argv[0], os.X_OK)):
-            return argv, Path(argv[0]).name
+    if flatpak_id and shutil.which("flatpak"):
+        return ["flatpak", "run", flatpak_id], flatpak_id
+    direct = _direct_executable(match)
+    if direct:
+        return direct, Path(direct[0]).name
     return None
 
 
@@ -596,38 +689,78 @@ def resolve_known_app(app_name: str) -> tuple[list[str], str] | None:
 
 
 def resolve_app_launch_command(app_name: str) -> tuple[list[str], str]:
-    """Resolve a human app name (e.g. 'Text Editor') to its Fedora launch command."""
-    cleaned = app_name.strip().lower()
-    apps_file = PROJECT_ROOT / "config" / "apps.yaml"
-    catalog = (yaml.safe_load(apps_file.read_text(encoding="utf-8")) or {}).get("apps", {}) if apps_file.exists() else {}
+    """Return an EXECUTABLE argv that accepts a URL/file argument.
 
-    entry = catalog.get(cleaned) or next((v for k, v in catalog.items() if cleaned in k or k in cleaned), None)
-    if entry:
-        for key in ("binary", "alt_binary"):
-            b = entry.get(key, "")
-            if b and shutil.which(b):
-                return [b], b
-        desktop_id = entry.get("desktop_id", "")
-        if desktop_id and shutil.which("gtk-launch"):
-            return ["gtk-launch", desktop_id], desktop_id
-        flatpak_id = entry.get("flatpak_id", "")
+    ``gio launch`` is perfect for opening an app, but it cannot receive a URL. The web
+    tools therefore use this resolver, which returns ``["firefox"]`` or
+    ``["brave-browser", "--force-renderer-accessibility"]`` instead.
+    """
+    cleaned = app_name.strip().lower()
+    match = find_app(app_name)
+    if match is not None:
+        direct = _direct_executable(match)
+        if direct:
+            if match.key in CHROMIUM_BROWSERS:
+                return [*direct, CHROMIUM_A11Y_FLAG], Path(direct[0]).name
+            return direct, Path(direct[0]).name
+        flatpak_id = _flatpak_id_for_match(match)
         if flatpak_id and shutil.which("flatpak"):
+            if match.key in CHROMIUM_BROWSERS:
+                return ["flatpak", "run", flatpak_id, CHROMIUM_A11Y_FLAG], flatpak_id
             return ["flatpak", "run", flatpak_id], flatpak_id
 
-    if cleaned.endswith(".desktop") and shutil.which("gtk-launch"):
-        return ["gtk-launch", app_name.strip()], app_name.strip()
+    if cleaned.endswith(".desktop"):
+        desktop_path = _desktop_path_for_id(cleaned)
+        if desktop_path:
+            try:
+                argv = _parse_desktop_file(Path(desktop_path))
+            except Exception:
+                argv = None
+            if argv is not None and argv.exec_argv and shutil.which(argv.exec_argv[0]):
+                return list(argv.exec_argv), Path(argv.exec_argv[0]).name
     if shutil.which(cleaned):
         return [cleaned], cleaned
-
-    for ddir in (Path("/usr/share/applications"), Path("/var/lib/flatpak/exports/share/applications"), Path.home() / ".local/share/applications"):
-        if ddir.exists():
-            for dfile in ddir.glob("*.desktop"):
-                if cleaned.replace(" ", "") in dfile.stem.lower().replace("-", ""):
-                    if shutil.which("gtk-launch"):
-                        return ["gtk-launch", dfile.name], dfile.name
-                    if shutil.which("gio"):
-                        return ["gio", "launch", str(dfile)], dfile.name
     return [cleaned], cleaned
+
+
+def focus_target_window(app_name: str, *, try_wmctrl: bool = True) -> dict[str, Any]:
+    """Raise an existing window on GNOME Wayland.
+
+    ``wmctrl -a`` only sees XWayland windows. When it fails (a native Wayland window),
+    relaunching the .desktop entry through ``gio launch`` makes GNOME activate and raise
+    the single-instance window instead of opening a second copy.
+    """
+    match = find_app(app_name)
+    if match is None:
+        return {
+            "ok": False,
+            "unknown": True,
+            "app_name": normalise_app_name(app_name),
+            "error": f"I couldn't find an app named {normalise_app_name(app_name)}.",
+        }
+    if try_wmctrl and shutil.which("wmctrl"):
+        try:
+            moved = _process_runner(["wmctrl", "-a", match.display])
+            if moved.returncode == 0:
+                SESSION.note_app(match.key)
+                return {
+                    "ok": True,
+                    "app_name": match.display,
+                    "focused": True,
+                    "method": "wmctrl",
+                }
+        except (OSError, subprocess.SubprocessError):
+            pass
+    payload, command = _launch_match(match)
+    if not payload.get("ok"):
+        return {**payload, "focused": False}
+    return {
+        "ok": True,
+        "app_name": match.display,
+        "focused": True,
+        "method": "gio_launch",
+        "command": command,
+    }
 
 
 def _launch_match(match: AppMatch) -> tuple[dict[str, Any], list[str]]:

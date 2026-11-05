@@ -19,18 +19,20 @@
 | Item | Value |
 |---|---|
 | Project | Ultron, a voice-controlled Fedora 44 GNOME Wayland laptop assistant |
-| Folder | `~/Downloads/assistant-project` |
+| Folder (verified) | `/home/nitinyadav/Downloads/ULTRON` (older text says `~/Downloads/assistant-project`; that path does not exist on this machine) |
 | Python | `.venv/bin/python` (3.14.8) — never the system `python3` |
 | Brain | LFM3-1.7B GGUF on llama.cpp `llama-server`, OpenAI-compatible API `http://127.0.0.1:9931/v1` |
-| Ears | faster-whisper `base.en`, CPU, int8, float32 numpy arrays only |
+| Ears | faster-whisper `small.en`, CPU, int8, beam 2, float32 numpy arrays only (automatic `base.en` fallback) |
 | Mouth | Piper `en_US-lessac-medium`, CPU, streaming sentence by sentence |
+| Eyes | AT-SPI2 helper under `/usr/bin/python3`, optional `agent-desktop@1.2.0`, OCR fallback (`tesseract`, not installed) |
+| Hands | AT-SPI actions, `ydotool` absolute coordinates, browser `Ctrl+F` tier, `wl-copy` paste |
 | GPU | GTX 1650 4 GB, reserved for the LLM only |
 | Default backend | `BACKEND=local` (no API key needed) |
 | Rollback | `BACKEND=gemini` must keep working |
-| Branch (Phase 7) | `phase7-llm-brain-wayland` (created from `phase6-intelligent-agent` @ `3ca55ba`) |
-| Implementation commit | `7306554` (27 files, 2889 insertions) |
-| Test state at Phase 7 start | **450 passed, 0 failed, 0 errors** (`pytest -q`, 46.46 s) |
+| Branch (Phase 8) | `phase8-eyes-hands-ears` (created from `phase7-llm-brain-wayland` @ `242a57f`) |
 | Test state at Phase 7 end | **503 passed, 0 failed, 0 errors** (`pytest -q`, 38.82 s) |
+| Test state at Phase 8 end | **537 passed, 0 failed, 0 errors** (`pytest -q`, 76.99 s) |
+| Benchmark at Phase 8 end | **25/25 passed**, average **2.109 ms** (mocked) |
 | Remote | Nothing is pushed. The user pushes when they choose. |
 
 ---
@@ -109,7 +111,8 @@ microphone (PipeWire, pw-record)
 | Entry point | `main.py` | `chat`, `gui`, `listen`, `wake-train`, `benchmark`, `doctor`, `self-test`, `voice-test`, `logs`, `stop`, `download-models`, and Phase 6 `teach` / `import-skills` |
 | Config | `assistant/config.py`, `.env`, `.env.example`, `config/settings.yaml`, `config/apps.yaml` | Every runtime setting; `BACKEND`, model paths, voice thresholds, permission default |
 | Brain | `assistant/brain/agent_loop.py`, `local_client.py`, `gemini_client.py`, `prompts.py`, `fast_path.py`, `tool_replies.py`, `reply_style.py`, `tool_output.py`, `context.py`, `server_manager.py`, Phase 6 `skills.py` | LLM calls, tool rounds, deterministic routing, replies, history, screen/session context |
-| Tools | `assistant/tools/registry.py`, `files.py`, `apps.py`, `volume.py`, `web.py`, `desktop_control.py`, `sandbox.py` | Real OS actions plus schemas and permission gate |
+| Tools | `assistant/tools/registry.py`, `files.py`, `apps.py`, `volume.py`, `web.py`, `desktop_control.py`, `screen_actions.py`, `sandbox.py` | Real OS actions plus schemas and permission gate |
+| Vision | `assistant/vision/atspi_helper.py`, `screen_watcher.py` | AT-SPI2 tree walker (system Python), agent-desktop adapter, OCR fallback, continuous `@ref` watcher |
 | Speech | `assistant/speech/recorder.py`, `vad.py`, `ears.py`, `mouth.py`, `wake.py`, `mic_input.py`, `denoise.py` | Capture, endpointing, STT, TTS, wake matching, mic gain |
 | Interfaces | `assistant/interfaces/cli.py`, `gui.py`, `listen.py`, `voice.py`, `wake_train.py` | Chat loop, hands-free loop, voice controller |
 | Safety | `assistant/safety/permissions.py`, `killswitch.py`, `audit.py`, `redact.py` | Permission tiers, kill switch, audit log, secret redaction |
@@ -309,6 +312,9 @@ server or `ydotoold` left running.
 | 21 | “set a timer for 5 seconds” had no real timer | no timer tool existed | Fast path had no duration parser | Phase 7 `set_timer` + background `threading.Timer` + `notify-send` + Piper | `test_phase7_brain_wayland.py` Part 6 |
 | 22 | Flatpak Discord `Uncaught exception: Error: write EPIPE at console.warn` (19:20:19) | Electron/Flatpak launched with `stderr=PIPE`; `pkill` killed zypak before Electron exited | Detached GUI children must never own a pipe; Flatpak must be stopped as a sandbox | Phase 7 all-DEVNULL launches + `flatpak kill <id>` first + XWayland `wmctrl -c` + process-group SIGTERM | `test_phase7_brain_wayland.py` EPIPE tests |
 | 23 | `"is stop listening"` did not stop hands-free mode | wake stripping left the filler “is” | Stop check compared the raw remainder | Phase 7 stops after stripping `is/please/now/just/...` | `test_phase7_brain_wayland.py` Part 6 |
+| 24 | GNOME 50.5 window introspection returned `AccessDenied` | `gsettings get org.gnome.shell introspect` → `No such key`; `GetWindows is not allowed` | The Phase 7 gdbus introspection key was removed in GNOME 50 | Phase 8 uses AT-SPI as the primary eyes and reports `introspect: false` honestly | `test_phase8_eyes_hands_ears.py` Part 1 |
+| 25 | OCR layer could not run live | `shutil.which("tesseract")` empty | Tesseract is not installed on this machine | OCR parser/fallback implemented and unit-tested; user can `sudo dnf install tesseract` | Phase 8 OCR tests |
+| 26 | small.en slower than the 0.55–0.75 s target and one clip regressed | measured 1.75–2.08 s per saved clip; `mute unmute` → `Mute on mute.` rejected | small.en + beam 2 is ~4× base.en beam 1; the repetition guard correctly refuses the wrong decode | Settings kept as requested and measured honestly; `WHISPER_MODEL=base.en` remains the latency fallback | Phase 8 ears tests + PROGRESS table |
 
 **Honesty note on #16:** the coding session on 2026-11-03 could not reproduce the 9 errors.
 The exact command `.venv/bin/python -m pytest tests/test_permission_modes.py -v` returned
@@ -558,7 +564,59 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 
 ---
 
-## 7. Verification ledger (Phase 6/7)
+## 6B. Phase 8 — Real-Time Eyes & Hands, small.en Ears, Universal `gio launch` (Nov 5)
+
+Branch: `phase8-eyes-hands-ears` (from `phase7-llm-brain-wayland` @ `242a57f`). Full
+evidence, measured numbers and the live checklist are in `docs/PROGRESS.md`; this section is
+the long-term summary.
+
+| Part | What | Result |
+|---|---|---|
+| 1 | `agent-desktop` + GNOME AT-SPI accessibility + Chromium renderer accessibility | DONE — `agent-desktop@1.2.0` installed in `~/.npm-global` without sudo; `ACCESSIBILITY_ENABLED=1` / `QT_ACCESSIBILITY=1`; `ensure_accessibility()`; `--force-renderer-accessibility` for Brave/Chrome |
+| 2 | 3-layer eyes + continuous `ScreenWatcher` | DONE — persistent `/usr/bin/python3` AT-SPI helper (`@e1..@eN`, bounds, editable, actions), agent-desktop adapter, OCR fallback, 1.2 s daemon, `| Visible UI: ...` on the user turn |
+| 3 | 3-tier hands | DONE — AT-SPI action, `ydotool mousemove --absolute <x> <y>` + `click 0xC0`, browser `Ctrl+F → label → Esc → Enter`; `read_screen`; `focus_and_type` |
+| 4 | `small.en` + screen-primed listening | DONE — CPU int8, `cpu_threads=6`, `num_workers=2`, beam 2, best_of 2, VAD 250/200 ms, dynamic hotwords, phonetic repairs; measured **1.75–2.08 s/clip**, not the 0.55–0.75 s target |
+| 5 | Universal app launcher | DONE — `desktop_path`/`desktop_id`, `gio launch` → `gtk-launch` → `flatpak run` → `Exec`, 177 indexed apps, full Fedora alias table, `switch_app`/`focus_target_window` raise via gio |
+| 6 | Tests, benchmark, docs | DONE — **34** Phase 8 tests, full suite **537 passed**, benchmark **25/25** at **2.109 ms** (mocked) |
+
+**Live findings that matter:**
+
+- **GNOME 50.5 removed the introspection key.** `gsettings get org.gnome.shell introspect`
+  → `No such key "introspect"`, and `org.gnome.Shell.Introspect.GetWindows` →
+  `AccessDenied`. The Phase 7 gdbus window sensor is therefore broken on this machine;
+  Phase 8's AT-SPI bus is the working eye. `ensure_accessibility()` reports the failure
+  instead of hiding it.
+- **AT-SPI is fast enough.** The targeted Nautilus walk measured **206 nodes / 14 elements
+  in 112.5 ms**; the full desktop walk was 2,001 nodes / 296 ms. The helper caps nodes/depth
+  and ranks interactive roles. The live `read_screen()` returned the real `Downloads`
+  window with 14 refs; the live watcher refreshed and stopped cleanly.
+- **agent-desktop works too.** `list-windows` and `snapshot --app nautilus` succeeded; the
+  adapter parsed 21 elements in 337 ms. It is used only when the native helper is
+  unavailable, because both read the same bus.
+- **GTK4 bounds bug handled.** SCREEN coordinates return `x=0,y=0` for children; WINDOW
+  coordinates plus the frame origin give the real centre (verified on the Back button).
+- **Tesseract is not installed**, so live OCR is UNVERIFIED. The screenshot + TSV parser and
+  the click-from-OCR path are unit-tested with injected runners. Continuous watching never
+  screenshots; OCR happens only for an explicit `read_screen`/`click_element`.
+- **ydotool syntax corrected.** v1.0.4 takes positional coordinates
+  (`ydotool mousemove --absolute 100 100`); the `-x/-y` flags in the request do not exist.
+- **small.en is slower than requested.** Model load 0.91 s; transcription 1.75–2.08 s per
+  saved clip (3.1–10.8 s audio), vs base.en beam 1 at ~0.4 s. The requested settings are
+  kept and measured; `WHISPER_MODEL=base.en` is the latency fallback. One saved clip
+  (`mute unmute`) decodes as `Mute on mute.` and is correctly rejected by the repetition
+  guard; 7 of 8 speech clips pass (base.en: 8/8).
+- **Environment shadowing:** this session inherited `WHISPER_MODEL=base.en` from the shell;
+  `load_config` gives environment variables precedence over `.env` by design. Run
+  `unset WHISPER_MODEL WHISPER_MODEL_DIR` before a live small.en test.
+
+**UNVERIFIED (needs Nitin):** real semantic clicks, real coordinate clicks, the browser
+`Ctrl+F → Esc → Enter` activation, typing into real fields, launching/raising every app, the
+live microphone and the speakers. No automated test may press keys, click a window or use
+audio hardware.
+
+---
+
+## 7. Verification ledger (Phase 6/7/8)
 
 > Every number here must come from an actual command run in this session. Anything not run
 > is labelled UNVERIFIED.
@@ -576,6 +634,18 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 | Benchmark after Phase 7 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **1.559 ms** (mocked) |
 | Phase 7 compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
 | Phase 7 diff check | `git diff --check` | clean |
+| Full suite after Phase 8 | `.venv/bin/python -m pytest -q` | **537 passed** (76.99 s) |
+| Phase 8 tests | `tests/test_phase8_eyes_hands_ears.py` | **34 passed** |
+| Benchmark after Phase 8 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **2.109 ms** (mocked) |
+| Live AT-SPI read | `.venv/bin/python` → `read_screen()` | 14 elements from the real `Downloads` window, `focused_app=files` |
+| Live watcher | 0.5 s interval for 2 s | 14 elements refreshed; thread stopped; no helper left |
+| Live agent-desktop | `list-windows` + `snapshot --app nautilus` | window found; adapter parsed 21 elements in 337 ms |
+| small.en real clips | offline production options | 7/8 speech clips accepted; 1.75–2.08 s each; 0.91 s load |
+| GNOME introspection | `gsettings get org.gnome.shell introspect` | **No such key** (GNOME 50.5); `GetWindows` → `AccessDenied` |
+| OCR availability | `command -v tesseract` | **missing** (live OCR UNVERIFIED) |
+| No llama-server | `ss -ltnp \| grep 9931` | verified empty in final report |
+| No ydotool daemon | `pgrep -a ydotoold` | verified empty in final report |
+| No AT-SPI helper | `pgrep -af atspi_helper.py` | verified empty in final report |
 | Real saved clips | offline Whisper comparison | **8/8 semantic**; single wake **6/8 → 8/8**; “Hey Ultron” **2/4 both** |
 | Live screen read | `wmctrl -m` / `wmctrl -l` | GNOME Shell responds; `-l` empty because no GUI windows were open |
 | No llama-server | `ss -ltnp \| grep 9931` | verified empty in final report |
@@ -598,6 +668,22 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 - Phase 7 native GNOME introspection (`gsettings`/`gdbus`), real `wl-copy` paste,
   `flatpak kill`, and document writing are offline-tested only; the live checklist in
   `docs/PROGRESS.md` is the proof.
+- **Phase 8:** GNOME 50.5 has no `org.gnome.shell introspect` key and denies
+  `GetWindows`, so the AT-SPI bus is the real screen sensor. `ensure_accessibility()` says
+  so honestly.
+- **Phase 8:** live semantic clicks, coordinate clicks, the browser
+  `Ctrl+F → Esc → Enter` activation, and typing into real fields are **UNVERIFIED**. The
+  code paths are unit-tested with mocked `ydotool`/AT-SPI runners only.
+- **Phase 8:** `tesseract` is not installed, so the live OCR layer is UNVERIFIED. The
+  parser, screenshot fallback and OCR-coordinate click are unit-tested.
+- **Phase 8:** `small.en` measured **1.75–2.08 s** per saved clip (not the requested
+  0.55–0.75 s) and regressed one clip (`mute unmute` → `Mute on mute.`, rejected by the
+  repetition guard). `WHISPER_MODEL=base.en` remains the faster fallback.
+- **Phase 8:** `load_config` gives exported environment variables precedence over `.env`
+  (existing design). If `env | grep WHISPER` shows old values, `unset` them before a live
+  small.en test.
+- **Phase 8:** continuous watching intentionally does not screenshot; OCR runs only for an
+  explicit screen read/click request.
 - The prompt now exposes every registered tool. The static prefix is cached once, but the
   first call after a server restart still pays the full prompt evaluation.
 - `press_key` is limited to navigation keys; it deliberately cannot inject arbitrary text or
@@ -610,20 +696,22 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 
 ## 9. Future roadmap (ideas, not commitments)
 
-1. **Wake-word robustness:** compare `small.en` offline (only if the user approves the
-   download); train a tiny personal wake model; add a push-to-talk hotkey as a guaranteed
-   fallback.
+1. **Wake-word robustness:** compare `small.en` on more of the user's own clips; tune the
+   dynamic hotword set; train a tiny personal wake model; add a push-to-talk hotkey as a
+   guaranteed fallback. Phase 8 switched the default to small.en and measured the latency.
 2. **Skill library:** ship a curated set of safe skills (coding mode, meeting mode, focus
    mode), version them, and let the user export/import.
 3. **Experience-driven tuning:** use `training_dataset.jsonl` to mine frequent phrasings,
    add them to the fast path, and (only with explicit approval) fine-tune a small adapter.
-4. **Screen understanding:** optionally read the active window title and selected text via
-   AT-SPI; never screenshot without consent.
+4. **Screen understanding:** **Phase 8 delivered this** — AT-SPI `@ref` snapshots,
+   semantic/coordinate clicks, OCR fallback and a 1.2 s watcher. Next: install tesseract,
+   verify the browser tier live, and add a visible “eyes paused” control.
 5. **Browser automation:** use a real tab-control mechanism if one becomes available;
-   otherwise keep the honest “opened the search page” fallback.
+   otherwise keep the honest “opened the search page” fallback. Phase 8's
+   `--force-renderer-accessibility` exposes web buttons to AT-SPI.
 6. **Latency:** Phase 7 caches the static prefix (`id_slot:0`, `cache_prompt:true`). Next:
    measure real llama-server prompt-token reuse and consider dropping tool schemas on the
-   final answer call.
+   final answer call; Phase 8 measured small.en CPU latency honestly.
 7. **Safety:** expand secret-path tests, add a visible audit summary command, and consider
    per-app confirmation policies.
 
@@ -632,9 +720,9 @@ delete, arrows, home/end, page keys, F11) rather than arbitrary keyboard injecti
 ## 10. Runbook
 
 ```sh
-cd ~/Downloads/assistant-project
+cd ~/Downloads/ULTRON
 
-# Tests (never touches mic/speakers/GUI)
+# Tests (never touches mic/speakers/GUI/AT-SPI/screenshots)
 .venv/bin/python -m pytest -q
 
 # Benchmark (mocked OS/LLM)
@@ -644,9 +732,18 @@ cd ~/Downloads/assistant-project
 .venv/bin/python main.py chat
 .venv/bin/python main.py listen
 
+# Screen eyes / hands (also reachable by voice)
+# "what is on my screen", "click on Show more", "expand the show more section",
+# "type f1 highlights in the search box"
+
 # Diagnostics
 .venv/bin/python main.py doctor
 .venv/bin/python main.py voice-test
+
+# Phase 8 probes
+/usr/bin/python3 -c "import gi; gi.require_version('Atspi','2.0'); from gi.repository import Atspi; print('Atspi OK')"
+agent-desktop list-windows
+command -v tesseract   # optional OCR layer; install with sudo dnf install tesseract
 
 # Skills and dataset export
 .venv/bin/python main.py teach "work mode" "open code; open github"
@@ -657,6 +754,7 @@ cd ~/Downloads/assistant-project
 # Leave no processes behind
 ss -ltnp | grep 9931
 pgrep -a ydotoold
+pgrep -af atspi_helper.py
 ```
 
 ---
@@ -671,6 +769,9 @@ pgrep -a ydotoold
 | How does the mic decide speech ended? | `assistant/speech/recorder.py`, `vad.py`, `interfaces/listen.py` |
 | How does STT work? | `assistant/speech/ears.py` |
 | How does the wake word work? | `assistant/speech/wake.py` |
+| How do the eyes work? | `assistant/vision/screen_watcher.py`, `atspi_helper.py` |
+| How do clicks/typing work? | `assistant/tools/screen_actions.py`, `desktop_control.py` |
+| How are apps launched? | `assistant/tools/apps.py` (`gio launch`, aliases) |
 | How does TTS work? | `assistant/speech/mouth.py`, `interfaces/voice.py` |
 | How are tools declared/guarded? | `assistant/tools/registry.py`, `safety/permissions.py` |
 | Where are settings? | `assistant/config.py`, `.env.example`, `config/settings.yaml` |
@@ -683,14 +784,14 @@ pgrep -a ydotoold
 
 1. Read this file, then `docs/PROGRESS.md` (top section), then
    `docs/ULTRON_LOCAL_HANDOFF.md`, then `AGENTS.md`.
-2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 7:
-   `phase7-llm-brain-wayland` (code commit `7306554` plus the docs commit).
-3. `.venv/bin/python -m pytest -q` and compare with §7 (**503 passed** expected).
+2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 8:
+   `phase8-eyes-hands-ears` (created from `phase7-llm-brain-wayland` @ `242a57f`).
+3. `.venv/bin/python -m pytest -q` and compare with §7 (**537 passed** expected).
 4. Read the current phase section in `docs/PROGRESS.md`; continue from its **NEXT STEP**.
 5. Do one part at a time. Update this file and `docs/PROGRESS.md` before/after each part.
    Commit locally by file name only. Never push, never commit secrets.
-6. Stop any `llama-server` or `ydotoold` you started; verify with
-   `ss -ltnp | grep 9931` and `pgrep -a ydotoold`.
+6. Stop any `llama-server`, `ydotoold` or `atspi_helper.py` you started; verify with
+   `ss -ltnp | grep 9931`, `pgrep -a ydotoold` and `pgrep -af atspi_helper.py`.
 
 ---
 
@@ -707,3 +808,10 @@ pgrep -a ydotoold
   unified fast-path/LLM history, clipboard typing up to 4000 chars, timers, tab-close
   routing, alias/fact memory, ChatML export, and the Flatpak/Electron EPIPE fix. 500 tests
   pass; benchmark 25/25 at 1.559 ms (mocked); live hardware items stay UNVERIFIED.
+- **2026-11-05 (Phase 8):** AT-SPI2 eyes (`atspi_helper.py`, `ScreenWatcher`, `@ref`
+  snapshots with boxes/actions), optional agent-desktop adapter, OCR fallback,
+  `click_element`/`read_screen`/`focus_and_type` with three click tiers, small.en ears with
+  beam 2 + dynamic screen hotwords, universal `gio launch` + Fedora aliases, 34 new tests,
+  full suite **537 passed**, benchmark **25/25** at 2.109 ms. Measured small.en latency
+  1.75–2.08 s/clip (not the 0.55–0.75 s target); live clicks/typing/OCR/app launches stay
+  UNVERIFIED. GNOME 50.5 introspection key absence recorded as failure #24.

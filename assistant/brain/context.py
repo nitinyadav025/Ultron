@@ -61,6 +61,8 @@ _INTROSPECT_TIMEOUT_S = 0.35
 _PROCESS_TIMEOUT_S = 0.2
 
 _INTROSPECT_ENSURED = False
+_ACCESSIBILITY_ENSURED = False
+_TOOLKIT_ACCESSIBILITY_ENSURED = False
 
 _GUI_PROCESS_PATTERN = (
     "firefox|brave|chrome|code|gnome-text-editor|nautilus|discord|spotify|lutris|vlc"
@@ -119,6 +121,10 @@ class SessionContext:
     last_typed_text: str = ""
     last_action: str = ""
     open_windows: list[str] = field(default_factory=list)
+    # Phase 8 eyes: the newest @ref snapshot (dicts produced by
+    # ``assistant.vision.screen_watcher.UIElement.as_dict``).
+    screen_elements: list[dict[str, Any]] = field(default_factory=list)
+    screen_source: str = ""
     turns: deque[tuple[str, str]] = field(default_factory=lambda: deque(maxlen=5))
 
     def reset(self) -> None:
@@ -133,6 +139,8 @@ class SessionContext:
         self.last_typed_text = ""
         self.last_action = ""
         self.open_windows.clear()
+        self.screen_elements.clear()
+        self.screen_source = ""
         self.turns.clear()
 
     def note_app(self, app_name: str, *, browser: bool | None = None) -> None:
@@ -263,6 +271,42 @@ def ensure_wayland_introspect(
     if runner is None:
         _INTROSPECT_ENSURED = True
     return bool(result is not None and getattr(result, "returncode", 1) == 0)
+
+
+def ensure_accessibility(
+    runner: Callable[..., Any] | None = None,
+    session_type: str | None = None,
+) -> dict[str, bool]:
+    """Enable GNOME's AT-SPI toolkit bridge and shell introspection.
+
+    ``toolkit-accessibility`` makes GTK, Qt and Electron apps publish their widgets on
+    ``org.a11y.Bus``. GNOME 50.5 no longer ships the ``org.gnome.shell introspect`` key
+    (verified on this machine: ``No such key``), so that call is attempted, logged quietly
+    and reported honestly instead of pretending it succeeded. AT-SPI is the primary engine
+    either way. Tests inject a runner and never touch dconf.
+    """
+    global _ACCESSIBILITY_ENSURED, _TOOLKIT_ACCESSIBILITY_ENSURED
+    if runner is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"toolkit_accessibility": False, "introspect": False}
+    if _ACCESSIBILITY_ENSURED and runner is None:
+        return {"toolkit_accessibility": _TOOLKIT_ACCESSIBILITY_ENSURED, "introspect": _INTROSPECT_ENSURED}
+    toolkit = _run_quietly(
+        ["gsettings", "set", "org.gnome.desktop.interface", "toolkit-accessibility", "true"],
+        runner=runner,
+        timeout=1.0,
+        guarded=False,
+    )
+    toolkit_ok = bool(toolkit is not None and getattr(toolkit, "returncode", 1) == 0)
+    introspect_ok = ensure_wayland_introspect(runner=runner, session_type=session_type)
+    if runner is None:
+        _ACCESSIBILITY_ENSURED = True
+        _TOOLKIT_ACCESSIBILITY_ENSURED = toolkit_ok
+    logger.debug(
+        "Accessibility: toolkit=%s introspect=%s",
+        toolkit_ok,
+        introspect_ok,
+    )
+    return {"toolkit_accessibility": toolkit_ok, "introspect": introspect_ok}
 
 
 def parse_window_titles(output: str) -> list[str]:
@@ -484,6 +528,33 @@ def screen_line(context: dict[str, Any] | None = None) -> str:
     )
 
 
+def _visible_ui_tag(limit: int = 12, max_name: int = 28) -> str:
+    """Compact ``@e1:button:"Show more"`` list from the watcher's latest snapshot."""
+    role_display = {
+        "push button": "button",
+        "button": "button",
+        "toggle button": "toggle",
+        "switch": "toggle",
+        "password text": "entry",
+        "text": "text",
+        "document web": "document",
+        "document frame": "document",
+    }
+    shown: list[str] = []
+    for item in SESSION.screen_elements:
+        if len(shown) >= limit:
+            break
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("ref") or "")
+        name = re.sub(r"\s+", " ", str(item.get("name") or "")).strip()[:max_name]
+        role = role_display.get(str(item.get("role") or ""), str(item.get("role") or "item"))
+        if not ref or (not name and not item.get("editable")):
+            continue
+        shown.append(f'{ref}:{role}:"{name}"' if name else f"{ref}:{role}")
+    return ", ".join(shown)
+
+
 def context_tag(context: dict[str, Any] | None = None, skills_hint: str = "") -> str:
     """Compact per-turn tag prepended to the user message (never to the static system)."""
     data = context or refresh_screen_context()
@@ -499,7 +570,11 @@ def context_tag(context: dict[str, Any] | None = None, skills_hint: str = "") ->
         f"focused={clean(data.get('focused_window'))}",
         f"last_action={clean(data.get('last_action'))}",
     ]
-    tag = "[Context: " + ", ".join(parts) + "]"
+    tag = "[Context: " + ", ".join(parts)
+    visible = _visible_ui_tag()
+    if visible:
+        tag += " | Visible UI: " + visible
+    tag += "]"
     hint = re.sub(r"\s+", " ", (skills_hint or "")).strip()
     if hint:
         tag += f" [{hint[:180]}]"

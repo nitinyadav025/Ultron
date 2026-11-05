@@ -275,8 +275,10 @@ def open_url(url: str, browser: str | None = None) -> dict[str, Any]:
     if is_blank_redirect(url):
         return {"ok": False, "error": "Refused a blank redirect URL."}
     if browser:
-        resolved_command = resolve_known_app(browser) or resolve_app_launch_command(browser)
-        cmd, resolved = resolved_command
+        # resolve_app_launch_command returns an executable that accepts a URL (never
+        # `gio launch`, which takes only a .desktop file). Chromium browsers include
+        # --force-renderer-accessibility so page buttons/links reach AT-SPI.
+        cmd, resolved = resolve_app_launch_command(browser)
         if not shutil.which(cmd[0]):
             return {"ok": False, "error": f"Browser '{browser}' was not found."}
         argv = [*cmd, url]

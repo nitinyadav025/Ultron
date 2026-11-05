@@ -95,6 +95,15 @@ _CONTRACTION_TAILS = frozenset(
 _GENERIC_STARTERS = frozenset({"i", "hey", "what", "the", "and", "a", "to", "you", "it", "is", "so"})
 # Common app mishearings in the saved clips (B3 wake-train table).
 _SPOKEN_COMMAND_FIXES = (
+    # Phase 8 screen commands: Indian-English / Whisper near-misses.
+    (re.compile(r"\bexpand(?: the)?\s+show\s+more(?:\s+section)?\b", re.I), "click show more"),
+    (re.compile(r"\bshow\s+(?:moor|moore)\b", re.I), "show more"),
+    (re.compile(r"\bshowmore\b", re.I), "show more"),
+    (re.compile(r"\b(?:take\s+)?a?\s*screen\s+shot\s*$", re.I), "take screenshot"),
+    (re.compile(r"\bscreen\s+shot\b", re.I), "screenshot"),
+    # "Dis cord" and "loot risk" are the measured spoken forms of these app names.
+    (re.compile(r"\bdis\s+cord\b", re.I), "discord"),
+    (re.compile(r"\b(?:loo\s*tris|lou\s*tris|loot\s*risk|loot\s*res|hermes)\b", re.I), "lutris"),
     (re.compile(r"\b(open|launch) (?:5ox|5x|file box|fire box|fire fox)\b", re.I), r"\1 firefox"),
     # "Third YouTube" / "Hurt YouTube" / "Sir YouTube" = "search YouTube".
     (
@@ -113,6 +122,8 @@ _SPOKEN_COMMAND_FIXES = (
         re.compile(r"^\s*right\s+(?!(?:now|away|here|there|back)\b)(.+)$", re.I),
         r"write \1",
     ),
+    # A bare "right" after the wake word is the write-it homophone.
+    (re.compile(r"^\s*right\s*$", re.I), "write it"),
 )
 
 

@@ -120,12 +120,19 @@ def test_transcribe_passes_the_phase3_decode_settings(tmp_path: Path) -> None:
     call = model.calls[0]
     assert isinstance(call["audio"], np.ndarray)  # arrays bypass the broken av.decode path
     assert call["language"] == "en"
-    assert call["beam_size"] == 1
+    assert call["beam_size"] == 2
+    assert call["best_of"] == 2
+    assert call["temperature"] == 0.0
     assert call["vad_filter"] is True
+    assert call["vad_parameters"] == {
+        "min_silence_duration_ms": 250,
+        "speech_pad_ms": 200,
+    }
     assert call["condition_on_previous_text"] is False
-    # Regression: the old default hotword list leaked into the transcript. Hotwords stay
-    # opt-in; Phase 6 adds one natural lexical sentence (never a comma word list).
-    assert "hotwords" not in call
+    # Phase 8 screen-primed vocabulary: the core names are always included, never a long
+    # on-screen paragraph (that was the old auto-hotword echo bug).
+    assert call["hotwords"].startswith("Ultron, Firefox, Brave, GitHub")
+    assert len(call["hotwords"]) <= 240
     assert call["initial_prompt"] == _cfg(tmp_path).whisper_initial_prompt
     assert "Ultron" in call["initial_prompt"] and "YouTube" in call["initial_prompt"]
     assert "prompt" not in call
@@ -140,14 +147,16 @@ def test_initial_prompt_can_be_disabled(tmp_path: Path) -> None:
     assert "initial_prompt" not in model.calls[0]
 
 
-def test_hotwords_are_off_by_default_even_with_apps_yaml(tmp_path: Path) -> None:
+def test_hotwords_are_off_when_dynamic_priming_is_disabled(tmp_path: Path) -> None:
     # config/apps.yaml exists and used to be turned into a hotword list automatically.
     from assistant.config import PROJECT_ROOT
 
     assert (PROJECT_ROOT / "config" / "apps.yaml").is_file()
 
+    cfg = _cfg(tmp_path)
+    cfg.whisper_dynamic_hotwords = False
     model = FakeModel(["open firefox"])
-    ears = WhisperEars(_cfg(tmp_path), model_factory=lambda _d: model)
+    ears = WhisperEars(cfg, model_factory=lambda _d: model)
     ears.transcribe(_write_wav(tmp_path / "e.wav", _tone()))
 
     assert "hotwords" not in model.calls[0]
@@ -339,7 +348,7 @@ def test_local_voice_controller_uses_ears_and_never_the_cloud(tmp_path: Path) ->
 
     ok_load, load_msg = voice.load_ears()
     assert ok_load is True
-    assert "base.en" in load_msg
+    assert "small.en" in load_msg
 
     wav = _write_wav(tmp_path / "d.wav", _tone())
     ok, text = voice.transcribe_audio(wav_path=wav)

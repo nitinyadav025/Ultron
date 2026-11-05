@@ -19,6 +19,16 @@ WORKSPACE_DIR = Path(os.environ.get("ULTRON_WORKSPACE_DIR") or (PROJECT_ROOT / "
 BACKUPS_DIR = PROJECT_ROOT / ".backups"
 MODELS_DIR = PROJECT_ROOT / "models"
 
+# Every child app (GTK, Qt, Electron, Firefox, Brave) inherits these, so its widgets
+# register on the org.a11y.Bus accessibility bus. This is what gives Ultron its eyes.
+ACCESSIBILITY_ENV: dict[str, str] = {
+    "ACCESSIBILITY_ENABLED": "1",
+    "QT_ACCESSIBILITY": "1",
+}
+for _a11y_name, _a11y_value in ACCESSIBILITY_ENV.items():
+    # Direct assignment: a stale shell value must not stop child apps registering.
+    os.environ[_a11y_name] = _a11y_value
+
 VALID_THINKING_LEVELS = ("low", "medium", "high")
 
 # A natural sentence conditions Whisper's decoder on the project's proper nouns without
@@ -65,9 +75,11 @@ class AssistantConfig:
     llama_timeout_sec: float = 60.0
     llama_start_timeout_sec: float = 90.0
     llama_server_log: Path = LOGS_DIR / "llama-server.log"
-    whisper_model: str = "base.en"
-    whisper_model_dir: Path = MODELS_DIR / "faster-whisper-base.en"
+    whisper_model: str = "small.en"
+    whisper_model_dir: Path = MODELS_DIR / "faster-whisper-small.en"
     whisper_hotwords: str = ""
+    # Phase 8: combine the core names with the open apps and 8 visible UI labels.
+    whisper_dynamic_hotwords: bool = True
     # Natural lexical prompt: primes proper nouns (Ultron, YouTube, GitHub, F1). An empty
     # value disables it; hands-free mode still adds its short wake hotwords.
     whisper_initial_prompt: str = DEFAULT_WHISPER_INITIAL_PROMPT
@@ -124,6 +136,7 @@ class AssistantConfig:
     # auto: fast deterministic confirmations for actions, LLM for explanations/open
     # questions. "fast" prefers the fast path even more; "llm" skips the fast path.
     brain_replies: str = "auto"
+    screen_watch_interval: float = 1.2
     learned_skills_file: Path = PROJECT_ROOT / "config" / "learned_skills.json"
     user_skills_file: Path = WORKSPACE_DIR / "learned_skills.json"
     user_memory_file: Path = WORKSPACE_DIR / "user_memory.json"
@@ -236,6 +249,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
                 "WAKE_",
                 "SEARCH_",
                 "FIRST_RESULT_",
+                "SCREEN_",
                 "ULTRON_",
             )
         ):
@@ -360,7 +374,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
     llama_server_log = Path(
         os.path.expanduser(merged.get("LLAMA_LOG_PATH") or str(LOGS_DIR / "llama-server.log"))
     )
-    whisper_model = (merged.get("WHISPER_MODEL") or "base.en").strip() or "base.en"
+    whisper_model = (merged.get("WHISPER_MODEL") or "small.en").strip() or "small.en"
     # Present-but-empty explicitly disables the prompt; absent means the default sentence.
     whisper_initial_prompt = (
         str(merged.get("WHISPER_INITIAL_PROMPT", DEFAULT_WHISPER_INITIAL_PROMPT) or "").strip()
@@ -370,6 +384,18 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
             merged.get("WHISPER_MODEL_DIR") or str(MODELS_DIR / f"faster-whisper-{whisper_model}")
         )
     )
+    # Automatic base.en rollback: a half-downloaded or missing small.en must never stop
+    # Ultron from listening. The fallback only happens when the model file is really absent.
+    if whisper_model == "small.en" and not (whisper_model_dir / "model.bin").is_file():
+        base_dir = MODELS_DIR / "faster-whisper-base.en"
+        if (base_dir / "model.bin").is_file():
+            whisper_model = "base.en"
+            whisper_model_dir = base_dir
+    whisper_dynamic_hotwords = (
+        merged.get("WHISPER_DYNAMIC_HOTWORDS", "true").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+    screen_watch_interval = _positive_float("SCREEN_WATCH_INTERVAL", 1.2, 0.3, 10.0)
     piper_voice = (merged.get("PIPER_VOICE") or "en_US-lessac-medium").strip() or "en_US-lessac-medium"
     piper_voice_dir = Path(os.path.expanduser(merged.get("PIPER_VOICE_DIR") or str(MODELS_DIR / "piper")))
 
@@ -386,6 +412,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         whisper_model=whisper_model,
         whisper_model_dir=whisper_model_dir,
         whisper_hotwords=(merged.get("WHISPER_HOTWORDS") or "").strip(),
+        whisper_dynamic_hotwords=whisper_dynamic_hotwords,
         whisper_initial_prompt=whisper_initial_prompt,
         whisper_wake_hotwords=(
             merged.get("WHISPER_WAKE_HOTWORDS") or "Ultron, Firefox, GitHub, Brave, Downloads"
@@ -431,6 +458,7 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         first_result_method=first_result_method,
         search_engine=search_engine,
         brain_replies=brain_replies,
+        screen_watch_interval=screen_watch_interval,
         learned_skills_file=PROJECT_ROOT / "config" / "learned_skills.json",
         user_skills_file=WORKSPACE_DIR / "learned_skills.json",
         user_memory_file=WORKSPACE_DIR / "user_memory.json",
