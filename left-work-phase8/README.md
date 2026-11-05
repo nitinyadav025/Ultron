@@ -6,9 +6,11 @@ point for the next session.
 ## Current state in one line
 
 **All Phase 8 code, tests and docs are written and committed locally on
-`phase8-eyes-hands-ears` (commit `aad7d29`). 537 tests pass. The only work left is Nitin's
-live microphone / GUI / app-launch verification** — the coding session cannot press real
-keys, click real windows or use audio hardware.
+`phase8-eyes-hands-ears` (base commit `aad7d29`, plus the live-GUI fix commit). 540 tests
+pass. Live `gio launch` + AT-SPI + `close_app` is verified for calculator, text editor,
+files, terminal and settings; Lutris starts as a Flatpak but shows no window. The remaining
+work is Nitin's live microphone / voice / click / typing verification** — the coding session
+cannot press real keys, click real windows or use audio hardware.
 
 ## Read in this order
 
@@ -19,14 +21,17 @@ keys, click real windows or use audio hardware.
 
 ## What is left (short)
 
-- [ ] Live voice/GUI test list in `SESSION_STATE.md` (items 1–8).
+- [ ] Live voice test list in `SESSION_STATE.md` (items 1–5, 7–8; item 6 launcher verified).
 - [ ] Optional: `sudo dnf install -y tesseract` for the live OCR layer (needs Nitin).
 - [ ] Decide `small.en` vs `base.en` after hearing the measured 1.75–2.08 s latency.
 - [ ] Verify the browser `Ctrl+F → Esc → Enter` click tier live.
-- [ ] Verify `gio launch` opens/raises terminal, settings, files, calculator, text editor,
-      Lutris, YouTube.
-- [ ] After the live pass, update `docs/PROGRESS.md` (mark UNVERIFIED items verified) and
-      make one final local commit. Do not push.
+- [ ] Verify `gio launch` raises YouTube, and investigate why Lutris shows no window.
+- [ ] After the live pass, update `docs/PROGRESS.md` (mark the remaining UNVERIFIED items
+      verified) and make one final local commit. Do not push.
+
+Two live bugs were found and fixed in the second session (see `SESSION_STATE.md`): the
+15-character `pgrep`/`comm` truncation and the discarded `flatpak ps` output. Both have
+tests; the suite is **540 passed**.
 
 ## Do not do
 

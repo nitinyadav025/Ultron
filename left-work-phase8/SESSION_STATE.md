@@ -9,6 +9,7 @@
 | Base | `phase7-llm-brain-wayland` @ `242a57f` |
 | Phase 8 code/docs commit | **`aad7d29`** — 27 files, 3798 insertions, 98 deletions |
 | Handoff commit | the commit that adds `left-work-phase8/` (after `aad7d29`) |
+| Live-GUI fix commit | the next local commit: `apps.py` 15-char `comm` fix, Flatpak `ps` capture, 3 tests, docs |
 | Remote | nothing pushed; `origin` untouched |
 | `.env` | git-ignored, edited with `sed`, never printed/staged |
 
@@ -20,20 +21,21 @@
 | 2. 3-layer eyes + ScreenWatcher | **CODE DONE**; AT-SPI + watcher live-probed; OCR live blocked (tesseract missing) |
 | 3. click_element / read_screen / focus_and_type | **CODE DONE + UNIT TESTED**; live clicks/typing UNVERIFIED |
 | 4. small.en + fast decode + dynamic hotwords + repairs | **CODE DONE + MEASURED**; latency missed the 0.55–0.75 s target |
-| 5. gio launch + alias table + switch/focus | **CODE DONE + RESOLUTION TESTED**; live launches UNVERIFIED |
-| 6. tests + benchmark + docs + cleanup | **DONE** |
+| 5. gio launch + alias table + switch/focus | **CODE DONE + LIVE VERIFIED** for calculator, text editor, files, terminal and settings; Lutris starts but shows no window |
+| 6. tests + benchmark + docs + cleanup | **DONE** (540 passed, 37 Phase 8 tests) |
 
-**Coding work remaining: none known.** Remaining work is live verification and the
-post-live docs update/commit.
+**Coding work remaining: none known.** A second session verified the real `gio launch` path
+live and fixed two close-app bugs it exposed (see the live-GUI section below). The remaining
+work is the live microphone / voice / click / typing pass and the post-live docs update.
 
 ## Verification evidence (actually run)
 
 ```text
 .venv/bin/python -m pytest -q
-537 passed in 76.99 s
+540 passed in 53.50 s
 
 .venv/bin/python main.py benchmark
-25/25 passed, failed 0; average 2.109 ms (mocked OS/LLM)
+25/25 passed, failed 0; average 1.480 ms (mocked OS/LLM)
 
 .venv/bin/python -m compileall -q assistant main.py scripts tests/test_phase8_eyes_hands_ears.py
 OK
@@ -42,7 +44,7 @@ git diff --check
 clean
 
 .venv/bin/python -m pytest tests/test_phase8_eyes_hands_ears.py -q
-34 passed
+37 passed
 ```
 
 Live probes (no clicking/typing):
@@ -56,8 +58,14 @@ Live probes (no clicking/typing):
 - `gsettings get org.gnome.shell introspect` → **No such key** (GNOME Shell 50.5).
 - `gdbus ... GetWindows` → **AccessDenied: GetWindows is not allowed**.
 - `command -v tesseract` → **missing**.
+- Real `open_app` → `gio launch` → Calculator, Text Editor, Files, Terminal and Settings:
+  each window appeared, AT-SPI returned **10–38 elements**, and the fixed `close_app`
+  removed it (verified by polling `agent-desktop list-windows`).
+- `open_app("lutris")` → the Flatpak process started (`flatpak ps` showed
+  `net.lutris.Lutris`) but **no window appeared in 40 s**; the fixed `close_app` stopped the
+  sandbox. The spoken Lutris step stays UNVERIFIED.
 - Process check at the end: no `llama-server` on 9931, no `ydotoold`, no `atspi_helper.py`,
-  no `agent-desktop`.
+  no `agent-desktop`, no test app left running.
 
 ### small.en measured on the 10 saved clips (production options, env WHISPER_* unset)
 
@@ -80,6 +88,42 @@ Model load **0.91 s**.
 - **Measured latency is 1.75–2.08 s per clip, not the 0.55–0.75 s target.** The requested
   settings were kept; if speed matters, set `WHISPER_MODEL=base.en` in `.env`.
 
+## Live GUI verification and two close-app fixes (second session, 2026-11-05)
+
+The real launcher path was exercised on the live desktop (no microphone, no key presses):
+
+| App | Window observed | AT-SPI | `close_app` |
+|---|---|---|---|
+| Calculator | `Calculator` | 38 elements | closed, window gone |
+| Text Editor | `agentskills.txt … - Text Editor` | 10 elements | closed, window gone |
+| Files | `Home` | 14 elements | closed, window gone |
+| Terminal | `nitinyadav@Sasuke:~` | 13 elements | closed, window gone |
+| Settings | `Settings` | 32 elements | closed, window gone |
+| Lutris (Flatpak) | **none in 40 s** | 0 (no window) | `flatpak kill` closed the sandbox |
+
+**Two live bugs found and fixed:**
+
+1. **`close_app` could not close long process names.** Linux truncates `/proc/<pid>/comm` to
+   15 characters and `pgrep -x` refuses a longer pattern, so Calculator/Text Editor/Settings
+   reported `running=False, closed=False` and stayed open. `_process_names_for()` now appends
+   the 15-character alias. Live PIDs: `gnome-calculato` 15843, `gnome-text-edit` 15943,
+   `gnome-control-c` 16169.
+2. **`flatpak ps` output was discarded.** `_default_flatpak_runner()` used
+   `stdout/stderr=DEVNULL`, so `_flatpak_running_apps()` always returned an empty set and
+   `close_app("lutris")` reported `running=False` while `flatpak ps` showed
+   `net.lutris.Lutris`. It now captures the short-lived `flatpak ps`/`flatpak kill` output;
+   the all-DEVNULL rule still applies to detached GUI/Electron launches.
+
+New tests: `test_process_names_include_the_linux_15_char_comm_alias`,
+`test_close_app_finds_a_process_name_truncated_to_15_chars`,
+`test_default_flatpak_runner_captures_ps_output`. Phase 8 module **37 passed**; full suite
+**540 passed**; benchmark **25/25** at **1.480 ms** (mocked).
+
+**Lutris caveat:** `open_app("lutris")` starts the Flatpak and the fixed `close_app` stops it,
+but no Lutris window appeared within 40 s and a foreground `flatpak run` produced no output.
+This is a Lutris/runtime issue on this machine, not a `gio launch` failure; the spoken
+"open lutris" step remains UNVERIFIED.
+
 ## Known caveats / traps
 
 1. **GNOME 50.5 introspection is gone.** `org.gnome.shell introspect` does not exist and
@@ -87,10 +131,10 @@ Model load **0.91 s**.
    `introspect: false` honestly.
 2. **`tesseract` is not installed.** Live OCR is UNVERIFIED; the parser and click-from-OCR
    path are unit-tested. Install command (needs Nitin/sudo): `sudo dnf install -y tesseract`.
-3. **Environment shadows `.env`.** This coding session inherited
-   `WHISPER_MODEL=base.en` and `WHISPER_MODEL_DIR=models/faster-whisper-base.en`.
-   `load_config` gives environment variables precedence over `.env` (existing design).
-   `tests/conftest.py` pops both. For a live small.en run:
+3. **Environment shadows `.env`.** The first Phase 8 session inherited
+   `WHISPER_MODEL=base.en` and `WHISPER_MODEL_DIR=models/faster-whisper-base.en`; the second
+   session exports small.en. `load_config` gives environment variables precedence over `.env`
+   (existing design). `tests/conftest.py` pops both. If an old shell still exports base.en:
    `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR .venv/bin/python main.py listen`.
 4. **ydotool 1.0.4 syntax corrected.** The real command is
    `ydotool mousemove --absolute <x> <y>` (positional). `-x/-y` does not exist; the
@@ -102,6 +146,12 @@ Model load **0.91 s**.
 7. **GTK4 bounds:** SCREEN `x/y` are 0 for children; the helper adds WINDOW coords to the
    frame origin. Verified on the Back button (`239,0 34×34`, centre `256,17`).
 8. **Refs are renumbered `@e1..@eN`** after ranking; the AT-SPI helper cache matches them.
+9. **Process names are truncated to 15 chars.** `pgrep -x` cannot match a longer name;
+   `_process_names_for()` now returns both the full name and the truncated alias so
+   `close_app` works for `gnome-calculator`, `gnome-text-editor` and `gnome-control-center`.
+10. **`flatpak ps` must be captured.** Its stdout is the running-app list; a DEVNULL runner
+    silently breaks `close_app` for Discord/Spotify/Steam/Lutris/VLC. The runner now captures
+    only the short-lived CLI commands; detached GUI launches stay all-DEVNULL.
 
 ## What is left — exact live checklist for Nitin
 
@@ -109,8 +159,11 @@ Run from `/home/nitinyadav/Downloads/ULTRON`:
 
 0. Optional OCR (sudo; coding tool did not run it):
    `sudo dnf install -y tesseract` then `command -v tesseract`.
-1. `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR .venv/bin/python main.py listen`.
-   Expect `Ears: ready — small.en` and `Screen watcher started`.
+1. `.venv/bin/python main.py listen` (the second session's environment already exports
+   small.en; if an older shell exports base.en, prefix
+   `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR`). Expect
+   `Ears: ready — faster-whisper small.en ready (CPU int8)` and
+   `Screen watcher started (1.2s).` in `logs/assistant.log`.
 2. Say **“Ultron, what is on my screen”** → active window/site + visible buttons;
    `logs/assistant.log` shows `Fast path: used … read_screen`.
 3. Open YouTube in Firefox, say **“Ultron, click on show more”** and
@@ -119,8 +172,10 @@ Run from `/home/nitinyadav/Downloads/ULTRON`:
 4. Say **“Ultron, type f1 highlights in the search box”** → field focused + text pasted.
 5. Open Brave, confirm a YouTube button/link appears in `[Visible UI: ...]`, repeat step 3
    (proves `--force-renderer-accessibility`).
-6. Say **“Ultron, open terminal/settings/files/calculator/text editor/lutris”** → each opens
-   or raises through `gio launch`; no “I couldn't find an app”.
+6. (launcher already live-verified; only spoken routing remains) Say **“Ultron, open
+   terminal/settings/files/calculator/text editor/lutris”** → each opens or raises through
+   `gio launch`; no “I couldn't find an app”. Lutris starts as a Flatpak but showed no window
+   in the live probe.
 7. Say **“Ultron, open YouTube”** twice → existing window/tab is raised, no duplicate.
 8. Say **“Ultron is stop listening”** → stops; then verify:
    ```sh
@@ -137,16 +192,17 @@ If a step fails, keep the tail of `logs/assistant.log` and the newest
 ```sh
 cd /home/nitinyadav/Downloads/ULTRON
 git branch --show-current          # expect phase8-eyes-hands-ears
-git log --oneline -3               # expect aad7d29 + the handoff commit
+git log --oneline -4               # expect the live-GUI fix + aad7d29 + the handoff commit
 git status --short                 # expect clean
-.venv/bin/python -m pytest -q      # expect 537 passed
-.venv/bin/python main.py benchmark # expect 25/25, ~2.1 ms
+.venv/bin/python -m pytest -q      # expect 540 passed
+.venv/bin/python main.py benchmark # expect 25/25, ~1.5 ms
 ```
 
 Then:
 1. Read `left-work-phase8/ORIGINAL_PROMPT.md`, this file, then
    `docs/ULTRON_PROJECT_BIBLE.md` §0/§6B and `docs/PROGRESS.md` top section.
-2. Ask Nitin for the live results of items 1–8 above.
+2. Ask Nitin for the live results of items 1–5 and 7–8 above (item 6's launcher path is
+   verified; only the spoken routing and the Lutris window remain).
 3. If he reports a failure, read the exact log lines first (honesty rule: no guessing),
    fix only that path, add a test, run the full suite, update docs, commit locally.
 4. If all live tests pass, update `docs/PROGRESS.md` / the Bible to mark the UNVERIFIED
@@ -176,6 +232,13 @@ Then:
   `tests/test_listening_reliability.py`, `tests/test_b5_full_control.py`
 - `.env.example`, `docs/PROGRESS.md`, `docs/ULTRON_PROJECT_BIBLE.md`
 
+**Changed by the live-GUI fix commit (second session):**
+- `assistant/tools/apps.py` — 15-char `comm` alias in `_process_names_for`; capture
+  `flatpak ps` stdout/stderr in `_default_flatpak_runner`.
+- `tests/test_phase8_eyes_hands_ears.py` — 3 tests for those fixes.
+- `docs/PROGRESS.md`, `docs/ULTRON_PROJECT_BIBLE.md`, `left-work-phase8/README.md`,
+  `left-work-phase8/SESSION_STATE.md` — live evidence and resume state.
+
 **Not committed (by design):** `.env`, `models/`, `workspace/`, `logs/`, `.backups/`,
 `.venv/`.
 
@@ -198,3 +261,8 @@ Then:
   `--force-renderer-accessibility`.
 - All GUI/Flatpak/Electron launches keep all-DEVNULL + `start_new_session=True` +
   `close_fds=True` (Phase 7 EPIPE rule).
+- `_process_names_for()` returns both the full executable name and its 15-character
+  `comm` alias; `pgrep -x` needs the alias for `gnome-calculator`, `gnome-text-editor`,
+  `gnome-control-center`, etc.
+- `_default_flatpak_runner()` captures stdout/stderr (it feeds `flatpak ps`); only detached
+  GUI/Electron launches use DEVNULL.

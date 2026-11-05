@@ -31,8 +31,8 @@
 | Rollback | `BACKEND=gemini` must keep working |
 | Branch (Phase 8) | `phase8-eyes-hands-ears` (created from `phase7-llm-brain-wayland` @ `242a57f`) |
 | Test state at Phase 7 end | **503 passed, 0 failed, 0 errors** (`pytest -q`, 38.82 s) |
-| Test state at Phase 8 end | **537 passed, 0 failed, 0 errors** (`pytest -q`, 76.99 s) |
-| Benchmark at Phase 8 end | **25/25 passed**, average **2.109 ms** (mocked) |
+| Test state at Phase 8 end | **540 passed, 0 failed, 0 errors** (`pytest -q`, 53.50 s) |
+| Benchmark at Phase 8 end | **25/25 passed**, average **1.480 ms** (mocked; 1.516 ms on the Part 7 re-run, 2.109 ms on the first run) |
 | Remote | Nothing is pushed. The user pushes when they choose. |
 
 ---
@@ -315,6 +315,8 @@ server or `ydotoold` left running.
 | 24 | GNOME 50.5 window introspection returned `AccessDenied` | `gsettings get org.gnome.shell introspect` → `No such key`; `GetWindows is not allowed` | The Phase 7 gdbus introspection key was removed in GNOME 50 | Phase 8 uses AT-SPI as the primary eyes and reports `introspect: false` honestly | `test_phase8_eyes_hands_ears.py` Part 1 |
 | 25 | OCR layer could not run live | `shutil.which("tesseract")` empty | Tesseract is not installed on this machine | OCR parser/fallback implemented and unit-tested; user can `sudo dnf install tesseract` | Phase 8 OCR tests |
 | 26 | small.en slower than the 0.55–0.75 s target and one clip regressed | measured 1.75–2.08 s per saved clip; `mute unmute` → `Mute on mute.` rejected | small.en + beam 2 is ~4× base.en beam 1; the repetition guard correctly refuses the wrong decode | Settings kept as requested and measured honestly; `WHISPER_MODEL=base.en` remains the latency fallback | Phase 8 ears tests + PROGRESS table |
+| 27 | `close_app` left Calculator, Text Editor and Settings open | live: `gnome-calculato` 15843, `gnome-text-edit` 15943, `gnome-control-c` 16169; `close_app` → `running=False, closed=False` | Linux truncates `/proc/<pid>/comm` to 15 chars; `pgrep -x <longer name>` refuses and returns zero matches | `_process_names_for()` appends the 15-char alias | `test_process_names_include_the_linux_15_char_comm_alias`, `test_close_app_finds_a_process_name_truncated_to_15_chars` |
+| 28 | `close_app("lutris")` reported not running while the Flatpak was running | live `flatpak ps` → `net.lutris.Lutris`; `close_app` → `running=False` | `_default_flatpak_runner` used `stdout/stderr=DEVNULL`, so `_flatpak_running_apps()` always parsed nothing | capture `flatpak ps` stdout/stderr (short-lived CLI; all-DEVNULL still applies to detached GUI launches) | `test_default_flatpak_runner_captures_ps_output` |
 
 **Honesty note on #16:** the coding session on 2026-11-03 could not reproduce the 9 errors.
 The exact command `.venv/bin/python -m pytest tests/test_permission_modes.py -v` returned
@@ -576,8 +578,8 @@ the long-term summary.
 | 2 | 3-layer eyes + continuous `ScreenWatcher` | DONE — persistent `/usr/bin/python3` AT-SPI helper (`@e1..@eN`, bounds, editable, actions), agent-desktop adapter, OCR fallback, 1.2 s daemon, `| Visible UI: ...` on the user turn |
 | 3 | 3-tier hands | DONE — AT-SPI action, `ydotool mousemove --absolute <x> <y>` + `click 0xC0`, browser `Ctrl+F → label → Esc → Enter`; `read_screen`; `focus_and_type` |
 | 4 | `small.en` + screen-primed listening | DONE — CPU int8, `cpu_threads=6`, `num_workers=2`, beam 2, best_of 2, VAD 250/200 ms, dynamic hotwords, phonetic repairs; measured **1.75–2.08 s/clip**, not the 0.55–0.75 s target |
-| 5 | Universal app launcher | DONE — `desktop_path`/`desktop_id`, `gio launch` → `gtk-launch` → `flatpak run` → `Exec`, 177 indexed apps, full Fedora alias table, `switch_app`/`focus_target_window` raise via gio |
-| 6 | Tests, benchmark, docs | DONE — **34** Phase 8 tests, full suite **537 passed**, benchmark **25/25** at **2.109 ms** (mocked) |
+| 5 | Universal app launcher | DONE — `desktop_path`/`desktop_id`, `gio launch` → `gtk-launch` → `flatpak run` → `Exec`, 177 indexed apps, full Fedora alias table, `switch_app`/`focus_target_window` raise via gio; live launch verified for calculator, text editor, files, terminal and settings |
+| 6 | Tests, benchmark, docs | DONE — **37** Phase 8 tests, full suite **540 passed**, benchmark **25/25** at **1.480 ms** (mocked) |
 
 **Live findings that matter:**
 
@@ -609,10 +611,21 @@ the long-term summary.
   `load_config` gives environment variables precedence over `.env` by design. Run
   `unset WHISPER_MODEL WHISPER_MODEL_DIR` before a live small.en test.
 
+**Live GUI verification (2026-11-05, this branch):** the real `gio launch` path opened
+Calculator, Text Editor, Files, Terminal and Settings; each window appeared, AT-SPI returned
+10–38 elements, and `close_app` removed it. Lutris started as a Flatpak (`flatpak ps` showed
+`net.lutris.Lutris`) but mapped no window within 40 s, so its spoken step stays UNVERIFIED.
+Two live bugs were found and fixed: `pgrep -x` cannot match a process name longer than
+Linux's 15-character `comm`, so `close_app("calculator"/"text editor"/"settings")` left the
+windows open (fixed by adding the truncated alias in `_process_names_for`); and
+`_default_flatpak_runner` sent `flatpak ps` stdout to `DEVNULL`, so the running-Flatpak
+check always saw nothing (fixed by capturing the short-lived CLI output). Three new tests
+pin both fixes; the full suite is **540 passed**.
+
 **UNVERIFIED (needs Nitin):** real semantic clicks, real coordinate clicks, the browser
-`Ctrl+F → Esc → Enter` activation, typing into real fields, launching/raising every app, the
-live microphone and the speakers. No automated test may press keys, click a window or use
-audio hardware.
+`Ctrl+F → Esc → Enter` activation, typing into real fields, launching/raising YouTube and
+Lutris (the other five apps are verified), the live microphone and the speakers. No
+automated test may press keys, click a window or use audio hardware.
 
 ---
 
@@ -634,12 +647,15 @@ audio hardware.
 | Benchmark after Phase 7 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **1.559 ms** (mocked) |
 | Phase 7 compile | `python -m compileall -q assistant main.py scripts tests/test_phase7_brain_wayland.py` | OK |
 | Phase 7 diff check | `git diff --check` | clean |
-| Full suite after Phase 8 | `.venv/bin/python -m pytest -q` | **537 passed** (76.99 s) |
-| Phase 8 tests | `tests/test_phase8_eyes_hands_ears.py` | **34 passed** |
-| Benchmark after Phase 8 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **2.109 ms** (mocked) |
+| Full suite after Phase 8 | `.venv/bin/python -m pytest -q` | **540 passed** (53.50 s) |
+| Phase 8 tests | `tests/test_phase8_eyes_hands_ears.py` | **37 passed** |
+| Benchmark after Phase 8 | `.venv/bin/python main.py benchmark` | **25/25 passed**, avg **1.480 ms** (mocked) |
 | Live AT-SPI read | `.venv/bin/python` → `read_screen()` | 14 elements from the real `Downloads` window, `focused_app=files` |
 | Live watcher | 0.5 s interval for 2 s | 14 elements refreshed; thread stopped; no helper left |
 | Live agent-desktop | `list-windows` + `snapshot --app nautilus` | window found; adapter parsed 21 elements in 337 ms |
+| Live app launch (5) | `open_app` → real `gio launch` | Calculator, Text Editor, Files, Terminal, Settings opened; AT-SPI 10–38 elements; `close_app` removed each window |
+| Live Lutris | `open_app("lutris")` + 40 s wait | Flatpak process started (`flatpak ps`), **no window**; `close_app` stopped it |
+| Live Flatpak detection | `_flatpak_running_apps()` after the fix | `{'net.lutris.Lutris'}`; `close_app("lutris")` → `flatpak kill`, `closed=True` |
 | small.en real clips | offline production options | 7/8 speech clips accepted; 1.75–2.08 s each; 0.91 s load |
 | GNOME introspection | `gsettings get org.gnome.shell introspect` | **No such key** (GNOME 50.5); `GetWindows` → `AccessDenied` |
 | OCR availability | `command -v tesseract` | **missing** (live OCR UNVERIFIED) |
@@ -674,6 +690,9 @@ audio hardware.
 - **Phase 8:** live semantic clicks, coordinate clicks, the browser
   `Ctrl+F → Esc → Enter` activation, and typing into real fields are **UNVERIFIED**. The
   code paths are unit-tested with mocked `ydotool`/AT-SPI runners only.
+- **Phase 8:** live app launching is verified for calculator, text editor, files, terminal
+  and settings (window + AT-SPI + close). Lutris starts as a Flatpak but showed no window in
+  40 s, and YouTube raising is not yet verified; both remain UNVERIFIED.
 - **Phase 8:** `tesseract` is not installed, so the live OCR layer is UNVERIFIED. The
   parser, screenshot fallback and OCR-coordinate click are unit-tested.
 - **Phase 8:** `small.en` measured **1.75–2.08 s** per saved clip (not the requested
@@ -811,7 +830,12 @@ pgrep -af atspi_helper.py
 - **2026-11-05 (Phase 8):** AT-SPI2 eyes (`atspi_helper.py`, `ScreenWatcher`, `@ref`
   snapshots with boxes/actions), optional agent-desktop adapter, OCR fallback,
   `click_element`/`read_screen`/`focus_and_type` with three click tiers, small.en ears with
-  beam 2 + dynamic screen hotwords, universal `gio launch` + Fedora aliases, 34 new tests,
-  full suite **537 passed**, benchmark **25/25** at 2.109 ms. Measured small.en latency
-  1.75–2.08 s/clip (not the 0.55–0.75 s target); live clicks/typing/OCR/app launches stay
-  UNVERIFIED. GNOME 50.5 introspection key absence recorded as failure #24.
+  beam 2 + dynamic screen hotwords, universal `gio launch` + Fedora aliases, 37 tests,
+  full suite **540 passed**, benchmark **25/25** at 1.480 ms. Measured small.en latency
+  1.75–2.08 s/clip (not the 0.55–0.75 s target); live clicks/typing/OCR stay UNVERIFIED.
+  GNOME 50.5 introspection key absence recorded as failure #24.
+- **2026-11-05 (Phase 8 live GUI):** real `gio launch` + AT-SPI + `close_app` verified for
+  calculator, text editor, files, terminal and settings; Lutris starts as a Flatpak but shows
+  no window. Fixed `close_app` for the 15-character Linux `comm` truncation and for the
+  DEVNULL `flatpak ps` capture (failures #27–#28). Three new tests; full suite **540 passed**;
+  benchmark **25/25** at 1.480 ms (mocked).

@@ -287,11 +287,14 @@ _process_runner: ProcessRunner = _default_process_runner
 def _default_flatpak_runner(
     argv: list[str], timeout: float = 2.0
 ) -> subprocess.CompletedProcess[str]:
+    # `flatpak ps` is a short-lived CLI command whose stdout IS the data we need. Capture
+    # it: subprocess.run() drains the pipes before returning, so this cannot hit the
+    # detached-GUI "write EPIPE" case that requires DEVNULL for launched apps.
     return subprocess.run(
         argv,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         timeout=timeout,
     )
@@ -479,20 +482,33 @@ def scan_desktop_apps() -> list[DesktopApp]:
     return found
 
 
+_COMM_MAX = 15  # Linux TASK_COMM_LEN is 16 bytes including the trailing NUL.
+
+
 def _process_names_for(match: AppMatch) -> tuple[str, ...]:
     if match.process_names:
-        return match.process_names
-    names: list[str] = []
-    entry = match.yaml_entry or {}
-    for key in ("binary", "alt_binary"):
-        binary = str(entry.get(key) or "")
-        if binary:
-            names.append(Path(binary).name)
-    for raw in (match.try_exec, match.exec_argv[0] if match.exec_argv else ""):
-        if raw:
-            names.append(Path(raw).name)
-    ignored = {"gtk-launch", "flatpak", "sh", "bash", "env", "gio", "gio-launch"}
-    return tuple(dict.fromkeys(name for name in names if name and name not in ignored))
+        names = list(match.process_names)
+    else:
+        names = []
+        entry = match.yaml_entry or {}
+        for key in ("binary", "alt_binary"):
+            binary = str(entry.get(key) or "")
+            if binary:
+                names.append(Path(binary).name)
+        for raw in (match.try_exec, match.exec_argv[0] if match.exec_argv else ""):
+            if raw:
+                names.append(Path(raw).name)
+        ignored = {"gtk-launch", "flatpak", "sh", "bash", "env", "gio", "gio-launch"}
+        names = [name for name in names if name and name not in ignored]
+    names = list(dict.fromkeys(names))
+    # pgrep -x matches /proc/<pid>/comm, which Linux truncates to 15 characters. Without
+    # the truncated alias, closing gnome-calculator / gnome-text-editor /
+    # gnome-control-center reports "not running" and leaves the window open.
+    for name in list(names):
+        truncated = name[:_COMM_MAX]
+        if len(name) > _COMM_MAX and truncated not in names:
+            names.append(truncated)
+    return tuple(names)
 
 
 def _match_texts(app: DesktopApp) -> set[str]:

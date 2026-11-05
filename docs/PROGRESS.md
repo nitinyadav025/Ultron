@@ -1,7 +1,7 @@
 # Ultron progress — Phase 8 (current)
 
-Last updated: 2026-11-05 (Phase 8 code and tests complete; live clicks/typing and the
-microphone remain UNVERIFIED)
+Last updated: 2026-11-05 (Phase 8 code and tests complete; live `gio launch` verified for
+5 apps; live clicks/typing and the microphone remain UNVERIFIED)
 
 > **Working folder in this session:** `/home/nitinyadav/Downloads/ULTRON` (verified with
 > `pwd`). Older handoff text says `~/Downloads/assistant-project`; that path does not exist
@@ -26,8 +26,9 @@ local only, nothing pushed). Remote and `origin` were not touched.
 | 2 | 3-layer eyes: native AT-SPI helper, agent-desktop adapter, OCR fallback, continuous `ScreenWatcher` | DONE (OCR live blocked: `tesseract` not installed) |
 | 3 | 3-tier `click_element`, `read_screen`, `focus_and_type` plus fast-path/prompt routing | DONE (unit-tested; live clicks/typing UNVERIFIED) |
 | 4 | faster-whisper `small.en`, fast CPU decode, screen-primed hotwords, phonetic repair | DONE (measured latency is slower than the 0.55–0.75 s target; see below) |
-| 5 | Universal `gio launch` app control + Fedora alias table | DONE (resolution verified; live launch UNVERIFIED) |
-| 6 | 34 Phase 8 tests, full pytest, benchmark, docs, process cleanup | DONE (537 passed, 25/25) |
+| 5 | Universal `gio launch` app control + Fedora alias table | DONE (live launch verified for 5 apps; Lutris starts but shows no window) |
+| 6 | 37 Phase 8 tests, full pytest, benchmark, docs, process cleanup | DONE (540 passed, 25/25) |
+| 7 | Live GUI verification + two close-app fixes | DONE (see Part 7) |
 
 ### Part 1 — accessibility bus and `agent-desktop`
 
@@ -202,18 +203,71 @@ different screens); history stays clean.
 
 ### Part 6 — tests, benchmark and process state
 
-- New `tests/test_phase8_eyes_hands_ears.py` has **34 tests** covering every Part 1–5 item:
+- New `tests/test_phase8_eyes_hands_ears.py` has **37 tests** covering every Part 1–5 item:
   accessibility env/gsettings, Chromium flag, AT-SPI/agent-desktop/OCR parsing, `@ref`
   numbering, `[Visible UI: ...]` in the user turn with a static system prompt, all three
   click tiers, OCR click fallback, `read_screen`/`focus_and_type`, small.en defaults and the
   base.en fallback, decode options, dynamic hotwords, phonetic repairs, `gio launch`
-  order/DEVNULL kwargs, `switch_app` raise, `focus_target_window`, and every Fedora alias.
-- `.venv/bin/python -m pytest -q` → **537 passed, 0 failed, 0 errors** (76.99 s).
-- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **2.109 ms** (mocked OS
-  and LLM; live latency UNVERIFIED).
+  order/DEVNULL kwargs, `switch_app` raise, `focus_target_window`, every Fedora alias, plus
+  the two live close-app fixes (15-char `comm` alias and Flatpak `ps` capture).
+- `.venv/bin/python -m pytest -q` → **540 passed, 0 failed, 0 errors** (53.50 s; the first
+  537-test run before Part 7 took 54.52 s).
+- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **1.480 ms** on the final
+  run (**1.516 ms** on the Part 7 re-run, **2.109 ms** on the earlier run); mocked OS/LLM,
+  live latency UNVERIFIED.
 - `compileall` OK; `git diff --check` clean.
 - Final process state: no `llama-server` on 9931, no `ydotoold`, no `atspi_helper.py`, no
   `agent-desktop` process left. The ScreenWatcher thread was stopped in the live probe.
+
+### Part 7 — live GUI verification and two close-app fixes (Nov 5, same branch)
+
+Baseline re-checked before any edit: `.venv/bin/python -m pytest -q` → **537 passed**;
+`main.py doctor` → all PASS (`Backend=local`, small.en, Piper, llama binary/model);
+`agent-desktop 1.2.0`, `/usr/bin/python3` `Atspi OK`, `ydotool`/`ydotoold` and `gio` are all
+present. No windows were open at the start, so the first AT-SPI probe correctly returned
+0 elements. The environment now exports `WHISPER_MODEL=small.en` and
+`WHISPER_MODEL_DIR=models/faster-whisper-small.en`, matching `.env`.
+
+**Live `gio launch` result (real desktop, this session):**
+
+| App | `gio launch` command | Window | AT-SPI | `close_app` |
+|---|---|---|---|---|
+| calculator | `org.gnome.Calculator.desktop` | `Calculator` | 38 elements | closed, window gone |
+| text editor | `org.gnome.TextEditor.desktop` | `agentskills.txt … - Text Editor` | 10 elements | closed, window gone |
+| files | `org.gnome.Nautilus.desktop` | `Home` | 14 elements | closed, window gone |
+| terminal | `org.gnome.Ptyxis.desktop` | `nitinyadav@Sasuke:~` | 13 elements | closed, window gone |
+| settings | `org.gnome.Settings.desktop` | `Settings` | 32 elements | closed, window gone |
+| lutris | `net.lutris.Lutris.desktop` (Flatpak) | **none in 40 s** | 0 (no window) | `flatpak kill` closed it |
+
+- **Lutris caveat:** `open_app("lutris")` starts the Flatpak (`flatpak ps` shows
+  `net.lutris.Lutris`) and the fixed `close_app` stops it, but a Lutris window never appeared
+  within 40 s; a foreground `flatpak run` also produced no output before the timeout. This is
+  a Lutris/runtime issue on this machine, not a launcher failure. The spoken "open lutris"
+  step remains **UNVERIFIED**.
+- **Result:** 5 of 6 apps are live-verified end to end; launch, AT-SPI discovery and close all
+  ran through the real code paths.
+
+**Two live bugs found and fixed:**
+
+1. **`close_app` could not close long process names.** Linux truncates `/proc/<pid>/comm` to
+   15 characters and `pgrep -x` refuses a longer pattern, so `close_app("calculator")`,
+   `("text editor")` and `("settings")` returned `running=False, closed=False` and left the
+   windows open (measured live: `gnome-calculato` 15843, `gnome-text-edit` 15943,
+   `gnome-control-c` 16169). `_process_names_for()` now adds the 15-character alias.
+2. **`flatpak ps` output was discarded.** `_default_flatpak_runner()` used
+   `stdout/stderr=DEVNULL`, so `_flatpak_running_apps()` always returned an empty set and
+   `close_app("lutris")` reported `running=False` while `flatpak ps` showed
+   `net.lutris.Lutris`. The runner now captures the short-lived `flatpak ps`/`flatpak kill`
+   output; the all-DEVNULL rule still applies to detached GUI/Electron launches.
+
+Tests added (3): `test_process_names_include_the_linux_15_char_comm_alias`,
+`test_close_app_finds_a_process_name_truncated_to_15_chars`,
+`test_default_flatpak_runner_captures_ps_output`. Phase 8 module: **37 passed**. Full suite:
+**540 passed**; benchmark **25/25**, average **1.480 ms** (mocked).
+
+Still **UNVERIFIED** (need the microphone/keys): live voice commands, semantic/coordinate
+clicks, the browser `Ctrl+F → Esc → Enter` tier, `focus_and_type` into a real field, spoken
+app opening, and the YouTube/Brave accessibility steps.
 
 ### Files changed (Phase 8)
 
@@ -239,8 +293,11 @@ Run from `/home/nitinyadav/Downloads/ULTRON`:
 0. Optional OCR (needs sudo approval — the coding tool did not run it):
    `sudo dnf install -y tesseract` then `command -v tesseract`.
    Without it, AT-SPI still works; OCR-only apps report honestly that OCR is unavailable.
-1. `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR .venv/bin/python main.py listen`.
-   Expected ready lines, then `Ears: ready — small.en` and one `Screen watcher started`.
+1. `.venv/bin/python main.py listen` (this session's environment already exports small.en;
+   if an older shell exports base.en, use
+   `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR .venv/bin/python main.py listen`).
+   Expected ready lines, then `Ears: ready — faster-whisper small.en ready (CPU int8)` and
+   `Screen watcher started (1.2s).` in `logs/assistant.log`.
 2. Say **“Ultron, what is on my screen”**. Expected: the active window/site and visible
    buttons; check `logs/assistant.log` for `Fast path: used … read_screen`.
 3. Open YouTube in Firefox, then say **“Ultron, click on show more”** or
@@ -252,9 +309,11 @@ Run from `/home/nitinyadav/Downloads/ULTRON`:
 5. Open Brave (not Chromium-only), check that a YouTube button/link appears in
    `[Visible UI: ...]`; then repeat step 3. This proves
    `--force-renderer-accessibility`.
-6. Say **“Ultron, open terminal”**, **“… open settings”**, **“… open files”**,
-   **“… open calculator”**, **“… open text editor”**, **“… open lutris”**. Expected: each
-   opens or raises through `gio launch`; no “I couldn't find an app”.
+6. (launcher already live-verified — only spoken routing remains) Say **“Ultron, open
+   terminal”**, **“… open settings”**, **“… open files”**, **“… open calculator”**,
+   **“… open text editor”**, **“… open lutris”**. Expected: each opens or raises through
+   `gio launch`; no “I couldn't find an app”. Note: Lutris started as a Flatpak but showed
+   no window in the live probe.
 7. Say **“Ultron, open YouTube”**, then **“Ultron, open youtube” again**. Expected: the
    existing window/tab is raised, not a duplicate.
 8. Say **“Ultron is stop listening”**. Expected: listener stops; then check
@@ -264,10 +323,12 @@ Run from `/home/nitinyadav/Downloads/ULTRON`:
 
 - Branch `phase8-eyes-hands-ears` (from `phase7-llm-brain-wayland` @ `242a57f`), local only,
   **nothing pushed**; `origin` untouched.
-- Final pytest: **537 passed**; benchmark **25/25**, average **2.109 ms** (mocked).
+- Final pytest: **540 passed**; benchmark **25/25**, average **1.480 ms** (mocked).
 - `.env` is git-ignored and was never staged; only `.env.example` documents the new keys.
-- Live microphone, speakers, real clicking/typing and real app launches remain
-  **UNVERIFIED**.
+- Live `gio launch` is verified for calculator, text editor, files, terminal and settings,
+  including AT-SPI discovery and `close_app`; Lutris starts as a Flatpak but shows no window.
+- Live microphone, speakers, real clicking/typing, the browser `Ctrl+F` tier and spoken app
+  opening remain **UNVERIFIED**.
 
 ---
 

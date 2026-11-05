@@ -999,3 +999,66 @@ def test_focus_target_window_uses_wmctrl_when_it_works(
 
     assert result["ok"] is True and result["method"] == "wmctrl"
     assert calls == [["wmctrl", "-a", "Text Editor"]]
+
+
+def test_process_names_include_the_linux_15_char_comm_alias() -> None:
+    long = apps.AppMatch(
+        key="calculator", display="Calculator", process_names=("gnome-calculator",)
+    )
+    short = apps.AppMatch(key="files", display="Files", process_names=("nautilus",))
+
+    assert apps._process_names_for(long) == ("gnome-calculator", "gnome-calculato")
+    assert apps._process_names_for(short) == ("nautilus",)
+
+
+def test_close_app_finds_a_process_name_truncated_to_15_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    match = apps.AppMatch(
+        key="calculator",
+        display="Calculator",
+        desktop_id="org.gnome.Calculator.desktop",
+        process_names=("gnome-calculator",),
+    )
+
+    def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(list(argv))
+        if argv[0] == "pgrep" and argv[-1] == "gnome-calculato":
+            return _done(argv, 0, "4242\n")
+        if argv[0] == "pgrep":
+            return _done(argv, 1)
+        return _done(argv, 0)
+
+    monkeypatch.setattr(apps, "find_app", lambda _name: match)
+    monkeypatch.setattr(apps, "_process_runner", runner)
+    monkeypatch.setattr(apps.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    result = apps.close_app("calculator")
+
+    assert result["ok"] is True and result["closed"] is True
+    assert result["pids"] == [4242]
+    assert ["pgrep", "-x", "gnome-calculator"] in calls
+    assert ["pgrep", "-x", "gnome-calculato"] in calls
+
+
+def test_default_flatpak_runner_captures_ps_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, "net.lutris.Lutris\n", "")
+
+    monkeypatch.setattr(apps.subprocess, "run", fake_run)
+
+    result = apps._default_flatpak_runner(
+        ["flatpak", "ps", "--columns=application"], timeout=0.5
+    )
+
+    assert result.stdout.strip() == "net.lutris.Lutris"
+    assert captured["kwargs"]["stdout"] == subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.PIPE
+    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
