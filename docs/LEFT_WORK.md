@@ -189,3 +189,78 @@ Three test regressions surfaced and were fixed honestly:
 Cosmetic Fedora 45 fix: `assistant/os_release_name()` (stdlib `platform.freedesktop_os_release()`)
 replaces the hardcoded “Fedora 44” in the CLI banner and GUI title; `main.py --help` now says
 “Ultron — Fedora local voice assistant”. Verified live: `Ultron ready on Fedora Linux 45.`
+
+## Checkpoint 6 — commit and zero leftovers
+
+- Gate 1 commit: **`0bf9d43`** — “P9: Fedora 45 repair — Python 3.14 venv, lazy
+  google-genai, Hermes, listening” (33 files, +791/−155) on
+  `phase9-fedora45-ultron-env`.
+- Staged by exact filename; **`.env` never staged**; `models/`, `workspace/`, `logs/`,
+  `.backups/`, `.venv/` untouched.
+- Leftover processes checked after the live tests:
+  `ss -ltnp | grep 9931` → **empty**; `pgrep -a llama-server` → **none**;
+  `pgrep -a ydotoold` → **none**; `pgrep -af atspi_helper.py` → **none**;
+  `pgrep -a agent-desktop` → **none**.
+- `git status --short` → **clean** after the commit.
+- Nothing pushed; `origin` untouched.
+
+## Step 7 — STOP: Nitin's manual Fedora 45 verification
+
+Run these from `/home/nitinyadav/Downloads/ULTRON`. The coding agent cannot use the
+microphone, speakers, or inject real keys/clicks.
+
+```sh
+cd /home/nitinyadav/Downloads/ULTRON
+git branch --show-current        # expect: phase9-fedora45-ultron-env
+git log --oneline -2             # expect: P9 repair commit (0bf9d43)
+.venv/bin/python --version       # expect: Python 3.14.9
+
+# 1. Static checks
+.venv/bin/python main.py doctor
+.venv/bin/python -m pytest -q    # expect: 547 passed
+.venv/bin/python main.py benchmark   # expect: 25/25
+
+# 2. Typed chat (real local LLM, no canned strings)
+.venv/bin/python main.py chat
+#   type: hello                  -> a natural model answer (live run gave "Hey there!")
+#   type: what is your name      -> a natural model answer, not a fixed string
+#   type: /quit
+
+# 3. Voice: the long-paragraph cutoff test
+.venv/bin/python main.py chat
+#   type: /voice
+#   speak one long paragraph (e.g. GTA V and your friends) WITH natural 1-2 s pauses;
+#   it must not stop mid-paragraph. Then ask a short question and confirm a natural answer.
+#   type: /quit
+
+# 4. Hands-free, Hermes and listening
+.venv/bin/python main.py listen
+#   say: "Ultron, open hermes"        -> Hermes opens, NEVER Lutris
+#   say: "Ultron, open lutris"        -> Lutris still resolves correctly
+#   say: "Ultron, what is on my screen" -> active window/site + visible controls
+#   speak a longer paragraph again     -> no mid-sentence cutoff
+#   say: "Ultron is stop listening"
+
+# 5. Cleanup
+ss -ltnp | grep 9931 || echo "no llama-server"
+pgrep -a llama-server || echo "no llama-server process"
+pgrep -a ydotoold || echo "no ydotoold"
+pgrep -af atspi_helper.py | grep -v pgrep || echo "no AT-SPI helper"
+```
+
+Notes for the live pass:
+
+- If an old shell exports `WHISPER_MODEL=base.en`, prefix live commands with
+  `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR`; the current session exports small.en.
+- The first `listen`/`chat` starts llama-server automatically (about 1.5–2.5 s warm).
+- `ydotoold` may print `unable to find device pointer:ydotoold virtual device` on
+  GNOME 51.1. Real key/mouse injection is still **UNVERIFIED**; report whether clicks and
+  typing work.
+- Live clicks, typing, the browser `Ctrl+F` tier, and OCR remain **UNVERIFIED**.
+- If anything fails, keep the tail of `logs/assistant.log` plus the newest
+  `workspace/voice_debug/attempt_*` and report the exact `Fast path` / `Tool call` /
+  `Ears` lines.
+
+**Do NOT start Gate 2** (Standalone Living Environment, `~/.local/share/ultron/memory.db`,
+Dashboard API) until Nitin reports this live pass. The full blueprint is in
+`docs/PROGRESS.md`.
