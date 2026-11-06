@@ -51,3 +51,6 @@ apps:
     desktop_id: "net.lutris.Lutris.desktop"
     binary: "lutris"
     flatpak_id: "net.lutris.Lutris"
+  hermes:
+    desktop_id: "com.nousresearch.hermes.desktop"
+    binary: "hermes"

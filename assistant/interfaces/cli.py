@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
+from assistant import os_release_name
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
 from assistant.brain.context import SESSION, ensure_accessibility
@@ -163,7 +164,7 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
     set_timer_speaker(lambda text: voice.speak_sync(text))
     dry_run = dry_run_default
 
-    print(f"{config.assistant_name} ready on Fedora 44. Model: [{config.current_model}] | Thinking: [{config.active_thinking_level}] | Mode: [{gate.mode}]")
+    print(f"{config.assistant_name} ready on {os_release_name()}. Model: [{config.current_model}] | Thinking: [{config.active_thinking_level}] | Mode: [{gate.mode}]")
     print("Commands: /model <id> | /thinking <low|medium|high> | /voice | /mode <ask|auto-safe|human-only> | /dry-run | /logs | /quit\n")
 
     while True:

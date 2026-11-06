@@ -97,7 +97,7 @@ VAD_EVAL_MS = 850
 VAD_CHECK_MS = 150
 VAD_BACKSTOP_MS = 1200
 VAD_START_MS = 300
-DEFAULT_MAX_SECONDS = 12.0
+DEFAULT_MAX_SECONDS = 60.0
 # A background louder than the first calibration is still background. The rolling floor
 # follows it so a fan/room hum can never leave noise_floor stuck at 85.
 NOISE_FLOOR_WINDOW_MS = 3000

@@ -1,7 +1,180 @@
-# Ultron progress — Phase 8 (current)
+# Ultron progress — Phase 9 (current)
 
-Last updated: 2026-11-05 (Phase 8 code and tests complete; live `gio launch` verified for
-5 apps; live clicks/typing and the microphone remain UNVERIFIED)
+Last updated: 2026-11-06 (Fedora 45 + GNOME 51.1 repair complete; 547 tests, 25/25 benchmark,
+doctor all PASS; Nitin's live voice check is the next step)
+
+> **Gate 1 is complete.** The machine is now Fedora 45 / GNOME 51.1 / Wayland, the folder is
+> `/home/nitinyadav/Downloads/ULTRON`, and the `.venv` is rebuilt on Python 3.14.9.
+> **Gate 2 (Standalone Living Environment + SQLite memory + Dashboard API) has NOT started**
+> — it waits for Nitin's manual voice test. The live checkpoint is `docs/LEFT_WORK.md`.
+
+## Phase 9 — Fedora 45 & ULTRON Repair (Nov 6)
+
+Work branch: `phase9-fedora45-ultron-env` (from `phase8-eyes-hands-ears` @ `4d29e58`, local
+only, nothing pushed).
+
+| Step | What | Status |
+|---|---|---|
+| 1 | Clear/init `docs/LEFT_WORK.md`, create branch | DONE |
+| 2 | Fix `.venv` after rename + Fedora 45 (Python 3.14 → 3.15) | DONE |
+| 3 | Lazy `google.genai`, real Hermes app, long-paragraph listening, natural chat | DONE |
+| 4 | Fedora 45 / GNOME 51.1 compatibility audit | DONE (live) |
+| 5 | Doctor, 547 tests, 25/25 benchmark, chat/listen smoke | DONE |
+| 6 | Docs, local commit, zero leftover processes | DONE |
+| 7 | Stop and hand Nitin the manual verification commands | DONE |
+
+### Step 2 — the venv (root cause and fix)
+
+**Symptoms:** `ModuleNotFoundError: No module named 'google'` at
+`assistant/brain/gemini_client.py:14`, even though the package was installed.
+
+**Verified diagnosis:** Fedora 45 upgraded system Python to **3.15.0** and removed
+`/usr/bin/python3.14`. `.venv/pyvenv.cfg` still said `version = 3.14.8`,
+`.venv/bin/python3 -> /usr/bin/python3` (now 3.15), packages lived in
+`.venv/lib/python3.14/site-packages` (114 packages, cp314 ABI), and every script shebang
+pointed at the old `/home/nitinyadav/Downloads/assistant-project/.venv/bin/python3`.
+Python 3.15 never reads the 3.14 site-packages, so `google`, `faster_whisper`, `numpy`,
+`yaml`, etc. all disappeared.
+
+**Why not rebuild on 3.15:** PyPI has **no cp315 wheel** for `onnxruntime` 1.31.1 or `av`
+19.0.2 (checked with the PyPI JSON API), and Piper/faster-whisper need both.
+
+**Fix (user-space, no sudo):**
+1. `uv python install 3.14` → CPython **3.14.9** at `~/.local/bin/python3.14`.
+2. Archived the broken venv at `.backups/venv-py314-20261106/` (git-ignored).
+3. `/home/nitinyadav/.local/bin/python3.14 -m venv .venv`.
+4. Installed the last known-good versions: `google-genai==2.34.0`,
+   `python-dotenv==1.2.4`, `PyYAML==6.0.3`, `psutil==7.2.2`, `send2trash==2.1.0`,
+   `pytest==9.2.0`, `faster-whisper==1.2.1`, `piper-tts==1.8.0`, `numpy==2.5.4`,
+   `httpx==0.28.1` (+ ctranslate2 4.8.5, av 19.0.2, onnxruntime 1.31.1, tokenizers 0.23.3,
+   huggingface-hub 2.4.0, pydantic 2.14.3).
+
+**Verified:** `Python 3.14.9`; `VENV_OK`; `FULL_OK 4.8.5 1.31.1`; `pip check` clean;
+`.venv/bin/pytest` and `.venv/bin/pip` shebangs point at
+`/home/nitinyadav/Downloads/ULTRON/.venv/bin/python`. No code file contains
+`assistant-project`; only historical docs did. `requirements.txt` now declares the full
+runtime set and the Python 3.14 requirement; `README.md` and `AGENTS.md` document the uv
+3.14 venv rule.
+
+### Step 3 — lazy cloud SDK, Hermes and listening
+
+**Lazy `google.genai`:** `assistant/brain/__init__.py` imports the adapters only inside
+`build_adapter()`; `gemini_client.py` imports `genai.Client` inside the client property and
+`errors` inside `generate_turn`; a new `assistant/genai_types.py` lazy proxy replaces the
+top-level `types` imports in `agent_loop.py`, `local_client.py` and `voice.py`.
+`assistant/tools/registry.py` now builds **backend-neutral** `ToolParameter` /
+`ToolDeclaration` dataclasses with stdlib `inspect`; `get_gemini_tools()` converts them
+lazily and `get_openai_tools()` never imports google. Verified with
+`sys.modules['google'] = None`: `import main`, `assistant.brain` and
+`assistant.brain.gemini_client` all succeed.
+
+**Hermes:** live scan found the real app (`~/.local/bin/hermes`,
+`~/.local/share/applications/com.nousresearch.hermes.desktop`, `Name=Hermes`). Removed
+`"hermes" → "lutris"` from `APP_ALIASES` and from the Lutris regex in `wake.py`; added
+`hermes` to `APP_DISPLAY`, `CLOSE_EXECUTABLES` and `config/apps.yaml`
+(`desktop_id: com.nousresearch.hermes.desktop`, `binary: hermes`). Verified live:
+`find_app("hermes")` → `Hermes | com.nousresearch.hermes.desktop`;
+`match_fast_command("open hermes")` → `open_app({"app_name": "hermes"})`; Lutris aliases
+(`loot risk`, `lootris`, `lu tris`, `loot res`) still map to `lutris`.
+
+**Long paragraphs:** `voice_max_seconds` 12 → **60**, `voice_silence_ms` 1350 → **2600**,
+`listen_early_check_ms` 850 → **1800** in `config.py` (dataclass + loader),
+`recorder.DEFAULT_MAX_SECONDS` → 60, `listen.py`/`voice.py` defaults and `.env.example`
+updated. `.env` does not set those keys, so the new defaults apply. The `CHAT_REPLIES`
+canned-answer map was removed: greetings / identity / small talk now go to the local LLM,
+while action clarifications stay deterministic. `tests/test_b5_full_control.py` asserts the
+LLM fall-through; `tests/test_phase9_fedora45_repair.py` pins all three fixes.
+
+### Step 4 — Fedora 45 live audit (see `docs/LEFT_WORK.md` for the full table)
+
+| Check | Result |
+|---|---|
+| OS / GNOME / session | Fedora 45, GNOME Shell 51.1, Wayland (`wayland-0`), kernel 7.2.15-300.fc45 |
+| GPU | GTX 1650 4096 MiB, driver 615.78.08 |
+| llama-server | ready **2.5 s**; completion **0.389 s** then **0.289 s** (`id_slot:0`, `cache_prompt:true`); reply `ULTRON_FEDORA45_OK` |
+| GPU offload | `nvidia-smi` showed llama-server using **1606 MiB**; GPU 1612/4096 MiB |
+| Ears | small.en load **1.41 s**, 1 s array transcribe **0.10 s** |
+| Mouth | Piper load **1.79 s**, synth **0.18 s**, 122 144 bytes @ 22 050 Hz |
+| GNOME introspection | `org.gnome.shell introspect` → **No such key**; `GetWindows` → **AccessDenied** (same as GNOME 50.5) |
+| AT-SPI | `/usr/bin/python3` Atspi/pyatspi OK; helper returned **75 nodes / 11 elements** from the real ptyxis window |
+| Screen context | `ensure_accessibility()` → `{'toolkit_accessibility': True, 'introspect': False}`; wmctrl/process fallback returned real windows |
+| Input | `/dev/uinput` ACL `user:nitinyadav:rw-`; wl-clipboard 2.3.0 roundtrip OK; ydotoold creates its socket and exits cleanly (GNOME 51.1 logs `unable to find device pointer`; live key injection remains UNVERIFIED) |
+
+### Step 5 — verification (actually run)
+
+- `.venv/bin/python main.py doctor` → **all PASS**, exit 0.
+- `.venv/bin/python -m pytest -q` → **547 passed, 0 failed, 0 errors** (76.54 s).
+- `.venv/bin/python main.py benchmark` → **25/25 passed**, average **2.802 ms** (mocked).
+- `printf 'hello\n/quit\n' | .venv/bin/python main.py chat` → server ready 1.5 s, banner
+  `Ultron ready on Fedora Linux 45.`, real reply `Hey there!`, exit 0, port free.
+- `.venv/bin/python main.py listen --help` → exit 0.
+- `compileall` OK; `git diff --check` clean.
+
+Three test regressions were fixed rather than hidden: the reader test now pins a 1350 ms
+window (it tests buffering, not the new default), `test_no_gemini.py` patches the lazy
+`assistant.brain.gemini_client.GeminiAdapter`, and the benchmark `hello` case now exercises
+the real chat path with a one-sentence reply.
+
+### Files changed (Phase 9)
+
+- New: `assistant/genai_types.py`, `tests/test_phase9_fedora45_repair.py`, `docs/LEFT_WORK.md`.
+- Core: `assistant/__init__.py`, `assistant/brain/__init__.py`,
+  `assistant/brain/gemini_client.py`, `assistant/brain/local_client.py`,
+  `assistant/brain/agent_loop.py`, `assistant/brain/fast_path.py`,
+  `assistant/tools/registry.py`, `assistant/tools/apps.py`, `assistant/speech/wake.py`,
+  `assistant/speech/recorder.py`, `assistant/config.py`, `assistant/interfaces/listen.py`,
+  `assistant/interfaces/voice.py`, `assistant/interfaces/cli.py`,
+  `assistant/interfaces/gui.py`, `main.py`, `config/apps.yaml`.
+- Tests/benchmark: `tests/test_config_defaults.py`, `tests/test_b5_full_control.py`,
+  `tests/test_phase7_brain_wayland.py`, `tests/test_phase8_eyes_hands_ears.py`,
+  `tests/test_listen_reader.py`, `tests/test_no_gemini.py`, `scripts/benchmark_phase5c.py`.
+- Docs/config: `README.md`, `AGENTS.md`, `requirements.txt`, `.env.example`,
+  `docs/PROGRESS.md`, `docs/ULTRON_PROJECT_BIBLE.md`, `docs/LEFT_WORK.md`.
+- Not staged: `.env`, `models/`, `workspace/`, `logs/`, `.backups/`, `.venv/`.
+
+### Gate 2 blueprint — Standalone Living Environment (NOT STARTED)
+
+Wait for Nitin's explicit go-ahead after the live voice test.
+
+1. **User data root.** Move mutable state from the project to
+   `~/.local/share/ultron/` (override: `ULTRON_DATA_DIR`): `memory.db`,
+   `learned_skills.json`, `user_memory.json`, `training_dataset.jsonl`, `voice_debug/`.
+   Keep `config/` + models in the project. Add a one-time migration that copies existing
+   `workspace/` files without deleting them.
+2. **SQLite memory engine** (`assistant/memory/store.py`, stdlib `sqlite3`):
+   `memory.db` with WAL, `schema_version`, migrations, and tables
+   `facts(key, value, confidence, source, updated_at)`,
+   `aliases(spoken, target, source, updated_at)`,
+   `skills(trigger, actions_json, source, updated_at)`,
+   `turns(id, ts, role, text, screen_json, tools_json, latency_ms)`,
+   `preferences(key, value)`, plus FTS5 over `turns.text` for recall. API:
+   `remember_fact`, `recall_fact`, `save_alias`, `resolve_alias`, `save_turn`,
+   `recent_turns`, `search_memory`, `export_json`, `import_json`. Secrets are redacted
+   before insert; DB file mode `0600`; tests use a temp DB and never the real one.
+3. **Memory wired into the brain.** Replace `workspace/user_memory.json` and
+   `learned_skills.json` reads with the store (keeping the files as import/export);
+   inject at most 3 recalled facts/skills into the per-turn `[Context: ...]` tag so the
+   static KV prefix stays byte-identical.
+4. **Standalone launcher.** `scripts/ultron` (user-space shim) + a `systemd --user` unit
+   template `ultron.service` (no sudo; `systemctl --user enable --now ultron`), logging to
+   `~/.local/state/ultron/`, with a `--headless` listen mode and a clean stop path
+   (`SIGTERM` closes llama-server/ydotoold/AT-SPI helper).
+5. **Dashboard API server** (`assistant/api/server.py`, localhost only, bearer token in
+   `~/.config/ultron/api_token`, mode `0600`): `GET /health`, `GET /memory/search?q=`,
+   `GET /memory/recent`, `POST /memory/facts`, `POST /memory/aliases`, `GET /metrics`
+   (latency/tool counts), `POST /control/stop`. Read-only by default; every write
+   permission-gated and audited. No arbitrary shell endpoint.
+6. **Tests/acceptance for Gate 2.** Deterministic pytest for schema/migrations, CRUD,
+   FTS recall, redaction, migration idempotence, API auth/validation, and a mocked
+   end-to-end turn that writes one `turns` row. Live acceptance: Nitin restarts the laptop,
+   `systemctl --user status ultron`, asks a memory question by voice, and reads the same
+   fact back after a reboot.
+
+### NEXT STEP — Nitin's manual Fedora 45 verification
+
+The coding agent cannot use the microphone, speakers or real key injection. Run the
+commands in `docs/LEFT_WORK.md` → “Step 7” and report the exact log lines. Do **not** start
+Gate 2 until that live pass is accepted.
 
 > **Working folder in this session:** `/home/nitinyadav/Downloads/ULTRON` (verified with
 > `pwd`). Older handoff text says `~/Downloads/assistant-project`; that path does not exist
@@ -511,7 +684,7 @@ killed before the Electron main process exits.
 
 ### NEXT STEP — live test (the coding tool cannot use the mic/speakers/GUI)
 
-Run from `~/Downloads/assistant-project`:
+Run from `~/Downloads/ULTRON`:
 
 1. `.venv/bin/python main.py listen`; say **“Ultron, open text editor”**, then
    **“write what is an AI agent inside this new document”**. Expected: the editor opens and
@@ -690,7 +863,7 @@ only, nothing pushed).
 
 ### NEXT STEP — 5-step live test (the coding tool cannot use the mic/speakers)
 
-Run from `~/Downloads/assistant-project`:
+Run from `~/Downloads/ULTRON`:
 
 1. `.venv/bin/python main.py listen` — say **“Ultron, open YouTube”**, then
    **“search f1 in youtube”**. Expected: one tab navigates to
@@ -890,7 +1063,7 @@ local only, nothing pushed). This section supersedes every section below it.
 
 ### NEXT STEP — 5-step live test (the coding tool cannot use the mic/speakers)
 
-Run from `~/Downloads/assistant-project`:
+Run from `~/Downloads/ULTRON`:
 
 1. `.venv/bin/python main.py listen` — say **"Ultron"**, then **"open firefox"**. No
    recording may last 12 s; a fan may stay on.
@@ -1227,7 +1400,7 @@ behaviour.
 
 ### NEXT STEP — live tests (the coding tool cannot use the mic/speakers)
 
-Run from `~/Downloads/assistant-project`, one command at a time:
+Run from `~/Downloads/ULTRON`, one command at a time:
 
 1. `.venv/bin/python main.py listen`
    - Say **"Ultron"** → `· wake word heard`, `· waiting for your command (6 s)`,

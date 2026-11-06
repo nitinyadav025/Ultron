@@ -103,7 +103,7 @@ _SPOKEN_COMMAND_FIXES = (
     (re.compile(r"\bscreen\s+shot\b", re.I), "screenshot"),
     # "Dis cord" and "loot risk" are the measured spoken forms of these app names.
     (re.compile(r"\bdis\s+cord\b", re.I), "discord"),
-    (re.compile(r"\b(?:loo\s*tris|lou\s*tris|loot\s*risk|loot\s*res|hermes)\b", re.I), "lutris"),
+    (re.compile(r"\b(?:loo\s*tris|lou\s*tris|loot\s*risk|loot\s*res)\b", re.I), "lutris"),
     (re.compile(r"\b(open|launch) (?:5ox|5x|file box|fire box|fire fox)\b", re.I), r"\1 firefox"),
     # "Third YouTube" / "Hurt YouTube" / "Sir YouTube" = "search YouTube".
     (

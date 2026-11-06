@@ -1,4 +1,4 @@
-"""Ultron Dashboard (GUI) for Fedora 44 GNOME 50.5 Wayland.
+"""Ultron Dashboard (GUI) for Fedora 45 GNOME 51.1 Wayland.
 Includes live Model Switcher, Thinking Level Switcher (low/medium/high), Safety Mode selector,
 Voice Push-to-Talk button (Listening -> Transcribing -> Thinking -> Speaking -> Ready),
 and always-visible Emergency STOP button.
@@ -10,6 +10,7 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from assistant import os_release_name
 from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
 from assistant.brain.context import ensure_accessibility
@@ -46,7 +47,7 @@ def run_gui_dashboard(config: AssistantConfig) -> int:
     ensure_accessibility()
     start_screen_watcher(config.screen_watch_interval)
     root = tk.Tk()
-    root.title(f"{config.assistant_name} Dashboard — Fedora 44 (Wayland)")
+    root.title(f"{config.assistant_name} Dashboard — {os_release_name()} (Wayland)")
     root.geometry("860x600")
     root.configure(bg="#12161f")
 

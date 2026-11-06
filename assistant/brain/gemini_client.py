@@ -11,10 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from google import genai
-from google.genai import errors, types
-
 from assistant.config import LOGS_DIR, VALID_THINKING_LEVELS, AssistantConfig
+from assistant.genai_types import types
 from assistant.safety.redact import redact_secrets
 
 logger = logging.getLogger("ultron.gemini")
@@ -97,6 +95,8 @@ class GeminiAdapter:
         if self._client is None:
             if not self.config.has_valid_key:
                 raise RuntimeError("GEMINI_API_KEY is missing or set to placeholder in .env.")
+            from google import genai
+
             self._client = genai.Client(api_key=self.config.api_key)
         return self._client
 
@@ -139,6 +139,8 @@ class GeminiAdapter:
             thinking_config=thinking_cfg,
             tools=tools if tools else None,
         )
+
+        from google.genai import errors
 
         delay = 2.0
         for attempt in range(1, max_retries + 1):

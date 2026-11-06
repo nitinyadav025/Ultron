@@ -25,10 +25,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from google.genai import types
-
 from assistant.brain.gemini_client import GeminiAdapter
 from assistant.config import WORKSPACE_DIR, AssistantConfig, clamp_voice_volume
+from assistant.genai_types import types
 from assistant.safety.redact import redact_secrets
 from assistant.speech.denoise import denoise_pcm16
 from assistant.speech.ears import EarsError, WhisperEars
@@ -346,9 +345,9 @@ class VoiceController:
                 silence_ms=getattr(
                     self.config,
                     "voice_record_silence_ms",
-                    getattr(self.config, "voice_silence_ms", 1350),
+                    getattr(self.config, "voice_silence_ms", 2600),
                 ),
-                max_seconds=getattr(self.config, "voice_max_seconds", 12.0),
+                max_seconds=getattr(self.config, "voice_max_seconds", 60.0),
                 warmup_ms=getattr(self.config, "recorder_warmup_ms", 300),
                 warmup_max_ms=getattr(self.config, "recorder_warmup_max_ms", 1500),
                 min_snr_db=getattr(self.config, "voice_min_snr_db", 5.0),

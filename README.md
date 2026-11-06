@@ -1,4 +1,4 @@
-# Ultron — Fedora 44 Edition (GNOME 50.5 Wayland | Python 3.14.8)
+# Ultron — Fedora 45 Edition (GNOME 51.1 Wayland | Python 3.14.9)
 
 ## Quick Start in VS Code
 
@@ -8,23 +8,27 @@
    sudo dnf install python3-pip python3-devel python3-tkinter git gcc wl-clipboard ydotool gnome-screenshot libnotify pipewire-utils speech-dispatcher
    ```
 
-2. Open `assistant-project` in VS Code (`code assistant-project`), then run in the VS Code terminal:
+2. Fedora 45 ships Python 3.15, which has no `onnxruntime`/`av` wheels yet. Install a
+   user-space Python 3.14 once, then create the venv with it:
 
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+   uv python install 3.14
+   ~/.local/bin/python3.14 -m venv .venv
+   .venv/bin/python -m pip install -r requirements.txt
    cp .env.example .env
    ```
 
-3. Paste your free-tier `GEMINI_API_KEY` into `.env`.
+3. Open `ULTRON` in VS Code (`code ULTRON`), and use `.venv/bin/python` for every command.
 
 4. Test and run:
 
    ```bash
-   python3 main.py doctor
-   python3 main.py self-test
-   pytest
-   python3 main.py gui   # Launches Ultron Dashboard with Model/Thinking switchers & Voice
-   python3 main.py chat  # Launches CLI
+   .venv/bin/python main.py doctor
+   .venv/bin/python main.py self-test
+   .venv/bin/python -m pytest
+   .venv/bin/python main.py gui   # Launches Ultron Dashboard with Model/Thinking switchers & Voice
+   .venv/bin/python main.py chat  # Launches CLI
    ```
+
+`BACKEND=local` needs no API key. `BACKEND=gemini` keeps the cloud rollback working and
+reads `GEMINI_API_KEY` from `.env`.

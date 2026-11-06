@@ -11,8 +11,6 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from google.genai import types
-
 from assistant.brain.context import SESSION, context_tag, get_screen_context
 from assistant.brain.gemini_client import GeminiAdapter, TokenUsageStats
 from assistant.brain.local_client import LocalAdapter
@@ -37,6 +35,7 @@ from assistant.brain.tool_replies import (
     mute_audio_reply,
 )
 from assistant.config import AssistantConfig
+from assistant.genai_types import types
 from assistant.safety.killswitch import WatchdogMonitor
 from assistant.safety.redact import redact_secrets
 from assistant.tools.apps import resolve_app_launch_command

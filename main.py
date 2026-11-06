@@ -115,7 +115,7 @@ def _dispatch(args: argparse.Namespace, config: AssistantConfig) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Ultron — Fedora 44 local voice assistant")
+    parser = argparse.ArgumentParser(description="Ultron — Fedora local voice assistant")
     parser.add_argument(
         "command",
         nargs="?",

@@ -143,7 +143,7 @@ CASES: tuple[BenchCase, ...] = (
         "The battery is 100 percent and full.",
     ),
     BenchCase("what time is it", "system_info", {"kind": "time"}, "It is 12:00."),
-    BenchCase("hello", None, None, "Hello. I am here."),
+    BenchCase("hello", None, None, "Hello there, I am here and ready to help.", mode="chat"),
     BenchCase(
         "explain recursion in one sentence",
         None,

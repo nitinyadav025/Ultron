@@ -1,6 +1,11 @@
+# Ultron runs on Python 3.14: Fedora 45's Python 3.15 has no onnxruntime/av wheels yet.
 google-genai>=1.0.0
 python-dotenv>=1.0.1
 PyYAML>=6.0.1
 psutil>=5.9.8
 send2trash>=1.8.3
 pytest>=8.0.0
+faster-whisper>=1.2.1
+piper-tts>=1.8.0
+numpy>=2.0
+httpx>=0.28

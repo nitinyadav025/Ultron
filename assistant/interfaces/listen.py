@@ -168,8 +168,8 @@ class UtteranceDetector:
 
     The energy rules are the first signal. When ``vad`` (Silero) is supplied it confirms
     the start and ends a steady fan that the energy rule would mistake for speech. The
-    850 ms early event gives the listener a transcript for a continuation decision; the
-    1350 ms final is the ceiling, and a 1.2 s VAD-silent run is the hard backstop.
+    1800 ms early event gives the listener a transcript for a continuation decision; the
+    2600 ms final is the ceiling, and a 1.2 s VAD-silent run is the hard backstop.
     """
 
     def __init__(
@@ -178,8 +178,8 @@ class UtteranceDetector:
         warmup_ms: int = DEFAULT_WARMUP_MS,
         warmup_max_ms: int = 1500,
         min_snr_db: float = 10.0,
-        silence_ms: int = 1350,
-        early_ms: int = 850,
+        silence_ms: int = 2600,
+        early_ms: int = 1800,
         max_seconds: float = DEFAULT_MAX_SECONDS,
         vad: Any | None = None,
         vad_backstop_ms: int = VAD_BACKSTOP_MS,
@@ -605,8 +605,8 @@ class HandsFreeListener:
             warmup_ms=getattr(config, "recorder_warmup_ms", DEFAULT_WARMUP_MS),
             warmup_max_ms=getattr(config, "recorder_warmup_max_ms", 1500),
             min_snr_db=getattr(config, "voice_min_snr_db", 10.0),
-            silence_ms=getattr(config, "voice_silence_ms", 1350),
-            early_ms=getattr(config, "listen_early_check_ms", 850),
+            silence_ms=getattr(config, "voice_silence_ms", 2600),
+            early_ms=getattr(config, "listen_early_check_ms", 1800),
             max_seconds=getattr(config, "voice_max_seconds", DEFAULT_MAX_SECONDS),
             vad=vad,
         )

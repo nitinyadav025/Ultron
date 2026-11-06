@@ -489,23 +489,24 @@ class _NoToolRegistry:
 
 
 @pytest.mark.parametrize(
-    ("text", "reply"),
+    "text",
     [
-        ("hello", "Hello. I am here."),
-        ("what is your name?", "I am Ultron, your local voice assistant."),
-        ("what's your name?", "I am Ultron, your local voice assistant."),
-        ("can you tell me what is your name", "I am Ultron, your local voice assistant."),
-        ("who are you", "I am Ultron, your local voice assistant."),
-        ("how are you", "I am running locally and ready to help."),
-        ("thanks", "You're welcome."),
+        "hello",
+        "what is your name?",
+        "what's your name?",
+        "can you tell me what is your name",
+        "who are you",
+        "how are you",
+        "thanks",
     ],
 )
-def test_instant_conversation_never_calls_a_tool(text: str, reply: str) -> None:
+def test_conversation_falls_through_to_the_llm(text: str) -> None:
+    """Conversational turns get a real model answer, not a canned string."""
     holder = _NoToolRegistry()
 
     answer = try_fast_path(holder.registry, text)
 
-    assert answer == reply
+    assert answer is None
     assert holder.calls == []
 
 

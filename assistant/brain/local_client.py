@@ -14,11 +14,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from google.genai import types
 
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.brain.reply_style import clean_llm_reply
 from assistant.config import AssistantConfig
+from assistant.genai_types import types
 from assistant.safety.redact import redact_secrets
 
 logger = logging.getLogger("ultron.local")

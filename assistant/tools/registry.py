@@ -6,10 +6,8 @@ import inspect
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, get_type_hints
-
-from google.genai import types
 
 from assistant.config import AssistantConfig
 from assistant.safety.audit import log_audit_event
@@ -17,6 +15,24 @@ from assistant.safety.permissions import PermissionGate
 from assistant.safety.redact import redact_secrets
 
 logger = logging.getLogger("ultron.tools")
+
+
+@dataclass
+class ToolParameter:
+    """Backend-neutral parameter schema (no google-genai import needed)."""
+
+    type: str
+    description: str = ""
+
+
+@dataclass
+class ToolDeclaration:
+    """Backend-neutral function declaration converted only when Gemini runs."""
+
+    name: str
+    description: str
+    properties: dict[str, ToolParameter] = field(default_factory=dict)
+    required: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -28,16 +44,16 @@ class ToolSpec:
     risk_level: str
     read_only: bool
     func: Callable[..., Any]
-    declaration: types.FunctionDeclaration
+    declaration: ToolDeclaration
 
 
-_PY_TYPE_TO_SCHEMA: dict[Any, types.Type] = {
-    str: types.Type.STRING,
-    int: types.Type.INTEGER,
-    float: types.Type.NUMBER,
-    bool: types.Type.BOOLEAN,
-    list: types.Type.ARRAY,
-    dict: types.Type.OBJECT,
+_PY_TYPE_TO_SCHEMA: dict[Any, str] = {
+    str: "STRING",
+    int: "INTEGER",
+    float: "NUMBER",
+    bool: "BOOLEAN",
+    list: "ARRAY",
+    dict: "OBJECT",
 }
 
 # Terse parameter hints for the OpenAI schemas: the local 1.7B model pays for every token
@@ -55,13 +71,13 @@ _PARAM_HINTS: dict[str, str] = {
     "actions": "actions separated by ;",
 }
 
-_SCHEMA_TYPE_TO_JSON: dict[Any, str] = {
-    types.Type.STRING: "string",
-    types.Type.INTEGER: "integer",
-    types.Type.NUMBER: "number",
-    types.Type.BOOLEAN: "boolean",
-    types.Type.ARRAY: "array",
-    types.Type.OBJECT: "object",
+_SCHEMA_TYPE_TO_JSON: dict[str, str] = {
+    "STRING": "string",
+    "INTEGER": "integer",
+    "NUMBER": "number",
+    "BOOLEAN": "boolean",
+    "ARRAY": "array",
+    "OBJECT": "object",
 }
 
 # Local 1.7B schemas: short descriptions. The model re-reads this list on every turn.
@@ -120,10 +136,10 @@ _LOCAL_OPTIONAL_PARAMS: dict[str, frozenset[str]] = {
 }
 
 
-def _build_declaration(func: Callable[..., Any], name: str, description: str) -> types.FunctionDeclaration:
+def _build_declaration(func: Callable[..., Any], name: str, description: str) -> ToolDeclaration:
     sig = inspect.signature(func)
     hints = get_type_hints(func)
-    properties: dict[str, types.Schema] = {}
+    properties: dict[str, ToolParameter] = {}
     required: list[str] = []
 
     for param_name, param in sig.parameters.items():
@@ -134,20 +150,16 @@ def _build_declaration(func: Callable[..., Any], name: str, description: str) ->
         if origin is not None:
             args = [a for a in getattr(ann, "__args__", ()) if a is not type(None)]
             ann = args[0] if args else str
-        schema_type = _PY_TYPE_TO_SCHEMA.get(ann, types.Type.STRING)
+        schema_type = _PY_TYPE_TO_SCHEMA.get(ann, "STRING")
         is_required = param.default is inspect.Parameter.empty
         # Only required params get a hint: an omitted optional param simply uses its
         # default, so describing it would only cost the small local model tokens.
         hint = _PARAM_HINTS.get(param_name, "") if is_required else ""
-        properties[param_name] = types.Schema(type=schema_type, description=hint or None)
+        properties[param_name] = ToolParameter(type=schema_type, description=hint)
         if is_required:
             required.append(param_name)
 
-    return types.FunctionDeclaration(
-        name=name,
-        description=description,
-        parameters=types.Schema(type=types.Type.OBJECT, properties=properties, required=required),
-    )
+    return ToolDeclaration(name=name, description=description, properties=properties, required=required)
 
 
 def tool(risk_level: str = "safe", read_only: bool = True, name: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -195,9 +207,27 @@ class ToolRegistry:
     def list_tools(self) -> list[ToolSpec]:
         return list(self._tools.values())
 
-    def get_gemini_tools(self, include_google_search: bool = False) -> list[types.Tool]:
-        decls = [s.declaration for s in self._tools.values()]
-        out: list[types.Tool] = [types.Tool(function_declarations=decls)] if decls else []
+    def get_gemini_tools(self, include_google_search: bool = False) -> list[Any]:
+        """Build google-genai Tool objects; imports the SDK only on the Gemini backend."""
+        from assistant.genai_types import types
+
+        def _schema(decl: ToolDeclaration) -> Any:
+            properties = {
+                key: types.Schema(
+                    type=getattr(types.Type, value.type),
+                    description=value.description or None,
+                )
+                for key, value in decl.properties.items()
+            }
+            parameters = (
+                types.Schema(type=types.Type.OBJECT, properties=properties, required=decl.required)
+                if properties
+                else None
+            )
+            return types.FunctionDeclaration(name=decl.name, description=decl.description, parameters=parameters)
+
+        decls = [_schema(spec.declaration) for spec in self._tools.values()]
+        out: list[Any] = [types.Tool(function_declarations=decls)] if decls else []
         if include_google_search and self.config.paid_tier:
             out.append(types.Tool(google_search=types.GoogleSearch()))
         return out
@@ -214,11 +244,10 @@ class ToolRegistry:
             decl = spec.declaration
             if compact and LOCAL_SCHEMA_TOOLS and decl.name not in LOCAL_SCHEMA_TOOLS:
                 continue
-            parameters = decl.parameters
-            required = list(parameters.required or []) if parameters else []
+            required = list(decl.required)
             keep_optional = _LOCAL_OPTIONAL_PARAMS.get(decl.name, frozenset()) if compact else None
             properties: dict[str, Any] = {}
-            for prop_name, prop in (parameters.properties or {}).items() if parameters else []:
+            for prop_name, prop in decl.properties.items():
                 if keep_optional is not None and prop_name not in required and prop_name not in keep_optional:
                     continue
                 prop_schema: dict[str, Any] = {"type": _SCHEMA_TYPE_TO_JSON.get(prop.type, "string")}

@@ -89,6 +89,9 @@ def test_listener_with_reader_handles_a_command_after_piper() -> None:
     cfg.listen_after_speech_ms = 300
     cfg.listen_followup_s = 6
     cfg.listen_early_check_ms = 800
+    # This test is about the reader, not the long-paragraph default; keep a short end window
+    # so the clipped command finishes before the fake source stops.
+    cfg.voice_silence_ms = 1350
     cfg.recorder_warmup_ms = 300
     cfg.voice_min_snr_db = 10
 

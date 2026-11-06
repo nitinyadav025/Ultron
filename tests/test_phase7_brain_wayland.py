@@ -810,11 +810,14 @@ def test_web_open_url_never_uses_a_pipe(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_app_aliases_cover_lutris_and_text_editors() -> None:
-    for name in ("loot risk", "lootris", "lu tris", "hermes"):
+    for name in ("loot risk", "lootris", "lu tris"):
         assert apps.app_key(name) == "lutris"
     for name in ("text editor", "document editor", "gedit", "notepad"):
         assert apps.app_key(name) == "text editor"
+    # Hermes is its own desktop app, never a Lutris alias.
+    assert apps.app_key("hermes") == "hermes"
     assert match_fast_command("open loot risk")["arguments"] == {"app_name": "lutris"}  # type: ignore[index]
+    assert match_fast_command("open hermes")["arguments"] == {"app_name": "hermes"}  # type: ignore[index]
     assert match_fast_command("open notepad")["arguments"] == {"app_name": "text editor"}  # type: ignore[index]
 
 

@@ -26,34 +26,6 @@ from assistant.tools.web import parse_search_request
 
 logger = logging.getLogger("ultron.fastpath")
 
-# Instant, tool-free replies for the most common conversational turns.
-CHAT_REPLIES: dict[str, str] = {
-    "hello": "Hello. I am here.",
-    "hi": "Hello. I am here.",
-    "hey": "Hello. I am here.",
-    "hey ultron": "Hello. I am here.",
-    "hello ultron": "Hello. I am here.",
-    "good morning": "Good morning. I am ready.",
-    "good evening": "Good evening. I am ready.",
-    "what is your name": "I am Ultron, your local voice assistant.",
-    "what s your name": "I am Ultron, your local voice assistant.",
-    "whats your name": "I am Ultron, your local voice assistant.",
-    "what is your name ultron": "I am Ultron, your local voice assistant.",
-    "who are you": "I am Ultron, your local voice assistant.",
-    "what are you": "I am Ultron, your local voice assistant.",
-    "how are you": "I am running locally and ready to help.",
-    "how is it going": "I am running locally and ready to help.",
-    "thank you": "You're welcome.",
-    "thanks": "You're welcome.",
-    "thank you ultron": "You're welcome.",
-    "are you there": "Yes, I am here.",
-    "you there": "Yes, I am here.",
-}
-
-
-def _chat_reply(cleaned: str) -> str | None:
-    return CHAT_REPLIES.get(cleaned)
-
 
 def _chat(command_text: str, reply: str, request: str) -> dict[str, object]:
     return {"kind": "chat", "tool": None, "reply": reply, "request": request}
@@ -338,9 +310,8 @@ def _match_single(text: str) -> dict[str, object] | None:
                 "request": text,
             }
 
-    instant = _chat_reply(cleaned)
-    if instant:
-        return _chat(cleaned, instant, text)
+    # Greetings, identity questions and small talk deliberately fall through to the local
+    # LLM: a real natural answer beats a dry hardcoded string.
 
     # Context follow-ups. These must run before the generic close/open patterns.
     if cleaned in {"close it", "quit it", "close that", "exit it", "kill it"}:

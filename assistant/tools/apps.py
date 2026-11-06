@@ -89,7 +89,6 @@ APP_ALIASES: dict[str, str] = {
     "lootris": "lutris",
     "lu tris": "lutris",
     "loot res": "lutris",
-    "hermes": "lutris",
     "web browser": "firefox",
     "browser": "firefox",
 }
@@ -107,6 +106,7 @@ APP_DISPLAY: dict[str, str] = {
     "spotify": "Spotify",
     "vlc": "VLC",
     "lutris": "Lutris",
+    "hermes": "Hermes",
     "software": "Software",
     "system monitor": "System Monitor",
     "tweaks": "Tweaks",
@@ -210,6 +210,7 @@ CLOSE_EXECUTABLES: dict[str, tuple[str, ...]] = {
     "text editor": ("gnome-text-editor",),
     "terminal": ("ptyxis", "gnome-terminal"),
     "settings": ("gnome-control-center",),
+    "hermes": ("hermes", "hermes-desktop"),
 }
 NEVER_CLOSE = frozenset(
     {

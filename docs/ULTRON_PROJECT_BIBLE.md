@@ -18,9 +18,9 @@
 
 | Item | Value |
 |---|---|
-| Project | Ultron, a voice-controlled Fedora 44 GNOME Wayland laptop assistant |
+| Project | Ultron, a voice-controlled Fedora 45 GNOME 51.1 Wayland laptop assistant |
 | Folder (verified) | `/home/nitinyadav/Downloads/ULTRON` (older text says `~/Downloads/assistant-project`; that path does not exist on this machine) |
-| Python | `.venv/bin/python` (3.14.8) — never the system `python3` |
+| Python | `.venv/bin/python` (3.14.9, from `uv`; Fedora 45's system Python 3.15 has no onnxruntime/av wheels) — never the system `python3` |
 | Brain | LFM3-1.7B GGUF on llama.cpp `llama-server`, OpenAI-compatible API `http://127.0.0.1:9931/v1` |
 | Ears | faster-whisper `small.en`, CPU, int8, beam 2, float32 numpy arrays only (automatic `base.en` fallback) |
 | Mouth | Piper `en_US-lessac-medium`, CPU, streaming sentence by sentence |
@@ -29,10 +29,11 @@
 | GPU | GTX 1650 4 GB, reserved for the LLM only |
 | Default backend | `BACKEND=local` (no API key needed) |
 | Rollback | `BACKEND=gemini` must keep working |
-| Branch (Phase 8) | `phase8-eyes-hands-ears` (created from `phase7-llm-brain-wayland` @ `242a57f`) |
+| Branch (Phase 9) | `phase9-fedora45-ultron-env` (created from `phase8-eyes-hands-ears` @ `4d29e58`) |
 | Test state at Phase 7 end | **503 passed, 0 failed, 0 errors** (`pytest -q`, 38.82 s) |
 | Test state at Phase 8 end | **540 passed, 0 failed, 0 errors** (`pytest -q`, 53.50 s) |
-| Benchmark at Phase 8 end | **25/25 passed**, average **1.480 ms** (mocked; 1.516 ms on the Part 7 re-run, 2.109 ms on the first run) |
+| Test state at Phase 9 end | **547 passed, 0 failed, 0 errors** (`pytest -q`, 76.54 s) |
+| Benchmark at Phase 9 end | **25/25 passed**, average **2.802 ms** (mocked; the `hello` case now runs the real chat path) |
 | Remote | Nothing is pushed. The user pushes when they choose. |
 
 ---
@@ -629,6 +630,45 @@ automated test may press keys, click a window or use audio hardware.
 
 ---
 
+## 6C. Phase 9 — Fedora 45 & ULTRON Repair (Nov 6)
+
+Branch: `phase9-fedora45-ultron-env` (from `phase8-eyes-hands-ears` @ `4d29e58`). Full
+evidence and the Gate 2 blueprint are in `docs/PROGRESS.md`; the live checkpoint is
+`docs/LEFT_WORK.md`.
+
+| Area | Root cause | Fix | Result |
+|---|---|---|---|
+| `.venv` broken after the rename + OS upgrade | Fedora 45 moved system Python 3.14 → 3.15 and removed `/usr/bin/python3.14`; the venv still pointed at 3.15 while packages lived in `lib/python3.14`; shebangs named the old folder | Installed user-space CPython 3.14.9 with `uv python install 3.14`, archived the old venv, recreated `.venv`, reinstalled pinned deps | `VENV_OK`, `FULL_OK 4.8.5 1.31.1`, `pip check` clean; no code file references `assistant-project` |
+| `ModuleNotFoundError: No module named 'google'` | `assistant/brain/__init__.py` and `gemini_client.py` imported google-genai eagerly; the broken 3.15 path made it fail | Lazy adapter import, lazy `genai.Client`/`errors`, lazy `types` proxy, backend-neutral tool declarations in `registry.py` | `sys.modules['google']=None` + `import main` → OK; local tool schemas need no google |
+| `"hermes"` opened Lutris | A stale phonetic alias mapped Hermes → Lutris | Removed the alias and the wake repair; added the real app (`com.nousresearch.hermes.desktop`, `binary: hermes`) | `open hermes` → the real Hermes desktop app; Lutris aliases unchanged |
+| Ultra cut the user off mid-paragraph | `VOICE_MAX_SECONDS=12`, `VOICE_SILENCE_MS=1350`, early check 850 ms | 60 s cap, 2.6 s silence ceiling, 1.8 s early check (config + loader + recorder + interfaces + `.env.example`) | 1 s synthetic array works; long-paragraph defaults pinned by tests |
+| Dry canned chat replies | `CHAT_REPLIES` answered greetings/identity deterministically | Removed the map; conversational turns fall through to the local LLM | Live chat: `hello` → `Hey there!` |
+| Stale “Fedora 44” banner | Hardcoded string | `assistant.os_release_name()` via stdlib `platform.freedesktop_os_release()` | Banner prints `Ultron ready on Fedora Linux 45.` |
+
+**Live Fedora 45 / GNOME 51.1 evidence (actually run):**
+
+- llama-server ready **2.5 s**; completion **0.389 s** then **0.289 s** with
+  `id_slot:0, cache_prompt:true`; `nvidia-smi` showed **1606 MiB** in use → GPU offload
+  confirmed; stopped cleanly, port 9931 free.
+- Ears small.en: load **1.41 s**, 1 s float32 transcribe **0.10 s**.
+- Piper: load **1.79 s**, synth **0.18 s**, 22 050 Hz.
+- GNOME 51.1 still has **no** `org.gnome.shell introspect` key and **denies**
+  `GetWindows`; AT-SPI remains the eye. The helper returned 75 nodes / 11 real ptyxis
+  elements.
+- `/dev/uinput` ACL `user:nitinyadav:rw-`; wl-clipboard 2.3.0 roundtrip OK; `ydotoold`
+  starts, creates its socket and exits cleanly (GNOME 51.1 warns `unable to find device
+  pointer`; live key injection remains **UNVERIFIED**).
+- `.venv/bin/python main.py doctor` → all PASS; `pytest -q` → **547 passed**;
+  `main.py benchmark` → **25/25**, average **2.802 ms**; `main.py chat` and
+  `main.py listen --help` exit 0.
+
+**Gate 2** (Standalone Living Environment, SQLite memory at
+`~/.local/share/ultron/memory.db`, Dashboard API) is **not started** by design. The
+blueprint (data root, schema, memory API, systemd user service, localhost API, tests) is in
+`docs/PROGRESS.md`; it begins only after Nitin's live voice test.
+
+---
+
 ## 7. Verification ledger (Phase 6/7/8)
 
 > Every number here must come from an actual command run in this session. Anything not run
@@ -701,6 +741,15 @@ automated test may press keys, click a window or use audio hardware.
 - **Phase 8:** `load_config` gives exported environment variables precedence over `.env`
   (existing design). If `env | grep WHISPER` shows old values, `unset` them before a live
   small.en test.
+- **Phase 9:** the venv must stay on Python **3.14.x**. Fedora 45's system Python 3.15 has
+  no `onnxruntime` or `av` wheels yet, so rebuilding with `python3 -m venv` breaks ears and
+  mouth. Rebuild only with `~/.local/bin/python3.14` (installed by
+  `uv python install 3.14`).
+- **Phase 9:** GNOME 51.1 still has no `org.gnome.shell introspect` key and denies
+  `org.gnome.Shell.Introspect.GetWindows`; AT-SPI is the working eye (verified live).
+- **Phase 9:** `ydotoold` starts and creates its socket on GNOME 51.1 but logs
+  `unable to find device pointer:ydotoold virtual device`; real key/mouse injection remains
+  **UNVERIFIED** and needs Nitin's live test.
 - **Phase 8:** continuous watching intentionally does not screenshot; OCR runs only for an
   explicit screen read/click request.
 - The prompt now exposes every registered tool. The static prefix is cached once, but the
@@ -801,11 +850,11 @@ pgrep -af atspi_helper.py
 
 ## 12. How to resume in a new session
 
-1. Read this file, then `docs/PROGRESS.md` (top section), then
+1. Read this file, then `docs/PROGRESS.md` (top section), then `docs/LEFT_WORK.md`, then
    `docs/ULTRON_LOCAL_HANDOFF.md`, then `AGENTS.md`.
-2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 8:
-   `phase8-eyes-hands-ears` (created from `phase7-llm-brain-wayland` @ `242a57f`).
-3. `.venv/bin/python -m pytest -q` and compare with §7 (**537 passed** expected).
+2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 9:
+   `phase9-fedora45-ultron-env` (created from `phase8-eyes-hands-ears` @ `4d29e58`).
+3. `.venv/bin/python -m pytest -q` and compare with §7 (**547 passed** expected).
 4. Read the current phase section in `docs/PROGRESS.md`; continue from its **NEXT STEP**.
 5. Do one part at a time. Update this file and `docs/PROGRESS.md` before/after each part.
    Commit locally by file name only. Never push, never commit secrets.
@@ -839,3 +888,10 @@ pgrep -af atspi_helper.py
   no window. Fixed `close_app` for the 15-character Linux `comm` truncation and for the
   DEVNULL `flatpak ps` capture (failures #27–#28). Three new tests; full suite **540 passed**;
   benchmark **25/25** at 1.480 ms (mocked).
+- **2026-11-06 (Phase 9):** Fedora 45 + GNOME 51.1 repair. Rebuilt `.venv` on user-space
+  Python 3.14.9 because 3.15 has no onnxruntime/av wheels; made google-genai fully lazy
+  (neutral tool declarations, lazy `types` proxy); fixed the real Hermes desktop app; raised
+  the listening window to 60 s / 2.6 s / 1.8 s; removed canned chat replies; dynamic
+  `os_release_name()` banner. Live evidence: llama-server 2.5 s / 0.389 s with 1606 MiB GPU,
+  small.en 1.41 s load, Piper 0.18 s synth, AT-SPI 75 nodes / 11 elements, GNOME
+  introspection still denied, 547 tests, benchmark 25/25 at 2.802 ms. Gate 2 not started.

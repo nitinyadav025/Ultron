@@ -818,7 +818,8 @@ def test_wake_phonetic_repairs_for_screen_commands() -> None:
     assert normalise_spoken_command("expand the show more") == "click show more"
     assert normalise_spoken_command("open loot risk") == "open lutris"
     assert normalise_spoken_command("open loo tris") == "open lutris"
-    assert normalise_spoken_command("open hermes") == "open lutris"
+    # Hermes is a real desktop app on this machine; it must never become Lutris.
+    assert normalise_spoken_command("open hermes") == "open hermes"
     assert normalise_spoken_command("take a screen shot") == "take screenshot"
     assert normalise_spoken_command("dis cord") == "discord"
     assert normalise_spoken_command("right") == "write it"

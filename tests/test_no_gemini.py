@@ -58,7 +58,11 @@ class FakeMouth:
 def test_local_backend_builds_only_the_local_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import google.genai as genai
 
-    monkeypatch.setattr(brain, "GeminiAdapter", _boom)
+    import assistant.brain.gemini_client as gemini_client
+
+    # The adapter is imported lazily now; patching the real module still proves that a local
+    # build never constructs it.
+    monkeypatch.setattr(gemini_client, "GeminiAdapter", _boom)
     monkeypatch.setattr(genai, "Client", _boom)
     cfg = _local_cfg(tmp_path)
     adapter = brain.build_adapter(cfg)
