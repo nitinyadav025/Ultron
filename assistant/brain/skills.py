@@ -189,6 +189,43 @@ def save_user_alias(config: AssistantConfig | None, alias: str, target: str) -> 
     return cleaned_alias, cleaned_target
 
 
+def delete_user_fact(config: AssistantConfig | None, key: str) -> bool:
+    """Remove a taught fact; return True when it existed."""
+    cleaned = memory_key(key)
+    memory = load_user_memory(config)
+    if cleaned not in memory["facts"]:
+        return False
+    del memory["facts"][cleaned]
+    save_user_memory(config, memory)
+    return True
+
+
+def delete_user_alias(config: AssistantConfig | None, alias: str) -> bool:
+    """Remove a taught spoken alias; return True when it existed."""
+    cleaned = normalise(alias)
+    memory = load_user_memory(config)
+    if cleaned not in memory["aliases"]:
+        return False
+    del memory["aliases"][cleaned]
+    save_user_memory(config, memory)
+    return True
+
+
+def delete_user_skill(config: AssistantConfig | None, trigger: str) -> bool:
+    """Remove a user-taught workflow (the shipped config skills are read-only)."""
+    cfg = _config(config)
+    path = Path(cfg.user_skills_file)
+    existing = {
+        normalise(skill.trigger): skill for skill in _read_skill_file(path, "user")
+    }
+    key = normalise(trigger)
+    if key not in existing:
+        return False
+    del existing[key]
+    _write_skill_file(path, existing.values())
+    return True
+
+
 def runtime_alias(name: str, config: AssistantConfig | None = None) -> str:
     """Resolve a user-taught spoken alias (empty string when there is no match)."""
     cleaned = normalise(name)

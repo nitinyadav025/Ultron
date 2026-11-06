@@ -1,266 +1,320 @@
-# LEFT WORK — Phase 9 (Fedora 45 + ULTRON repair), live checkpoint
+# LEFT WORK — Gate 2A (Standalone Environment) + Gate 2B (Dashboard handoff)
 
-> Started: 2026-11-06. Branch: `phase9-fedora45-ultron-env` (from `phase8-eyes-hands-ears`
-> @ `4d29e58`). Nothing pushed. Stage files by exact filename only.
+> Started: 2026-11-06. Branch: `phase9-fedora45-ultron-env` (Gate 1 commits `0bf9d43`,
+> `e2c74db`). Nothing pushed. Stage files by exact filename only.
 >
-> Machine (verified this session):
-> `Fedora release 45 (Forty Five)`, `GNOME Shell 51.1`, `session=wayland`,
-> kernel `7.2.15-300.fc45.x86_64`, folder `/home/nitinyadav/Downloads/ULTRON`.
+> Machine: Fedora Linux 45, GNOME 51.1, Wayland, Python 3.14.9 in `.venv`, GTX 1650 4 GB.
+> Gate 1 state: **547 tests passed**, benchmark **25/25**, doctor all PASS.
 
-## Gate 1 — Fedora 45 & ULTRON repair + verification (CURRENT)
+## Gate 2A — Ultron standalone living environment (CURRENT)
 
-| Step | Task | Status |
+| Part | Task | Status |
 |---|---|---|
-| 1 | Clear/init this file, create `phase9-fedora45-ultron-env` | DONE |
-| 2 | Fix `.venv` after folder rename + Fedora 45 (system Python 3.14 → 3.15) | IN PROGRESS |
-| 3 | Lazy `google.genai` import; remove `"hermes" → "lutris"`; listening cutoff (60 s / 2600 ms / 1800 ms) | PENDING |
-| 4 | Fedora 45 + GNOME 51.1 compatibility audit (GPU/llama-server, ears, Piper/PipeWire, AT-SPI, ydotool) | PENDING |
-| 5 | `doctor`, full `pytest`, `benchmark` 25/25, `chat`/`listen` smoke | PENDING |
-| 6 | Docs + local commit + zero leftover processes | PENDING |
-| 7 | STOP, print Nitin's manual verification commands | PENDING |
+| 1 | Clear this file; build `assistant/environment/` with thread-safe `EnvironmentState` | DONE |
+| 2 | Real-time voice controller, barge-in `mouth.stop_speaking()`, true LLM brain replies, 16-turn history | DONE |
+| 3 | Brave/Firefox browser bridge extension + `browser_tabs` tools with AT-SPI/ydotool fallback | DONE |
+| 4 | HTTP + SSE environment server on `127.0.0.1:9932` (REST, CORS, config, apps, tabs, skills) | DONE |
+| 5 | Standalone launcher, `main.py environment`, App Grid `.desktop` icon | DONE |
+| 6 | `docs/DASHBOARD_API_CONTRACT.md` for the Gate 2B UI agent | DONE |
+| 7 | Full pytest + benchmark + doctor + live `--headless` smoke + commit + process cleanup | DONE |
 
-## Gate 2 — Standalone Living Environment (AFTER Nitin's manual test)
+## Gate 2B — Liquid Glass V18 Dashboard handoff (AFTER Gate 2A)
 
-- SQLite memory engine at `~/.local/share/ultron/memory.db`.
-- Standalone living environment + Dashboard API server.
-- Not started by design; wait for the explicit go-ahead.
+- [ ] UI specialist reads `docs/DASHBOARD_API_CONTRACT.md` and `assistant/environment/server.py`.
+- [ ] Builds the Apple visionOS Liquid Glass V18 dashboard in `assistant/dashboard/dist/`
+      (served by the environment server at `http://127.0.0.1:9932/`).
+- [ ] Uses `GET /api/state` + `GET /api/stream` for live state, and the documented REST
+      actions for voice/config/apps/tabs/skills.
+- [ ] Verify from the same repo against the running environment server; no new Python deps.
+- [ ] Gate 2B is NOT started by this agent; Gate 2A must finish and pass first.
 
 ---
 
-## Checkpoint 1 — init (2026-11-06)
+## Checkpoint 1 — environment state (2026-11-06)
 
-- Existing left-work material found: `left-work-phase8/` (README, SESSION_STATE,
-  ORIGINAL_PROMPT). No `LEFT_WORK.md` existed in root or `docs/`; this file is new.
-- `git checkout -b phase9-fedora45-ultron-env` → branch active.
-- Baseline docs read: `docs/ULTRON_PROJECT_BIBLE.md`, `docs/PROGRESS.md` (Phase 8 top),
-  `docs/ULTRON_LOCAL_HANDOFF.md`, `left-work-phase8/*`.
-- Phase 8 end state: 540 passed, benchmark 25/25 @ 1.480 ms (mocked), branch
-  `phase8-eyes-hands-ears`, HEAD `4d29e58`, clean tree.
+### Files
+- `assistant/environment/__init__.py` — exports `EnvironmentState`, `environment_state`,
+  `get_state`.
+- `assistant/environment/state.py` — thread-safe singleton, stdlib only.
 
-## Checkpoint 2 — venv diagnosis (facts, verified)
+### State contract (implemented)
+- `status` (`starting|online|listening|transcribing|thinking|speaking|muted|error`).
+- `voice_mode` (`wake_word|continuous|ptt`, default `wake_word`).
+- `mic_muted`, `tts_muted`, `audio_level_rms`, `audio_peak`.
+- `current_transcript`, `current_thought`, `current_action`
+  (`{tool, args, status, timestamp}`), `next_planned_steps`, `last_reply`.
+- `conversation_feed`: deque(maxlen=50), each turn
+  `{id, timestamp, role, text, tools_called, latency_ms, source}`.
+- `screen_state`: `focused_window`, `focused_app`, `active_site`, `open_windows`,
+  `visible_elements`, `browser_tabs`; plus top-level `browser_tabs`.
+- `telemetry`: `gpu_vram_used_mb`, `gpu_vram_total_mb` (4096), `gpu_util_pct`, `cpu_pct`,
+  `ram_used_mb`, `llama_server_alive`, `p50_ms`, `p95_ms`, `latency_series`
+  (deque maxlen=30, `{ts, transcribe_ms, llm_ms, tool_ms, total_ms}`).
+- `live_config` persisted atomically to `workspace/ultron_environment_config.json`:
+  `assistant_name=Ultron`, `user_name=Nitin`, `personality_prompt=""`,
+  `reply_style=natural`, `brain_replies=True`, `voice_silence_ms=2600`,
+  `voice_max_seconds=60.0`, `listen_early_check_ms=1800`, `listen_followup_s=8.0`,
+  `mic_source_volume=0.21`, `search_engine=google`, `permission_mode=auto-safe`.
+- Change notification: monotonic `revision` + `Condition`; SSE can wake immediately via
+  `wait_for_change(last_revision, timeout)`.
+- `snapshot()` deep-copies every field for the HTTP API.
 
-`/usr/bin/python3 --version` → **Python 3.15.0** (Fedora 45 upgrade).
-`.venv/bin/python --version` → **Python 3.15.0** (it follows `python3 -> /usr/bin/python3`).
-`/usr/bin/python3.14` → **does not exist** (only `/usr/bin/python3.15`).
-`.venv/pyvenv.cfg` → `version = 3.14.8`, `executable = /usr/bin/python3.14`,
-`command = ... venv /home/nitinyadav/Downloads/**assistant-project**/.venv`.
-`.venv/lib/` → only `python3.14/` (114 packages, cp314 ABI `.so` files).
-`.venv/bin/*` shebangs → `/home/nitinyadav/Downloads/assistant-project/.venv/bin/python3`
-(old folder name; does not exist).
-
-Root cause: (a) Fedora 45 removed Python 3.14, so the venv's base interpreter is gone and
-`python3 -> /usr/bin/python3` now resolves to 3.15; (b) site-packages live under
-`lib/python3.14`, which 3.15 never reads; (c) script shebangs point at the old folder.
-
-Why not just rebuild on 3.15: PyPI has **no cp315 wheel** for `onnxruntime` 1.31.1 or
-`av` 19.0.2 (`curl` PyPI JSON: `py315 wheels: NONE`), and Piper/faster-whisper need both.
-
-Fix applied (user-space, no sudo):
-1. `uv python install 3.14` → CPython **3.14.9** at `~/.local/bin/python3.14` (uv already
-   installed; cpython 3.10/3.11 were pre-existing).
-2. Archived the broken venv to `.backups/venv-py314-20261106/` (git-ignored).
-3. `/home/nitinyadav/.local/bin/python3.14 -m venv .venv` (new `pyvenv.cfg`:
-   `home = /home/nitinyadav/.local/bin`, `version = 3.14.9`).
-4. Installed pinned versions matching the last known-good venv:
-   `google-genai==2.34.0`, `python-dotenv==1.2.4`, `PyYAML==6.0.3`, `psutil==7.2.2`,
-   `send2trash==2.1.0`, `pytest==9.2.0`, `faster-whisper==1.2.1`, `piper-tts==1.8.0`,
-   `numpy==2.5.4`, `httpx==0.28.1` (+ resolved deps: ctranslate2 4.8.5, av 19.0.2,
-   onnxruntime 1.31.1, tokenizers 0.23.3, huggingface-hub 2.4.0, pydantic 2.14.3).
-
-Verified:
+### Verification
 ```
-.venv/bin/python --version  → Python 3.14.9
-.venv/bin/python -c "import faster_whisper, numpy, yaml, requests, pytest" → VENV_OK
-.venv/bin/python -c "import ctranslate2, av, onnxruntime, piper, google.genai, httpx, psutil"
-  → FULL_OK 4.8.5 1.31.1
-.venv/bin/python -m pip check → No broken requirements found.
-head -1 .venv/bin/pytest → #!/home/nitinyadav/Downloads/ULTRON/.venv/bin/python
-head -1 .venv/bin/pip    → #!/home/nitinyadav/Downloads/ULTRON/.venv/bin/python
+.venv/bin/python - <<'PY' ... EnvironmentState ... PY
+→ STATE_OK 12 3000
 ```
-No hardcoded `assistant-project` reference exists in `assistant/`, `scripts/`, `tests/`,
-`config/`, or `main.py` (grep count 0). Remaining hits are historical docs/README text.
+The smoke test covered status/mode/transcript/thought/action/turn/latency/screen updates,
+config persistence (`assistant_name=Jarvis`, `voice_silence_ms=3000`), and rejection of an
+unknown config key.
 
-Doc/path updates: `AGENTS.md` (Fedora 45, `~/Downloads/ULTRON`, Python 3.14.9 venv rule),
-`README.md` (rewritten quick start for Fedora 45 + uv Python 3.14), `requirements.txt`
-(added faster-whisper / piper-tts / numpy / httpx + Python 3.14 note),
-`docs/PROGRESS.md` actionable "Run from" paths → `~/Downloads/ULTRON`.
+## Checkpoint 2 — voice, barge-in and true LLM replies (2026-11-06)
 
-## Checkpoint 3 — lazy Gemini, Hermes, listening (done)
+### Files
+- `assistant/speech/mouth.py` — adds `_active_player`, `adopt_player`, `release_player`,
+  `play_wav_bytes`, `speak`, `is_speaking`, and `stop_speaking()`.
+- `assistant/interfaces/voice.py` — `_play_wav_file` adopts/releases its `pw-play` process
+  with the mouth; `VoiceController.stop_speaking()` also calls `mouth.stop_speaking()`.
+- `assistant/environment/voice_controller.py` — new managed daemon thread.
+- `assistant/brain/agent_loop.py` — live thought/action hooks, true-LLM final replies,
+  llama-server fallback, 16-turn / 32-message history.
+- `assistant/brain/prompts.py` — persona/user/reply-style support (empty defaults keep the
+  old byte-identical static prompt).
+- Tests pinned to the deterministic mode where they test code replies:
+  `tests/test_agent_rounds.py` (autouse `brain_replies=False` fixture, pure-chat prompt
+  bound 360), `tests/test_phase7_brain_wayland.py` (write test pins False).
 
-### 3.1 Lazy `google.genai`
-- New `assistant/genai_types.py`: a lazy `types` proxy; the SDK is imported on first
-  attribute access, never at module import.
-- `assistant/brain/__init__.py`: `GeminiAdapter`/`LocalAdapter` imported only inside
-  `build_adapter()`, based on `config.backend`.
-- `assistant/brain/gemini_client.py`: removed top-level `from google import genai` and
-  `from google.genai import errors`; `genai.Client` is imported inside the `client`
-  property, `errors` inside `generate_turn` before the retry loop.
-- `assistant/tools/registry.py`: replaced google-genai declarations with neutral
-  `ToolParameter` / `ToolDeclaration` dataclasses built from stdlib `inspect`; `get_gemini_tools()`
-  converts them lazily, `get_openai_tools()` never imports google.
-- Replaced top-level type imports in `assistant/brain/local_client.py`,
-  `assistant/brain/agent_loop.py`, `assistant/interfaces/voice.py` with the lazy proxy.
-- Verified: `sys.modules['google']=None; import main; import assistant.brain;
-  import assistant.brain.gemini_client` → **LAZY_IMPORT_OK**.
+### Barge-in
+`PiperMouth.stop_speaking()` sets a stop event, `terminate()`s the tracked player, waits
+20 ms, then `kill()`s if needed, and publishes `status=online`, RMS/peak 0. `speak()`
+checks the stop event between sentences. `play_wav_bytes()` publishes `speaking` and the
+synthesized sentence envelope (RMS/peak) to the shared state.
 
-### 3.2 Hermes
-- Live scan found a real app: `~/.local/share/applications/com.nousresearch.hermes.desktop`
-  and `hermes.desktop`, `Name=Hermes`, `Exec=/home/nitinyadav/.local/bin/hermes desktop
-  --skip-build`; binaries `~/.local/bin/hermes`, `hermes-agent`, `hermes-acp`.
-- Removed `"hermes": "lutris"` from `APP_ALIASES` (`assistant/tools/apps.py`).
-- Removed `hermes` from the Lutris regex in `assistant/speech/wake.py`.
-- Added `hermes` to `APP_DISPLAY`, `CLOSE_EXECUTABLES`, and `config/apps.yaml`
-  (`desktop_id: com.nousresearch.hermes.desktop`, `binary: hermes`).
-- Verified live resolution: `app_key('hermes')='hermes'`, `find_app('hermes')` →
-  `Hermes | com.nousresearch.hermes.desktop | /home/nitinyadav/.local/share/applications/com.nousresearch.hermes.desktop`,
-  `match_fast_command('open hermes')` → `open_app({"app_name": "hermes"})`.
-- Tests updated: `tests/test_phase7_brain_wayland.py`, `tests/test_phase8_eyes_hands_ears.py`.
+### Voice modes
+- `wake_word`: prefix `wake_match`; `wake_match_anywhere` only when it yields a non-empty
+  command; wake-only says "Yes?" and opens `listen_followup_s` (8.0 s).
+- `continuous`: every reliable utterance; only a wake spelling at the *start* is stripped
+  (`_without_leading_wake`), so "hello Ultron" is not emptied by a fuzzy 2-word match.
+- `ptt`: `start_ptt()` buffers raw frames, `stop_ptt()` transcribes immediately; the
+  detector/silence timeout is not used.
+- Live mic levels are published every 2 frames (40 ms); muted frames are skipped.
+- Empty/noise/guard-rejected transcripts are ignored via `has_real_word` +
+  `WhisperEars.last_confidence["verdict"]` (the same `transcript_is_unreliable` guard).
 
-### 3.3 Listening / conversational replies
-- `assistant/config.py`: `voice_max_seconds` 12.0 → **60.0**, `voice_silence_ms`
-  1350 → **2600**, `listen_early_check_ms` 850 → **1800** (dataclass + loader).
-- `assistant/speech/recorder.py`: `DEFAULT_MAX_SECONDS` 12.0 → **60.0**.
-- `assistant/interfaces/listen.py`: detector defaults + `getattr` fallbacks + docstring.
-- `assistant/interfaces/voice.py`: fallbacks 2600 / 60.0.
-- `.env.example`: `VOICE_SILENCE_MS=2600`, `VOICE_MAX_SECONDS=60`,
-  `LISTEN_EARLY_CHECK_MS=1800` + comments. **`.env` does not set these keys** (verified by
-  grep), so the new defaults apply; no secret was read or printed.
-- Removed the `CHAT_REPLIES` canned-answer map and its routing from
-  `assistant/brain/fast_path.py`: greetings / identity / small talk now fall through to
-  the local LLM. Action clarifications ("What should I write?") stay deterministic.
-- `tests/test_config_defaults.py` updated; `tests/test_b5_full_control.py` now asserts
-  conversational turns return `None` (LLM).
-- New `tests/test_phase9_fedora45_repair.py` (9 tests).
-- Measured: `pytest tests/test_phase9_fedora45_repair.py tests/test_config_defaults.py
-  tests/test_b5_full_control.py tests/test_phase7_brain_wayland.py -q` → **92 passed**.
+### True LLM replies
+- `AgentLoop._brain_replies_enabled()` reads `EnvironmentState.live_config`.
+- When True, the deterministic early return and `_finalize_reply` code override are
+  skipped, so the LLM answers from the real tool result. If `generate_turn` raises
+  (llama-server unreachable), the loop falls back to `tool_replies.py`.
+- History cap: `HISTORY_MAX_MESSAGES=32`, `HISTORY_MAX_TURNS=16`; pure chat sends the full
+  capped history; tool JSON is still pruned to text.
+- Thought/action updates: `Thinking about: …`, `Running <tool>…`, `Finished <tool>.`,
+  `current_action={tool,args,status,timestamp}`.
 
-## Checkpoint 4 — Fedora 45 / GNOME 51.1 compatibility audit (live, verified)
+### Verification
+```
+pytest tests/test_agent_rounds.py tests/test_phase7_brain_wayland.py \
+       tests/test_phase9_fedora45_repair.py tests/test_mouth.py tests/test_no_gemini.py
+→ 93 passed
+```
+Voice smoke (fake ears/mouth/brain, temp state): continuous "hello Ultron" → brain called
+with the full phrase, assistant turn + latency stored, mouth said the reply; wake mode
+ignored "random chatter"; `_without_leading_wake("Ultron open firefox")` → "open firefox".
 
-| Check | Command / probe | Result |
-|---|---|---|
-| OS | `cat /etc/fedora-release` | **Fedora release 45 (Forty Five)** |
-| GNOME | `gnome-shell --version` | **GNOME Shell 51.1** |
-| Session | `$XDG_SESSION_TYPE $WAYLAND_DISPLAY` | **wayland wayland-0** |
-| Kernel | `uname -r` | `7.2.15-300.fc45.x86_64` |
-| GPU | `nvidia-smi` | GTX 1650, 4096 MiB, driver 615.78.08, idle 4 MiB before test |
-| llama-server start | `LlamaServerManager.ensure_running()` | **ready in 2.5 s**, health 200 |
-| llama completion | `POST /v1/chat/completions` (`id_slot:0`, `cache_prompt:true`) | call 1 **0.389 s**, call 2 **0.289 s**, reply `ULTRON_FEDORA45_OK`, 38 prompt / 9 completion tokens |
-| GPU offload | `nvidia-smi --query-compute-apps` while running | **llama-server, 1606 MiB** on GPU; GPU 1612/4096 MiB, 16 % |
-| Server cleanup | `mgr.close()`; `ss -ltnp \| grep 9931`; `pgrep -a llama-server` | port free, no process |
-| Ears | `WhisperEars.load()` + 1 s float32 array | small.en load **1.41 s**, transcribe **0.10 s**, `ok=False` → “I didn't hear anything.” (correct for silence) |
-| Mouth | `PiperMouth.load()` + `synthesize_pcm()` | en_US-lessac-medium load **1.79 s**, synth **0.18 s**, **122 144 bytes @ 22 050 Hz** |
-| PipeWire | `pw-record --version`, `pw-play --version`, `wpctl status` | tools present; PipeWire 1.6.11 running |
-| GNOME introspect key | `gsettings get/set org.gnome.shell introspect` | **No such key “introspect”** (GNOME 51.1 still lacks it) |
-| GetWindows | `gdbus … org.gnome.Shell.Introspect.GetWindows` | **AccessDenied: GetWindows is not allowed** |
-| toolkit-accessibility | `gsettings set/get org.gnome.desktop.interface toolkit-accessibility` | **true** |
-| AT-SPI runtime | `/usr/bin/python3` import `gi`/`Atspi`/`pyatspi` | **Atspi OK**, **pyatspi OK** |
-| AT-SPI helper | `{"cmd":"ping"}` + `{"cmd":"snapshot"}` on real ptyxis window | ping OK; **75 nodes / 11 elements**, real bounds, actions (`@e1` New Terminal … `@e11` Close Tab) |
-| Screen context | `ensure_accessibility()` + `refresh_screen_context()` | `{'toolkit_accessibility': True, 'introspect': False}`; windows `['Brave','Google Chrome','Visual Studio Code']`, `focused_window='Brave'` (wmctrl/process fallback — honest) |
-| `/dev/uinput` | `ls -l`, `getfacl` | `crw-rw----+`, ACL **user:nitinyadav:rw-** |
-| wl-clipboard | `wl-copy` + `wl-paste` roundtrip | **wl-clipboard 2.3.0**, roundtrip exact |
-| ydotoold | `timeout 2 ydotoold --socket-path=/tmp/.ultron_test_ydotool.sock` | socket created as this user; process gone after timeout; **warning `unable to find device pointer:ydotoold virtual device` on GNOME 51.1** (XWayland xinput cannot see the uinput device; live key injection remains UNVERIFIED) |
-| Leftover daemons | `pgrep -a ydotoold` | none |
+## Checkpoint 3 — browser bridge (2026-11-06)
 
-GNOME 51.1 behaves exactly like GNOME 50.5 for introspection: the key is gone and
-`GetWindows` is denied, so the Phase 8 AT-SPI path remains the real eye. No code change was
-needed for that; `ensure_accessibility()` already reports `introspect: false`.
+### Files
+- `assistant/environment/browser_bridge.py` — `BrowserBridgeHub`:
+  thread-safe tab registry + DOM cache + command queue; `sync`, `poll`, `list_tabs`,
+  `find_tab`, `read_tab`, `switch_tab`, `interact`, `record_result`, `connected`.
+  Tab discovery merges extension data + CDP `127.0.0.1:9222/json` + `wmctrl -l`.
+- `assistant/tools/browser_tabs.py` — three registered tools:
+  - `list_browser_tabs()` → `{ok, count, tabs, bridge_connected}`.
+  - `switch_to_tab(query)` → extension switch, else `wmctrl -a`, else AT-SPI
+    `click_element(query)`.
+  - `interact_with_tab(tab_query, action, target="", text="")` → read / click / type /
+    send through the extension; when the bridge is absent it falls back to
+    `read_screen`, `click_element`, `focus_and_type` + `press_key("enter")`.
+- `extensions/ultron-browser-bridge/`:
+  - `manifest.json` (MV3 for Brave/Chrome), `manifest.firefox.json` (MV2 for Firefox
+    `about:debugging`), `background.js`, `content.js`, `README.md`.
+  - `background.js` polls `POST /api/browser/sync` every 800 ms, sends all http(s) tabs and
+    the active DOM snapshot, executes `switch_tab`, `close_tab`, `open_url`, `click_dom`,
+    `type_dom`, `read_dom`, `scroll_dom`, and returns results on the next sync.
+  - `content.js` assigns `@b1…@bN` refs to visible interactive elements, extracts
+    WhatsApp (chat list/unread/latest messages), Gemini/Claude/ChatGPT (New chat, prompt,
+    Send, latest answer), YouTube (search, video cards, Show more, play/pause) and Gmail
+    (unread rows, Compose); handles clicks and React/contenteditable typing via
+    `execCommand('insertText')` + `InputEvent`, then Enter/Send.
+  - Registered `list_browser_tabs`, `switch_to_tab`, `interact_with_tab` in the CLI, GUI
+    and hands-free registries.
+- Extension loading is manual (Brave `brave://extensions` → Developer mode → Load
+  unpacked; Firefox `about:debugging` → Load Temporary Add-on → `manifest.firefox.json`).
 
-## Checkpoint 5 — doctor, full suite, benchmark, smoke (verified)
+### Verification
+```
+node --check background.js && node --check content.js     → JS_SYNTAX_OK
+json.load(manifest.json / manifest.firefox.json)          → MANIFEST_OK
+Python hub smoke: sync 2 tabs + WhatsApp DOM, find/read/switch/click, poll actions
+→ actions: [('switch_tab', 12, ''), ('click_dom', 12, 'New chat')] ; BRIDGE_OK
+```
+Live extension-to-server sync is verified in Part 7 against the running environment
+server; actual DOM clicks are still hardware/browser-dependent (UNVERIFIED until Nitin
+loads the extension).
 
-| Check | Command | Result |
-|---|---|---|
-| Doctor | `.venv/bin/python main.py doctor` | **all PASS**; `Backend=local`, llama binary/model, small.en, Piper; exit 0 |
-| Full suite | `.venv/bin/python -m pytest -q` | **547 passed, 0 failed, 0 errors** (76.54 s; first run after the fixes was 544/547 with 3 expected regressions, all fixed) |
-| Benchmark | `.venv/bin/python main.py benchmark` | **25/25 passed**, average **2.802 ms** (mocked) |
-| Chat smoke | `printf 'hello\n/quit\n' \| .venv/bin/python main.py chat` | server ready 1.5 s; banner `Ultron ready on Fedora Linux 45.`; real LLM reply `Hey there!`; exit 0; port free afterwards |
-| Listen help | `.venv/bin/python main.py listen --help` | exit 0, full usage printed |
-| Compile | `.venv/bin/python -m compileall -q assistant main.py scripts tests/test_phase9_fedora45_repair.py` | **COMPILE_OK** |
-| Whitespace | `git diff --check` | **DIFF_CHECK_OK** |
+## Checkpoint 4 — environment HTTP/SSE server (2026-11-06)
 
-Three test regressions surfaced and were fixed honestly:
-1. `tests/test_listen_reader.py` — the reader test now pins `voice_silence_ms = 1350` (it
-   tests buffering, not the new 2.6 s paragraph window).
-2. `tests/test_no_gemini.py` — patches `assistant.brain.gemini_client.GeminiAdapter`
-   (the adapter is lazy now, so it no longer exists on `assistant.brain` at module scope).
-3. `scripts/benchmark_phase5c.py` — the `hello` case now runs `mode="chat"` through the real
-   AgentLoop and expects a one-sentence natural reply (`short_plain_reply` keeps only the
-   first sentence).
+### File
+- `assistant/environment/server.py` — stdlib `ThreadingHTTPServer` on
+  `127.0.0.1:9932` (`ULTRON_ENV_PORT` override). CORS `*`, JSON errors, 1 MB body cap.
+- Routes: `/api/health`, `/api/state`, `/api/stream` (SSE), `/api/command`,
+  `/api/voice/control`, `GET/POST /api/config`, `/api/apps`, `/api/apps/action`,
+  `/api/tabs`, `/api/tabs/action`, `POST /api/browser/sync`, `GET /api/browser/poll`,
+  `POST /api/browser/result`, `GET/POST/DELETE /api/skills`, `/` + static dashboard.
+- `assistant/brain/skills.py` — added `delete_user_fact`, `delete_user_alias`,
+  `delete_user_skill` for the skills API.
+- Static serving prefers `assistant/dashboard/dist/` then `assistant/dashboard/static/`;
+  until Gate 2B builds them, `/` returns a 200 readiness page.
 
-Cosmetic Fedora 45 fix: `assistant/os_release_name()` (stdlib `platform.freedesktop_os_release()`)
-replaces the hardcoded “Fedora 44” in the CLI banner and GUI title; `main.py --help` now says
-“Ultron — Fedora local voice assistant”. Verified live: `Ultron ready on Fedora Linux 45.`
+### Verification (ephemeral port smoke)
+```
+EnvironmentServer(port=0).start() → http://127.0.0.1:44103
+GET /api/health  → 200 {"ok":true,"version":"phase9-env",...}
+GET /api/state   → 200 full snapshot
+POST /api/command {"text":"hello","speak":false}
+                 → 200 {"reply":"Echo: hello","tools_called":["demo"]}
+POST /api/voice/control {"action":"barge_in","mode":"continuous"} → 200
+POST /api/config {"assistant_name":"Jarvis"} → persisted in RAM/temp file
+POST /api/browser/sync → tab_count 1
+GET /api/skills → ok
+GET /api/stream → `retry: 1000`, `id: 14`, `event: state`, `data: {...}`
+SERVER_OK
+```
+Fixed during the live run: `port_is_open()` takes `(host, port)`, so health/telemetry now
+report the real llama-server state instead of always `false`.
 
-## Checkpoint 6 — commit and zero leftovers
+## Checkpoint 5 — standalone launcher (2026-11-06)
 
-- Gate 1 commit: **`0bf9d43`** — “P9: Fedora 45 repair — Python 3.14 venv, lazy
-  google-genai, Hermes, listening” (33 files, +791/−155) on
-  `phase9-fedora45-ultron-env`.
-- Staged by exact filename; **`.env` never staged**; `models/`, `workspace/`, `logs/`,
-  `.backups/`, `.venv/` untouched.
-- Leftover processes checked after the live tests:
-  `ss -ltnp | grep 9931` → **empty**; `pgrep -a llama-server` → **none**;
-  `pgrep -a ydotoold` → **none**; `pgrep -af atspi_helper.py` → **none**;
-  `pgrep -a agent-desktop` → **none**.
-- `git status --short` → **clean** after the commit.
-- Nothing pushed; `origin` untouched.
+### Files
+- `assistant/environment/launcher.py` — `EnvironmentLauncher` + `TelemetryCollector` +
+  `run_environment()`.
+  Start order: registry (28 tools incl. browser tabs/skills) → permissions/adapter/AgentLoop
+  → llama-server → ydotool → accessibility → ScreenWatcher → PiperMouth/WhisperEars →
+  EnvironmentVoiceController → telemetry (2 s) → HTTP server → chromeless Dashboard window.
+  Stop: voice → screen watcher → ydotool → telemetry → server → llama-server → dashboard
+  window; state returns to `online`.
+- `main.py` — `environment` / `app` / `start` commands, `--headless`, `--port`.
+- `scripts/ultron-launch.sh` (executable) — `exec .venv/bin/python main.py environment`.
+- `~/.local/share/applications/ultron.desktop` — installed, `Terminal=false`,
+  `Exec=/home/nitinyadav/Downloads/ULTRON/scripts/ultron-launch.sh`.
 
-## Step 7 — STOP: Nitin's manual Fedora 45 verification
+### Live headless smoke (actually run)
+```
+.venv/bin/python main.py environment --headless --port 19932
+GET /api/health → {"ok":true,"version":"phase9-env","voice_status":"listening"}
+GET /api/state  → voice_mode=wake_word, GPU 1612/4096 MiB, CPU 11 %, RAM 9067 MB
+POST /api/command {"text":"what is your name?","speak":false}
+ → {"reply":"I'm Ultron, your calm and helpful Fedora GNOME voice assistant.",
+    "tools_called":[],"latency_ms":1739.69}
+SIGTERM → clean stop; no environment process, no llama-server, no ydotoold,
+          no pw-record, no AT-SPI helper, ports 19932/9931 free.
+```
+The real LLM path is confirmed through the API (1.74 s first reply on this machine).
+`--headless` still starts the voice controller; the smoke briefly opens `pw-record` and
+closes it on SIGTERM. Dashboard windows are only opened without `--headless`.
 
-Run these from `/home/nitinyadav/Downloads/ULTRON`. The coding agent cannot use the
-microphone, speakers, or inject real keys/clicks.
+## Checkpoint 6 — Dashboard API contract (2026-11-06)
+
+- `docs/DASHBOARD_API_CONTRACT.md` written for the Gate 2B UI agent. It documents:
+  - frontend location (`assistant/dashboard/dist/`, fallback `static/`) and relative-asset
+    rule;
+  - start/preview commands (`main.py environment`, `--headless`, `--port`);
+  - exact JSON for `GET /api/health`, `GET /api/state`, `GET /api/stream` (SSE
+    `event: state`, `id: <revision>`), `POST /api/command`, `POST /api/voice/control`,
+    `GET/POST /api/config` (all keys/defaults/ranges), `GET /api/apps` +
+    `POST /api/apps/action`, `GET /api/tabs` + `POST /api/tabs/action`,
+    `/api/browser/sync` + `/api/browser/poll`, `GET/POST/DELETE /api/skills`;
+  - CORS, error format, 50-turn feed, 30-point latency ring, 250 ms SSE cadence;
+  - the 1:1 mapping from UI controls (Stop → `barge_in`, mode switch, mute mic/TTS) to
+    API calls, and a warning not to add CDNs if offline purity matters.
+
+## Checkpoint 7 — verification, live smoke, commit (2026-11-06)
+
+### Automated
+- New `tests/test_phase9_environment.py` → **19 passed**. Covers:
+  state defaults/ring buffers/config persistence/change wake-up; live HTTP
+  health/state/SSE/command/voice modes/barge-in/config/apps/app action/browser sync/tabs
+  action/skills round-trip; browser tools list/switch/click/read; `mouth.stop_speaking()`
+  termination; voice continuous/PTT/wake+follow-up; true-LLM confirmation and
+  unreachable-brain fallback; 16-turn history via the updated Phase 6 test.
+- Full suite: **566 passed, 0 failed, 0 errors** (67.02 s).
+- Benchmark: **25/25 passed**, average **2.008 ms** (mocked).
+- `main.py doctor`: all PASS (local backend, small.en, Piper, llama binary/model).
+- `compileall` OK; `git diff --check` clean.
+
+### Live smoke on the real desktop (port 9932, actually run)
+```
+.venv/bin/python main.py environment --headless
+GET /api/health → {"ok":true,"version":"phase9-env","llama_server":true,"voice_status":"listening"}
+GET /api/state  → status=listening, voice_mode=wake_word
+                  focused_window="nitinyadav@Sasuke:~/Downloads/ULTRON",
+                  focused_app="terminal", open_windows=[that window],
+                  visible_elements=11,
+                  telemetry={gpu_vram_used_mb:1612, gpu_vram_total_mb:4096,
+                             gpu_util_pct:0.0, cpu_pct:6.0, ram_used_mb:8946,
+                             llama_server_alive:true, ...}
+GET /api/stream → retry: 1000; id: 371; event: state; data: {...}
+POST /api/command {"text":"what is your name?","speak":false}
+ → {"ok":true,"reply":"I'm Ultron, your calm and helpful Fedora GNOME voice
+    assistant.","tools_called":[],"latency_ms":1419.44}
+POST /api/browser/sync (WhatsApp tab + DOM) → {"ok":true,"tab_count":1}
+GET /api/tabs → count=1, title=WhatsApp, bridge_connected=true
+GET / → 200
+SIGTERM → clean stop
+```
+Cleanup verified after shutdown: no environment process, no `llama-server`, no `ydotoold`,
+no `pw-record`, no `atspi_helper.py`; ports **9932** and **9931** free.
+
+### Commit
+- Code/docs commit hash: **filled in the follow-up docs commit** (this checkpoint is
+  committed after the code commit). Branch `phase9-fedora45-ultron-env`, local only.
+- Staged by exact filename; `.env`, `models/`, `workspace/`, `logs/`, `.backups/`, `.venv/`
+  never staged. Nothing pushed.
+
+## Gate 2B — handoff for the Liquid Glass V18 Dashboard agent
+
+1. Read `docs/DASHBOARD_API_CONTRACT.md` and `assistant/environment/server.py`.
+2. Build the frontend in `assistant/dashboard/dist/` (single-page static bundle; relative
+   assets). Start with `.venv/bin/python main.py environment`.
+3. Use `GET /api/state` once, then `EventSource("/api/stream")`; drive every control through
+   the documented REST actions.
+4. Do not modify the backend unless the contract truly needs it; if so, update the contract,
+   tests and `docs/LEFT_WORK.md` together.
+5. Verify live at `http://127.0.0.1:9932/`, including voice mode switch, Stop/barge-in,
+   memory/skills edits, app launch/focus and browser tabs.
+
+### Nitin's manual check (also after Gate 2B)
 
 ```sh
-cd /home/nitinyadav/Downloads/ULTRON
-git branch --show-current        # expect: phase9-fedora45-ultron-env
-git log --oneline -2             # expect: P9 repair commit (0bf9d43)
-.venv/bin/python --version       # expect: Python 3.14.9
-
-# 1. Static checks
-.venv/bin/python main.py doctor
-.venv/bin/python -m pytest -q    # expect: 547 passed
-.venv/bin/python main.py benchmark   # expect: 25/25
-
-# 2. Typed chat (real local LLM, no canned strings)
-.venv/bin/python main.py chat
-#   type: hello                  -> a natural model answer (live run gave "Hey there!")
-#   type: what is your name      -> a natural model answer, not a fixed string
-#   type: /quit
-
-# 3. Voice: the long-paragraph cutoff test
-.venv/bin/python main.py chat
-#   type: /voice
-#   speak one long paragraph (e.g. GTA V and your friends) WITH natural 1-2 s pauses;
-#   it must not stop mid-paragraph. Then ask a short question and confirm a natural answer.
-#   type: /quit
-
-# 4. Hands-free, Hermes and listening
-.venv/bin/python main.py listen
-#   say: "Ultron, open hermes"        -> Hermes opens, NEVER Lutris
-#   say: "Ultron, open lutris"        -> Lutris still resolves correctly
-#   say: "Ultron, what is on my screen" -> active window/site + visible controls
-#   speak a longer paragraph again     -> no mid-sentence cutoff
-#   say: "Ultron is stop listening"
-
-# 5. Cleanup
-ss -ltnp | grep 9931 || echo "no llama-server"
-pgrep -a llama-server || echo "no llama-server process"
+cd ~/Downloads/ULTRON
+.venv/bin/python main.py environment        # opens a dedicated Dashboard window
+# in another terminal:
+curl -s http://127.0.0.1:9932/api/health
+curl -s http://127.0.0.1:9932/api/state | head -c 600
+# Load the extension once:
+#   Brave: brave://extensions → Developer mode → Load unpacked →
+#          extensions/ultron-browser-bridge/
+#   Firefox: about:debugging → Load Temporary Add-on → manifest.firefox.json
+# Then ask: "Ultron, what tabs are open?" / "switch to WhatsApp" /
+#           "check what messages came in on WhatsApp" / "open a new chat in Gemini"
+# Stop with Ctrl+C, then:
+ss -ltnp | grep -E "9931|9932" || echo "ports free"
+pgrep -a llama-server || echo "no llama-server"
 pgrep -a ydotoold || echo "no ydotoold"
-pgrep -af atspi_helper.py | grep -v pgrep || echo "no AT-SPI helper"
+pgrep -a pw-record || echo "no pw-record"
+pgrep -af atspi_helper.py | grep -v pgrep || echo "no helper"
 ```
 
-Notes for the live pass:
-
-- If an old shell exports `WHISPER_MODEL=base.en`, prefix live commands with
-  `env -u WHISPER_MODEL -u WHISPER_MODEL_DIR`; the current session exports small.en.
-- The first `listen`/`chat` starts llama-server automatically (about 1.5–2.5 s warm).
-- `ydotoold` may print `unable to find device pointer:ydotoold virtual device` on
-  GNOME 51.1. Real key/mouse injection is still **UNVERIFIED**; report whether clicks and
-  typing work.
-- Live clicks, typing, the browser `Ctrl+F` tier, and OCR remain **UNVERIFIED**.
-- If anything fails, keep the tail of `logs/assistant.log` plus the newest
-  `workspace/voice_debug/attempt_*` and report the exact `Fast path` / `Tool call` /
-  `Ears` lines.
-
-**Do NOT start Gate 2** (Standalone Living Environment, `~/.local/share/ultron/memory.db`,
-Dashboard API) until Nitin reports this live pass. The full blueprint is in
-`docs/PROGRESS.md`.
+**UNVERIFIED by this agent:** the real microphone voice loop, the extension's actual DOM
+click/type in Brave/Firefox, and hardware barge-in audio. The code paths are unit-tested and
+the local server was live-smoked; those three need Nitin's desktop.

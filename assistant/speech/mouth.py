@@ -18,6 +18,8 @@ from __future__ import annotations
 import io
 import logging
 import re
+import shutil
+import subprocess
 import threading
 import time
 import wave
@@ -26,7 +28,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from assistant.config import AssistantConfig, clamp_voice_volume
+from assistant.config import WORKSPACE_DIR, AssistantConfig, clamp_voice_volume
 from assistant.safety.redact import redact_secrets
 
 logger = logging.getLogger("ultron.mouth")
@@ -87,6 +89,160 @@ class PiperMouth:
         self._voice: Any = None
         self._voice_factory = voice_factory or _default_voice_factory
         self._load_lock = threading.Lock()
+        # Barge-in: the active pw-play/paplay/aplay process is tracked here so a Dashboard
+        # Stop/Dismiss or a spoken interrupt can kill it immediately (<20 ms target).
+        self._player_lock = threading.Lock()
+        self._active_player: subprocess.Popen[bytes] | None = None
+        self._stop_event = threading.Event()
+        self._speaking = False
+
+    # -- live state --------------------------------------------------------------
+
+    @staticmethod
+    def _state() -> Any:
+        try:
+            from assistant.environment.state import get_state
+
+            return get_state()
+        except Exception:
+            return None
+
+    def _publish(self, *, status: str | None = None, rms: int | None = None, peak: int | None = None) -> None:
+        state = self._state()
+        if state is None:
+            return
+        try:
+            if status:
+                state.set_status(status)
+            if rms is not None and peak is not None:
+                state.set_audio_levels(rms, peak)
+        except Exception:
+            pass
+
+    @property
+    def is_speaking(self) -> bool:
+        with self._player_lock:
+            proc = self._active_player
+        return self._speaking or (proc is not None and proc.poll() is None)
+
+    def adopt_player(self, proc: subprocess.Popen[Any] | None) -> None:
+        """Let the CLI/GUI voice path share its pw-play handle with the barge-in switch."""
+        with self._player_lock:
+            self._active_player = proc  # type: ignore[assignment]
+
+    def release_player(self, proc: subprocess.Popen[Any] | None) -> None:
+        with self._player_lock:
+            if self._active_player is proc:
+                self._active_player = None
+
+    def stop_speaking(self) -> bool:
+        """Terminate the active playback process now; safe to call from any thread."""
+        self._stop_event.set()
+        with self._player_lock:
+            proc = self._active_player
+            self._active_player = None
+        killed = False
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=0.02)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=0.2)
+                except Exception:
+                    pass
+            killed = True
+        self._speaking = False
+        self._publish(status="online", rms=0, peak=0)
+        return killed
+
+    @staticmethod
+    def _player_argv(path: Path) -> list[str]:
+        if shutil.which("pw-play"):
+            return ["pw-play", str(path)]
+        if shutil.which("paplay"):
+            return ["paplay", str(path)]
+        if shutil.which("aplay"):
+            return ["aplay", "-q", str(path)]
+        return []
+
+    @staticmethod
+    def _wav_envelope(wav_bytes: bytes) -> tuple[int, int]:
+        try:
+            with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                raw = wf.readframes(wf.getnframes())
+            samples = np.frombuffer(raw, dtype="<i2")
+            if samples.size == 0:
+                return 0, 0
+            values = samples.astype(np.float64)
+            return int(np.sqrt(np.mean(values * values))), int(np.max(np.abs(samples)))
+        except Exception:
+            return 0, 0
+
+    def play_wav_bytes(self, wav_bytes: bytes, *, filename: str = "voice_output_env.wav") -> tuple[bool, str]:
+        """Play one WAV and track its process for barge-in."""
+        target = Path(WORKSPACE_DIR) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(wav_bytes)
+        argv = self._player_argv(target)
+        if not argv:
+            return False, "No audio player found (install pipewire-utils for pw-play)."
+        self._stop_event.clear()
+        rms, peak = self._wav_envelope(wav_bytes)
+        proc: subprocess.Popen[bytes] | None = None
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            with self._player_lock:
+                self._active_player = proc
+                self._speaking = True
+            self._publish(status="speaking", rms=rms, peak=peak)
+            try:
+                proc.wait(timeout=60.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=1.0)
+            ok = proc.returncode in (0, -15, -9) and not self._stop_event.is_set()
+            return ok, argv[0] if ok else "Playback was interrupted or failed."
+        except OSError as exc:
+            return False, f"Audio playback failed: {type(exc).__name__}: {exc}"
+        finally:
+            with self._player_lock:
+                if self._active_player is proc:
+                    self._active_player = None
+                self._speaking = False
+            self._publish(status="online", rms=0, peak=0)
+
+    def speak(self, text: str) -> tuple[bool, str]:
+        """Synthesize and play a reply sentence by sentence; barge-in stops every sentence."""
+        sentences = split_sentences(text)
+        if not sentences:
+            return True, "Nothing to speak."
+        self._stop_event.clear()
+        spoken = 0
+        player = ""
+        for sentence in sentences:
+            if self._stop_event.is_set():
+                break
+            try:
+                wav_bytes = self.synthesize_wav(sentence)
+            except MouthError as exc:
+                return spoken > 0, str(exc)
+            ok, info = self.play_wav_bytes(wav_bytes)
+            if not ok:
+                return spoken > 0, info
+            player = info
+            spoken += 1
+        return True, f"Piper ({self.config.piper_voice}) via {player}"
 
     @property
     def voice_dir(self) -> Path:

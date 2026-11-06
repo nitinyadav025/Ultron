@@ -45,6 +45,7 @@ from assistant.brain.skills import (
 )
 from assistant.brain.tool_replies import close_app_reply
 from assistant.config import PROJECT_ROOT, load_config
+from assistant.environment.state import get_state
 from assistant.interfaces.listen import (
     HandsFreeListener,
     Transcript,
@@ -522,6 +523,8 @@ def test_unified_history_open_then_write_generates_and_pastes(
     registry.register(dc.type_text)
     adapter = CaptureAdapter(tool_call=("type_text", {"text": long_paragraph}))
     loop = _loop(cfg, registry, adapter)
+    # This test pins the deterministic code-built reply; the environment uses the LLM.
+    monkeypatch.setitem(get_state().live_config, "brain_replies", False)
 
     # This is exactly what listen.py/CLI do after the fast path opens the editor.
     loop.record_external_turn(

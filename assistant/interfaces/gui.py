@@ -20,6 +20,7 @@ from assistant.interfaces.voice import VoiceController
 from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey, trigger_kill_switch
 from assistant.safety.permissions import VALID_MODES, PermissionGate
 from assistant.tools.apps import close_app, open_app, switch_app
+from assistant.tools.browser_tabs import interact_with_tab, list_browser_tabs, switch_to_tab
 from assistant.tools.desktop_control import (
     browser_tab_control,
     media_control,
@@ -77,6 +78,9 @@ def run_gui_dashboard(config: AssistantConfig) -> int:
         click_element,
         read_screen,
         focus_and_type,
+        list_browser_tabs,
+        switch_to_tab,
+        interact_with_tab,
     ):
         registry.register(fn)
 

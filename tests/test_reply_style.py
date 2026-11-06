@@ -4,9 +4,21 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from google.genai import types
 
 from assistant.brain.agent_loop import LOCAL_MAX_TOKENS_FIRST, LOCAL_MAX_TOKENS_FOLLOWUP, AgentLoop
+from assistant.environment.state import get_state
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_tool_replies():
+    """Reply shaping is tested against the deterministic branch; the LLM path is P9."""
+    state = get_state()
+    previous = state.live_config.get("brain_replies", True)
+    state.live_config["brain_replies"] = False
+    yield
+    state.live_config["brain_replies"] = previous
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.brain.local_client import LocalUsageMeter
 from assistant.brain.prompts import build_system_prompt

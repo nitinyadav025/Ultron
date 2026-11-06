@@ -446,14 +446,15 @@ def test_history_is_capped_and_old_tool_json_is_stripped(tmp_path: Path) -> None
     adapter = TextAdapter()
     loop = _loop(cfg, FakeRegistry(), adapter)
 
-    for index in range(15):
+    # Phase 9: a 16-turn / 32-message sliding window replaces the old 3-turn cap.
+    for index in range(20):
         result = loop.run_task("hello")
         assert result.ok is True
-        assert len(loop.history) <= 6, f"turn {index}: {len(loop.history)}"
+        assert len(loop.history) <= 32, f"turn {index}: {len(loop.history)}"
 
-    assert max(item["messages"] for item in adapter.seen) <= 6
+    assert max(item["messages"] for item in adapter.seen) <= 32
     assert len({item["system_chars"] for item in adapter.seen}) == 1
-    # After the cap is reached, the prompt stops growing (turns 14 and 15 are identical).
+    # After the cap is reached, the prompt stops growing (the last two turns are identical).
     assert adapter.seen[-1]["history_chars"] == adapter.seen[-2]["history_chars"]
 
     loop.history = [

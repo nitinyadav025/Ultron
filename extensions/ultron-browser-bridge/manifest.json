@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Ultron Browser Bridge",
+  "version": "1.0.0",
+  "description": "Local-only bridge that lets Ultron see and control Brave/Chrome tabs.",
+  "permissions": ["tabs", "activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1:9932/*", "<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Ultron Browser Bridge"
+  }
+}

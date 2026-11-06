@@ -20,6 +20,17 @@ import pytest
 from google.genai import types
 
 from assistant.brain.agent_loop import AgentLoop
+from assistant.environment.state import get_state
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_tool_replies():
+    """These replays pin the one-call deterministic tool reply (LLM path tested in P9)."""
+    state = get_state()
+    previous = state.live_config.get("brain_replies", True)
+    state.live_config["brain_replies"] = False
+    yield
+    state.live_config["brain_replies"] = previous
 from assistant.brain.context import SESSION
 from assistant.brain.fast_path import match_fast_command, run_fast_command, try_fast_path
 from assistant.brain.gemini_client import TokenUsageStats

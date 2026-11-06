@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from assistant import os_release_name
 from assistant.config import AssistantConfig
 
 # Local mode speaks every reply through Piper, so the first rule keeps answers short.
@@ -51,14 +52,41 @@ BASE_RULES: tuple[str, ...] = (
 _LOCAL_HEADER = "You are Ultron, a calm, helpful Fedora GNOME voice assistant."
 
 
-def build_chat_prompt(config: AssistantConfig, screen_line: str = "") -> str:
+def _persona_lines(
+    personality: str = "", user_name: str = "", reply_style: str = "natural"
+) -> list[str]:
+    """Dashboard-editable persona/style lines (empty defaults keep the old static prompt)."""
+    lines: list[str] = []
+    if user_name:
+        lines.append(f"- The user's name is {user_name}.")
+    if personality:
+        lines.append(f"- Persona: {personality}")
+    if reply_style == "concise":
+        lines.append("- Reply style: concise — one short, direct sentence.")
+    elif reply_style == "detailed":
+        lines.append("- Reply style: detailed — explain clearly in a few complete sentences.")
+    elif reply_style != "natural":
+        lines.append("- Reply style: natural and warm.")
+    return lines
+
+
+def build_chat_prompt(
+    config: AssistantConfig,
+    screen_line: str = "",
+    *,
+    personality: str = "",
+    user_name: str = "",
+    reply_style: str = "natural",
+) -> str:
     """A tiny, static prompt for pure conversation: no tool rules and no tool schemas."""
-    return (
-        f"{_LOCAL_HEADER}\n"
-        f"- {VOICE_RULE}\n"
-        "- Sound natural and warm; use contractions, never robotic.\n"
-        "- Answer directly and naturally; no tools are available in this turn.\n"
-    )
+    lines = [
+        _LOCAL_HEADER,
+        f"- {VOICE_RULE}",
+        "- Sound natural and warm; use contractions, never robotic.",
+        *_persona_lines(personality, user_name, reply_style),
+        "- Answer directly and naturally; no tools are available in this turn.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _short_roots(config: AssistantConfig) -> str:
@@ -87,22 +115,31 @@ def build_system_prompt(
     mode: str,
     screen_line: str = "",
     skills_hint: str = "",
+    *,
+    personality: str = "",
+    user_name: str = "",
+    reply_style: str = "natural",
 ) -> str:
     """Build the system instruction for Ultron.
 
     The local branch ignores ``screen_line`` and ``skills_hint`` on purpose: they change
     every turn, and putting them in the system message invalidates the prompt cache. They
-    are sent with the current user message by ``AgentLoop`` instead.
+    are sent with the current user message by ``AgentLoop`` instead. The Dashboard persona
+    is appended only when it differs from the defaults, so the static prefix is unchanged
+    for every existing test and cached turn.
     """
+    persona = _persona_lines(personality, user_name, reply_style)
     if config.backend == "local":
         rules = "\n".join(f"- {rule}" for rule in LOCAL_RULES)
-        return f"{_LOCAL_HEADER}\n{rules}\n"
+        suffix = ("\n" + "\n".join(persona)) if persona else ""
+        return f"{_LOCAL_HEADER}\n{rules}{suffix}\n"
 
     allowed_str = ", ".join(str(p) for p in config.allowed_roots)
     rules = "\n".join(f"{index}. {rule}" for index, rule in enumerate(BASE_RULES, start=1))
-    return f"""You are {config.assistant_name}, a personal AI assistant on Fedora Linux 44 Workstation (GNOME 50.5 Wayland).
+    persona_text = ("\n" + "\n".join(persona)) if persona else ""
+    return f"""You are {config.assistant_name}, a personal AI assistant on {os_release_name()} Workstation (GNOME Wayland).
 Active Model: {config.current_model} | Thinking Level: {config.active_thinking_level} | Safety Mode: {mode}
-Allowed Folders (ALLOWED_ROOTS): {allowed_str}
+Allowed Folders (ALLOWED_ROOTS): {allowed_str}{persona_text}
 
 OPERATING RULES:
 {rules}

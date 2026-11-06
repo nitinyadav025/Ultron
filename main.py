@@ -87,6 +87,14 @@ def _dispatch(args: argparse.Namespace, config: AssistantConfig) -> int:
             f"Exported {exported['written']} ChatML sample(s) to {exported['output']}"
         )
         return 0
+    if args.command in ("environment", "app", "start"):
+        from assistant.environment.launcher import run_environment
+
+        return run_environment(
+            config,
+            headless=bool(getattr(args, "headless", False)),
+            port=getattr(args, "port", None),
+        )
     if args.command == "benchmark":
         from scripts.benchmark_phase5c import run_benchmark
 
@@ -135,6 +143,9 @@ def main() -> int:
             "teach",
             "import-skills",
             "export-dataset",
+            "environment",
+            "app",
+            "start",
         ],
     )
     parser.add_argument(
@@ -144,6 +155,17 @@ def main() -> int:
     )
     parser.add_argument("--mode", choices=["ask", "auto-safe", "human-only"], default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="environment: run the API/voice engine without opening a Dashboard window",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="environment: API port (default 9932 or ULTRON_ENV_PORT)",
+    )
     args = parser.parse_args()
 
     config = load_config()

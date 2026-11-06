@@ -22,6 +22,7 @@ from assistant.speech.ears import UNCLEAR_SPEECH
 from assistant.speech.mic_input import apply_mic_source_volume
 from assistant.speech.vad import get_shared_vad
 from assistant.tools.apps import close_app, open_app, switch_app
+from assistant.tools.browser_tabs import interact_with_tab, list_browser_tabs, switch_to_tab
 from assistant.tools.desktop_control import (
     browser_tab_control,
     media_control,
@@ -141,6 +142,9 @@ def run_cli_chat(config: AssistantConfig, initial_mode: str | None = None, dry_r
         click_element,
         read_screen,
         focus_and_type,
+        list_browser_tabs,
+        switch_to_tab,
+        interact_with_tab,
     ):
         registry.register(fn)
 

@@ -1,12 +1,66 @@
 # Ultron progress — Phase 9 (current)
 
-Last updated: 2026-11-06 (Fedora 45 + GNOME 51.1 repair complete; 547 tests, 25/25 benchmark,
-doctor all PASS; Nitin's live voice check is the next step)
+Last updated: 2026-11-06 (Gate 2A standalone environment complete: **566 tests**, **25/25**
+benchmark; Gate 2B Liquid Glass dashboard is the next agent's task)
 
-> **Gate 1 is complete.** The machine is now Fedora 45 / GNOME 51.1 / Wayland, the folder is
-> `/home/nitinyadav/Downloads/ULTRON`, and the `.venv` is rebuilt on Python 3.14.9.
-> **Gate 2 (Standalone Living Environment + SQLite memory + Dashboard API) has NOT started**
-> — it waits for Nitin's manual voice test. The live checkpoint is `docs/LEFT_WORK.md`.
+> **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
+> now runs from `main.py environment` with a thread-safe live state, managed voice
+> controller, barge-in, Brave/Firefox browser bridge, and a local REST+SSE server on
+> `127.0.0.1:9932`. Live checkpoint: `docs/LEFT_WORK.md`. UI contract:
+> `docs/DASHBOARD_API_CONTRACT.md`.
+> **Gate 2B (Apple visionOS Liquid Glass V18 dashboard) has NOT started** — the UI agent
+> builds `assistant/dashboard/dist/` against this server. The SQLite memory engine from
+> the earlier Gate 2 idea is **not** part of Gate 2A and remains future work.
+
+## Gate 2A — Standalone Living Environment & Full Control API (Nov 6)
+
+Branch: `phase9-fedora45-ultron-env` (local only, nothing pushed). Parts 1–7 are complete.
+
+| Part | What | Result |
+|---|---|---|
+| 1 | `assistant/environment/` package + thread-safe `EnvironmentState` | DONE — status/mode/audio/transcript/thought/action/feed/screen/telemetry/config, 50-turn and 30-latency ring buffers, atomic config persistence |
+| 2 | Real-time voice controller, barge-in, true LLM replies | DONE — `wake_word` / `continuous` / `ptt`; `mouth.stop_speaking()` terminates the tracked player; 16-turn (32-message) history; LLM final answers with tool-result fallback |
+| 3 | Brave/Firefox browser bridge | DONE — MV3 + Firefox manifests, 800 ms tab/DOM sync, WhatsApp/Gemini/Claude/ChatGPT/YouTube/Gmail extractors, `list_browser_tabs` / `switch_to_tab` / `interact_with_tab` with wmctrl/AT-SPI/ydotool fallback |
+| 4 | Environment HTTP + SSE server | DONE — 20+ routes on `127.0.0.1:9932`, CORS, SSE every 250 ms/change, config/apps/tabs/skills/browser endpoints, readiness page |
+| 5 | Standalone launcher + desktop icon | DONE — `main.py environment` (`app`/`start` aliases, `--headless`, `--port`), `scripts/ultron-launch.sh`, installed `~/.local/share/applications/ultron.desktop` |
+| 6 | Dashboard API contract | DONE — `docs/DASHBOARD_API_CONTRACT.md` with exact JSON schemas and UI mapping |
+| 7 | Tests, benchmark, doctor, live smoke, commit | DONE — 19 new tests, full suite **566 passed**, benchmark **25/25** at **2.008 ms**, doctor all PASS, port-9932 live smoke, clean shutdown |
+
+### Live smoke (actually run on the desktop)
+
+- `main.py environment --headless` on **9932**: health `llama_server=true`,
+  `voice_status=listening`.
+- `/api/state`: real `focused_window="nitinyadav@Sasuke:~/Downloads/ULTRON"`,
+  `focused_app="terminal"`, **11 visible AT-SPI elements**, GPU **1612/4096 MiB**,
+  CPU 6 %, RAM 8946 MB, `llama_server_alive=true`.
+- `/api/stream`: `retry: 1000`, `id: 371`, `event: state`.
+- `/api/command` “what is your name?” → natural LLM reply in **1419 ms**.
+- `/api/browser/sync` + `/api/tabs`: 1 WhatsApp tab, `bridge_connected=true`.
+- `GET /` → **200** (readiness page until Gate 2B builds `dist/`).
+- SIGTERM cleanup: no environment process, no llama-server, no ydotool, no `pw-record`,
+  no AT-SPI helper; ports 9931/9932 free.
+
+### Key files (Gate 2A)
+
+- New: `assistant/environment/{__init__,state,voice_controller,browser_bridge,server,launcher}.py`,
+  `assistant/tools/browser_tabs.py`,
+  `extensions/ultron-browser-bridge/{manifest.json,manifest.firefox.json,background.js,content.js,README.md}`,
+  `scripts/ultron-launch.sh`, `docs/DASHBOARD_API_CONTRACT.md`,
+  `tests/test_phase9_environment.py`.
+- Changed: `assistant/speech/mouth.py` (tracked player + `stop_speaking`/`speak`),
+  `assistant/brain/agent_loop.py` (live thought/action, true-LLM replies, 16 turns),
+  `assistant/brain/prompts.py` (persona/user/style), `assistant/brain/skills.py`
+  (delete helpers), `main.py` (`environment`/`app`/`start`), CLI/GUI/listen registries,
+  tests pinned to deterministic replies where they test that path.
+- Not staged: `.env`, `models/`, `workspace/`, `logs/`, `.backups/`, `.venv/`.
+
+### Gate 2B handoff
+
+The UI agent must read `docs/DASHBOARD_API_CONTRACT.md`, build a static bundle in
+`assistant/dashboard/dist/`, and preview with `.venv/bin/python main.py environment`.
+The server already serves the bundle at `/` and streams state at `/api/stream`; no backend
+change is expected. Live microphone, real extension DOM clicks and hardware barge-in remain
+**UNVERIFIED** until Nitin exercises them.
 
 ## Phase 9 — Fedora 45 & ULTRON Repair (Nov 6)
 
@@ -132,9 +186,11 @@ the real chat path with a one-sentence reply.
   `docs/PROGRESS.md`, `docs/ULTRON_PROJECT_BIBLE.md`, `docs/LEFT_WORK.md`.
 - Not staged: `.env`, `models/`, `workspace/`, `logs/`, `.backups/`, `.venv/`.
 
-### Gate 2 blueprint — Standalone Living Environment (NOT STARTED)
+### Future idea — SQLite memory engine / user data root (NOT part of Gate 2A)
 
-Wait for Nitin's explicit go-ahead after the live voice test.
+Gate 2A delivered the standalone environment and the full control API. The following
+SQLite/data-root plan was in the earlier Gate 2 sketch but is **not implemented** and is
+kept here for a future phase (it needs its own migration tests and Nitin's approval).
 
 1. **User data root.** Move mutable state from the project to
    `~/.local/share/ultron/` (override: `ULTRON_DATA_DIR`): `memory.db`,

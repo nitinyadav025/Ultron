@@ -10,9 +10,21 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import pytest
 from google.genai import types
 
 from assistant.brain.agent_loop import AgentLoop
+from assistant.environment.state import get_state
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_tool_replies():
+    """These tests pin the code-built list_files sentence, not the LLM wording."""
+    state = get_state()
+    previous = state.live_config.get("brain_replies", True)
+    state.live_config["brain_replies"] = False
+    yield
+    state.live_config["brain_replies"] = previous
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.brain.local_client import LocalUsageMeter
 from assistant.brain.tool_replies import FOLDER_NOT_FOUND_REPLY, list_files_reply

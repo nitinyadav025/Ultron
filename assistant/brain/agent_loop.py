@@ -151,8 +151,51 @@ class AgentLoop:
         self._pause_event.set()
         self.step_callback(f"Redirected: {new_instruction}")
 
-    HISTORY_MAX_MESSAGES = 6
-    HISTORY_MAX_TURNS = 3
+    # 16 full turns (32 messages) so Ultron remembers the whole conversation across
+    # paragraphs. Only clean text survives pruning; tool JSON never grows the prompt.
+    HISTORY_MAX_MESSAGES = 32
+    HISTORY_MAX_TURNS = 16
+
+    def _environment(self) -> Any | None:
+        try:
+            from assistant.environment.state import get_state
+
+            return get_state()
+        except Exception:
+            return None
+
+    def _brain_replies_enabled(self) -> bool:
+        state = self._environment()
+        if state is None:
+            return False
+        return bool(state.get_config().get("brain_replies", True))
+
+    def _set_thought(self, text: str) -> None:
+        state = self._environment()
+        if state is not None:
+            try:
+                state.set_thought(text)
+            except Exception:
+                pass
+
+    def _set_action(self, tool: str, args: dict[str, Any], status: str) -> None:
+        state = self._environment()
+        if state is not None:
+            try:
+                state.set_action(tool, args, status)
+            except Exception:
+                pass
+
+    def _live_persona(self) -> tuple[str, str, str]:
+        state = self._environment()
+        if state is None:
+            return "", "", "natural"
+        live = state.get_config()
+        return (
+            str(live.get("personality_prompt") or ""),
+            str(live.get("user_name") or ""),
+            str(live.get("reply_style") or "natural"),
+        )
 
     @staticmethod
     def _text_only(content: types.Content) -> types.Content | None:
@@ -284,7 +327,7 @@ class AgentLoop:
         """
         if self.config.backend != "local":
             return text
-        if last_tool is not None:
+        if last_tool is not None and not self._brain_replies_enabled():
             built = code_reply_for_tool(last_tool[0], last_tool[1])
             if built:
                 return built
@@ -347,13 +390,21 @@ class AgentLoop:
         turn_context = context_tag(live_screen, skills_hint)
         # Static for every call in this task: screen/skills never enter the system message.
         gate_mode = getattr(self.registry.gate, "mode", "auto-safe")
-        local_system_prompt = build_system_prompt(self.config, gate_mode)
+        personality, user_name, reply_style = self._live_persona()
+        local_system_prompt = build_system_prompt(
+            self.config,
+            gate_mode,
+            personality=personality,
+            user_name=user_name,
+            reply_style=reply_style,
+        )
         cleaned = request_text
         if cleaned.lower().startswith("plan only"):
             dry_run = True
             cleaned = cleaned[9:].lstrip(": ").strip() or user_input
         if dry_run:
             cleaned = f"[DRY RUN / PLAN ONLY] Print the step-by-step plan without executing tools for: {cleaned}"
+        self._set_thought(f"Thinking about: {cleaned}")
 
         self.watchdog.start_task()
         self.registry.gate.tainted_by_untrusted = False
@@ -426,12 +477,17 @@ class AgentLoop:
             )
 
         if self.config.backend == "local" and looks_like_pure_chat(cleaned):
-            # Pure conversation: send no tool schemas and only the last four turns.
+            # Pure conversation: no tool schemas, but keep the full 16-turn memory.
             self.step_callback("Thinking (chat)...")
-            history = self.history[-8:]
+            history = self.history[-self.HISTORY_MAX_MESSAGES:]
             resp, turn_u = self.adapter.generate_turn(
                 contents=self._tagged_contents(history, turn_context),
-                system_instruction=build_chat_prompt(self.config),
+                system_instruction=build_chat_prompt(
+                    self.config,
+                    personality=personality,
+                    user_name=user_name,
+                    reply_style=reply_style,
+                ),
                 tools=None,
                 max_output_tokens=LOCAL_MAX_TOKENS_FOLLOWUP,
             )
@@ -451,6 +507,7 @@ class AgentLoop:
         steps = 0
         tool_rounds = 0
         last_tool: tuple[str, dict[str, Any]] | None = None
+        last_executed_tools: list[tuple[str, dict[str, Any]]] = []
         local_tool_round_cap = 3 if self.config.backend == "local" else None
         # Set when the model proposed an app action nobody asked for: answer without tools.
         suppress_tools = False
@@ -483,12 +540,35 @@ class AgentLoop:
                     tools_payload = self.registry.get_openai_tools(compact=True)
                 else:
                     tools_payload = self.registry.get_gemini_tools()
-                resp, turn_u = self.adapter.generate_turn(
-                    contents=self._tagged_contents(self.history, turn_context),
-                    system_instruction=local_system_prompt,
-                    tools=tools_payload,
-                    **self._generation_limits(tool_rounds),
-                )
+                try:
+                    resp, turn_u = self.adapter.generate_turn(
+                        contents=self._tagged_contents(self.history, turn_context),
+                        system_instruction=local_system_prompt,
+                        tools=tools_payload,
+                        **self._generation_limits(tool_rounds),
+                    )
+                except Exception as exc:
+                    # brain_replies=True asks the LLM for the final answer. If llama-server is
+                    # unreachable, fall back to the deterministic tool sentence we already know.
+                    fallback: list[str] = []
+                    for tool_name, tool_result in last_executed_tools:
+                        built_reply = code_reply_for_tool(tool_name, tool_result)
+                        if not built_reply:
+                            fallback = []
+                            break
+                        if built_reply not in fallback:
+                            fallback.append(built_reply)
+                    if fallback:
+                        combined = " ".join(fallback)
+                        self.history.append(
+                            types.Content(role="model", parts=[types.Part.from_text(text=combined)])
+                        )
+                        self._set_thought("Brain unreachable; used the tool result.")
+                        self._set_action("", {}, "idle")
+                        self.watchdog.stop_task()
+                        return AgentTaskResult(True, combined, steps, usage_acc, dry_run=dry_run)
+                    self._set_thought(f"Brain unavailable: {type(exc).__name__}")
+                    raise
                 usage_acc.prompt_tokens += turn_u.prompt_tokens
                 usage_acc.candidate_tokens += turn_u.candidate_tokens
                 usage_acc.thought_tokens += turn_u.thought_tokens
@@ -505,6 +585,8 @@ class AgentLoop:
                 fn_calls = resp.function_calls or []
                 if not fn_calls:
                     self.step_callback("Idle — task complete.")
+                    self._set_thought("")
+                    self._set_action("", {}, "idle")
                     return AgentTaskResult(
                         True,
                         self._finalize_reply(resp.text or "Done.", last_tool),
@@ -562,7 +644,11 @@ class AgentLoop:
                     if call_index in mute_overrides:
                         fn_args["muted"] = mute_overrides[call_index]
                     self.step_callback(f"[Step {steps}/{self.config.max_steps}] Running {fn_name}...")
+                    self._set_thought(f"Running {fn_name}…")
+                    self._set_action(fn_name, fn_args, "running")
                     res = self.registry.execute(fn_name, fn_args, user_input, dry_run, self._preview(fn_name, fn_args))
+                    self._set_action(fn_name, fn_args, "done")
+                    self._set_thought(f"Finished {fn_name}.")
                     # Remember every call, including failures: a failed list must never be
                     # answered with the model's invented "no items" sentence.
                     last_tool = (fn_name, res)
@@ -595,10 +681,15 @@ class AgentLoop:
                     msg = f"Stopped after {failures} repeated failures. How should I proceed?"
                     return AgentTaskResult(False, msg, steps, usage_acc, msg)
 
-                if self.config.backend == "local" and executed_tools:
-                    # tool_replies.py already knows the exact sentence for these tools. The
-                    # old loop made a SECOND llama-server call only to overwrite that answer
-                    # with the same code-built reply (7.38 s in the Nov 2 log). Return now.
+                last_executed_tools = list(executed_tools)
+                if (
+                    self.config.backend == "local"
+                    and executed_tools
+                    and not self._brain_replies_enabled()
+                ):
+                    # brain_replies=False keeps the fast deterministic sentence. With the
+                    # default True we continue to the model so it can answer naturally from
+                    # the real tool outcome.
                     built: list[str] = []
                     for tool_name, tool_result in executed_tools:
                         reply = code_reply_for_tool(tool_name, tool_result)
@@ -612,6 +703,8 @@ class AgentLoop:
                         self.history.append(
                             types.Content(role="model", parts=[types.Part.from_text(text=combined)])
                         )
+                        self._set_thought("")
+                        self._set_action("", {}, "idle")
                         self.step_callback("Done — deterministic tool reply; no second LLM call.")
                         return AgentTaskResult(True, combined, steps, usage_acc, dry_run=dry_run)
 

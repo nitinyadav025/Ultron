@@ -32,8 +32,9 @@
 | Branch (Phase 9) | `phase9-fedora45-ultron-env` (created from `phase8-eyes-hands-ears` @ `4d29e58`) |
 | Test state at Phase 7 end | **503 passed, 0 failed, 0 errors** (`pytest -q`, 38.82 s) |
 | Test state at Phase 8 end | **540 passed, 0 failed, 0 errors** (`pytest -q`, 53.50 s) |
-| Test state at Phase 9 end | **547 passed, 0 failed, 0 errors** (`pytest -q`, 76.54 s) |
-| Benchmark at Phase 9 end | **25/25 passed**, average **2.802 ms** (mocked; the `hello` case now runs the real chat path) |
+| Test state at Phase 9 Gate 1 end | **547 passed, 0 failed, 0 errors** (`pytest -q`, 76.54 s) |
+| Test state at Phase 9 Gate 2A end | **566 passed, 0 failed, 0 errors** (`pytest -q`, 67.02 s) |
+| Benchmark at Gate 2A end | **25/25 passed**, average **2.008 ms** (mocked) |
 | Remote | Nothing is pushed. The user pushes when they choose. |
 
 ---
@@ -662,10 +663,37 @@ evidence and the Gate 2 blueprint are in `docs/PROGRESS.md`; the live checkpoint
   `main.py benchmark` → **25/25**, average **2.802 ms**; `main.py chat` and
   `main.py listen --help` exit 0.
 
-**Gate 2** (Standalone Living Environment, SQLite memory at
-`~/.local/share/ultron/memory.db`, Dashboard API) is **not started** by design. The
-blueprint (data root, schema, memory API, systemd user service, localhost API, tests) is in
-`docs/PROGRESS.md`; it begins only after Nitin's live voice test.
+**Gate 2A** (standalone environment + full control API) is delivered — see §6D. The
+SQLite memory engine at `~/.local/share/ultron/memory.db` was part of the earlier Gate 2
+sketch but is **not implemented**; it remains a future idea in `docs/PROGRESS.md`.
+**Gate 2B** (the Liquid Glass dashboard) is the next agent's task.
+
+---
+
+## 6D. Phase 9 Gate 2A — Standalone Living Environment & Full Control API (Nov 6)
+
+Branch: `phase9-fedora45-ultron-env`. Full evidence is in `docs/PROGRESS.md` and
+`docs/LEFT_WORK.md`; the Gate 2B UI contract is `docs/DASHBOARD_API_CONTRACT.md`.
+
+| Layer | Files | Result |
+|---|---|---|
+| Live state | `assistant/environment/state.py` | Thread-safe singleton: status/voice mode/audio/transcript/thought/action/steps/reply, 50-turn feed, screen snapshot, telemetry (GPU/CPU/RAM/llama, p50/p95, 30-point latency ring), persisted live config |
+| Voice | `assistant/environment/voice_controller.py`, `assistant/speech/mouth.py` | `wake_word` / `continuous` / `ptt`, 8 s follow-up, live mic RMS/peak, barge-in `stop_speaking()` (<20 ms terminate), speaking envelope |
+| Brain replies | `assistant/brain/agent_loop.py`, `prompts.py` | True LLM confirmation when `live_config.brain_replies=true`, tool-result fallback when llama-server is unreachable, 16-turn / 32-message history, Dashboard persona/user/style |
+| Browser | `assistant/environment/browser_bridge.py`, `assistant/tools/browser_tabs.py`, `extensions/ultron-browser-bridge/` | Local extension (Brave MV3 + Firefox MV2) polls 800 ms, pushes tabs/DOM, executes switch/close/open/click/type/read/scroll; tools fall back to wmctrl/AT-SPI/ydotool |
+| API | `assistant/environment/server.py` | `127.0.0.1:9932`, CORS, REST + SSE, config/apps/tabs/skills/browser routes, static `assistant/dashboard/dist/` or a 200 readiness page |
+| Launcher | `assistant/environment/launcher.py`, `main.py`, `scripts/ultron-launch.sh` | `main.py environment [--headless] [--port]`, App Grid `ultron.desktop`, telemetry loop, clean SIGINT/SIGTERM shutdown |
+
+**Live smoke (actually run):** port 9932 health `llama_server=true`; `/api/state` showed the
+real terminal window, 11 AT-SPI elements, GPU 1612/4096 MiB and CPU/RAM; SSE `event: state`;
+`/api/command` “what is your name?” → natural LLM reply in 1419 ms; browser sync returned a
+WhatsApp tab; `/` → 200. Shutdown left no environment server, llama-server, ydotool,
+`pw-record` or AT-SPI helper, and ports 9931/9932 free.
+
+**Gate 2B (Dashboard) is not started.** The UI agent builds
+`assistant/dashboard/dist/` and previews with `main.py environment`. Live microphone,
+real extension DOM clicks and hardware barge-in remain **UNVERIFIED** until Nitin tests
+them on the desktop.
 
 ---
 
@@ -854,7 +882,7 @@ pgrep -af atspi_helper.py
    `docs/ULTRON_LOCAL_HANDOFF.md`, then `AGENTS.md`.
 2. `git branch --show-current` and `git log --oneline -5`. Expected branch for Phase 9:
    `phase9-fedora45-ultron-env` (created from `phase8-eyes-hands-ears` @ `4d29e58`).
-3. `.venv/bin/python -m pytest -q` and compare with §7 (**547 passed** expected).
+3. `.venv/bin/python -m pytest -q` and compare with §7 (**566 passed** expected).
 4. Read the current phase section in `docs/PROGRESS.md`; continue from its **NEXT STEP**.
 5. Do one part at a time. Update this file and `docs/PROGRESS.md` before/after each part.
    Commit locally by file name only. Never push, never commit secrets.
@@ -894,4 +922,11 @@ pgrep -af atspi_helper.py
   the listening window to 60 s / 2.6 s / 1.8 s; removed canned chat replies; dynamic
   `os_release_name()` banner. Live evidence: llama-server 2.5 s / 0.389 s with 1606 MiB GPU,
   small.en 1.41 s load, Piper 0.18 s synth, AT-SPI 75 nodes / 11 elements, GNOME
-  introspection still denied, 547 tests, benchmark 25/25 at 2.802 ms. Gate 2 not started.
+  introspection still denied, 547 tests, benchmark 25/25 at 2.802 ms.
+- **2026-11-06 (Phase 9 Gate 2A):** standalone environment: thread-safe live state, managed
+  `wake_word`/`continuous`/`ptt` voice controller with barge-in, true LLM replies with
+  16-turn memory, Brave/Firefox browser bridge + DOM tools, REST/SSE server on 9932,
+  one-click `main.py environment` launcher and App Grid entry, Dashboard API contract.
+  Live port-9932 smoke passed (real window/GPU telemetry, SSE, 1.42 s LLM reply, browser
+  sync, clean shutdown). 19 new tests; full suite **566 passed**, benchmark **25/25** at
+  2.008 ms. Gate 2B dashboard not started.

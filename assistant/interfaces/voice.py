@@ -302,6 +302,12 @@ class VoiceController:
         _terminate_process(legacy)
         for proc in procs:
             _terminate_process(proc)
+        # The environment Dashboard shares this handle for instant barge-in.
+        if self.mouth is not None and hasattr(self.mouth, "stop_speaking"):
+            try:
+                self.mouth.stop_speaking()
+            except Exception:
+                pass
 
     def _wait_for_playback(self, timeout: float = 1.5) -> None:
         """Block until no TTS player is alive: Ultron must never record its own voice."""
@@ -881,6 +887,8 @@ class VoiceController:
                 with self._play_lock:
                     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
                     self._play_proc = proc
+                if self.mouth is not None and hasattr(self.mouth, "adopt_player"):
+                    self.mouth.adopt_player(proc)
                 _, stderr_txt = proc.communicate(timeout=30.0)
                 if proc.returncode in (0, -15, -9):
                     return True, cmd[0]
@@ -894,6 +902,8 @@ class VoiceController:
                         self._speech_procs.remove(proc)
                     except ValueError:
                         pass
+                if self.mouth is not None and hasattr(self.mouth, "release_player"):
+                    self.mouth.release_player(proc)
                 # Ctrl+C during playback must not leave pw-play talking to an empty room.
                 _terminate_process(proc)
         return False, "All local WAV players (pw-play/paplay/aplay) failed."

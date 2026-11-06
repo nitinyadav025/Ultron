@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from google.genai import types
 
 from assistant.brain.agent_loop import AgentLoop
+from assistant.environment.state import get_state
 from assistant.brain.gemini_client import TokenUsageStats
 from assistant.brain.local_client import LocalUsageMeter
 from assistant.config import load_config
@@ -18,6 +20,16 @@ from assistant.tools.volume import TIMED_MUTE_REPLY, WHAT_MUTE_REPLY, WHAT_VOLUM
 EXEC_COUNT = {"n": 0}
 SET_VOLUME_COUNT = {"n": 0}
 MUTE_CALLS: dict[str, Any] = {"n": 0, "args": []}
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_tool_replies():
+    """This module pins the code-built tool sentence; the LLM path is tested elsewhere."""
+    state = get_state()
+    previous = state.live_config.get("brain_replies", True)
+    state.live_config["brain_replies"] = False
+    yield
+    state.live_config["brain_replies"] = previous
 
 
 @tool(risk_level="safe", read_only=False)
@@ -384,7 +396,8 @@ def test_pure_chat_uses_one_lean_request_without_tools() -> None:
     assert adapter.calls == 1
     assert adapter.tools_seen == [None]  # no tool schemas on a conversation turn
     assert "no tools are available" in adapter.system_prompts[0]
-    assert len(adapter.system_prompts[0]) < 300  # lean chat prompt
+    # The Dashboard persona adds the user's name (Nitin) to the lean prompt.
+    assert len(adapter.system_prompts[0]) < 360  # lean chat prompt
     assert adapter.history_lengths[0] <= 8  # last four turns only
 
 

@@ -1,0 +1,27 @@
+{
+  "manifest_version": 2,
+  "name": "Ultron Browser Bridge",
+  "version": "1.0.0",
+  "description": "Local-only bridge that lets Ultron see and control Firefox tabs.",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "storage",
+    "http://127.0.0.1:9932/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_action": {
+    "default_title": "Ultron Browser Bridge"
+  }
+}
