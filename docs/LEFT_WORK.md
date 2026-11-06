@@ -276,10 +276,15 @@ Cleanup verified after shutdown: no environment process, no `llama-server`, no `
 no `pw-record`, no `atspi_helper.py`; ports **9932** and **9931** free.
 
 ### Commit
-- Code/docs commit hash: **filled in the follow-up docs commit** (this checkpoint is
-  committed after the code commit). Branch `phase9-fedora45-ultron-env`, local only.
+- Gate 2A commit: **`d5da960`** — “P9 Gate 2A: standalone environment, voice barge-in,
+  browser bridge and 9932 API” (33 files, +5201/−301) on
+  `phase9-fedora45-ultron-env`.
 - Staged by exact filename; `.env`, `models/`, `workspace/`, `logs/`, `.backups/`, `.venv/`
-  never staged. Nothing pushed.
+  never staged. Nothing pushed; `origin` untouched.
+- Installed outside the repo (user-level, not committed):
+  `~/.local/share/applications/ultron.desktop` → `scripts/ultron-launch.sh`.
+- Final process check after the live smoke: no environment server, no `llama-server`, no
+  `ydotoold`, no `pw-record`, no `atspi_helper.py`; ports **9931/9932** free.
 
 ## Gate 2B — handoff for the Liquid Glass V18 Dashboard agent
 
