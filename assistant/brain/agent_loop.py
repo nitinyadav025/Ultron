@@ -178,6 +178,14 @@ class AgentLoop:
             except Exception:
                 pass
 
+    def _set_planned_steps(self, steps: Any) -> None:
+        state = self._environment()
+        if state is not None:
+            try:
+                state.set_planned_steps(steps)
+            except Exception:
+                pass
+
     def _set_action(self, tool: str, args: dict[str, Any], status: str) -> None:
         state = self._environment()
         if state is not None:
@@ -379,6 +387,7 @@ class AgentLoop:
             result = self._run_task(user_input, dry_run)
         finally:
             self._prune_history(keep_current_protocol=True)
+            self._set_planned_steps([])
         if result.reply:
             SESSION.last_reply = result.reply
         return result
@@ -617,6 +626,13 @@ class AgentLoop:
                             return AgentTaskResult(True, WHAT_MUTE_REPLY, steps, usage_acc, dry_run=dry_run)
                         # Force the action the user actually said, whatever the model chose.
                         mute_overrides[index] = intent == "mute"
+
+                # Live multi-step planner for the Dashboard: this round's queued tools.
+                self._set_planned_steps(
+                    self._preview(call.name or "tool", dict(call.args or {}))
+                    for index, call in enumerate(fn_calls)
+                    if index not in unrequested_app_calls
+                )
 
                 resp_parts: list[types.Part] = []
                 human_notes: list[str] = []

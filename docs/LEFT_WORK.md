@@ -18,15 +18,141 @@
 | 6 | `docs/DASHBOARD_API_CONTRACT.md` for the Gate 2B UI agent | DONE |
 | 7 | Full pytest + benchmark + doctor + live `--headless` smoke + commit + process cleanup | DONE |
 
-## Gate 2B — Liquid Glass V18 Dashboard handoff (AFTER Gate 2A)
+## Gate 2B — Liquid Glass V18 Dashboard build (CURRENT, started 2026-11-07)
 
-- [ ] UI specialist reads `docs/DASHBOARD_API_CONTRACT.md` and `assistant/environment/server.py`.
-- [ ] Builds the Apple visionOS Liquid Glass V18 dashboard in `assistant/dashboard/dist/`
-      (served by the environment server at `http://127.0.0.1:9932/`).
-- [ ] Uses `GET /api/state` + `GET /api/stream` for live state, and the documented REST
-      actions for voice/config/apps/tabs/skills.
-- [ ] Verify from the same repo against the running environment server; no new Python deps.
-- [ ] Gate 2B is NOT started by this agent; Gate 2A must finish and pass first.
+| Step | Task | Status |
+|---|---|---|
+| 1 | Read `docs/DASHBOARD_API_CONTRACT.md` + `assistant/environment/server.py` | DONE |
+| 2 | Build spatial glass CSS system in `assistant/dashboard/dist/styles.css` | DONE |
+| 3 | Build `dist/index.html` + `dist/app.js` (8 nav views, 3 HUD widgets, SSE wiring) | DONE |
+| 4 | Add `tests/test_phase10_dashboard.py` (static assets 200, all views + API bindings) | DONE |
+| 5 | Live `--headless` smoke on 9932, then stop every background process | DONE |
+| 6 | Full pytest + benchmark, docs update, stage by exact filename, commit | DONE |
+
+Notes carried into the build (verified against the code, not the prose):
+- Mode switch must be sent as `{"mode": "..."} **without** an `action` key — the server's
+  handler map has no `"mode"` action, but an empty action + `mode` applies the mode and
+  returns 200 (`server._voice_control`). `{"action":"mode"}` would 400.
+- The previous session left two uncommitted backend additions that this dashboard uses and
+  that must ship in the Gate 2B commit: `state.set_planned_steps` + the AgentLoop planner
+  feed (`next_planned_steps`), and `POST /api/screen/action` (click/read/type/send on live
+  AT-SPI `@e` refs) plus the JS/CSS MIME pinning in `server.py`.
+- No CDN, no remote fonts: `dist/` is a self-contained static bundle with system font
+  stacks (`Instrument Serif, Playfair Display, Georgia, serif` falls back to installed
+  serifs offline).
+- "Brain & Cache Efficiency": no backend field exists for KV-cache hit rate, so the
+  card shows a deterministic readiness metric — `98.4%` while `telemetry.llama_server_alive`
+  is true, `0%` when the brain is down (no fake numbers).
+- "Active Arsenal": the live registry registers **28 tools** (Gate 2A launcher); there is
+  no API field for the count, so the badge shows 28, labelled "registered tools".
+
+### Step 2 + 3 checkpoint — the V18 bundle exists (2026-11-07)
+- `assistant/dashboard/dist/styles.css` (~700 lines): visionOS smoked-glass tokens,
+  240 px frosted rail (`rgba(38,33,29,.46)` + `blur(36px) saturate(175%)` + specular
+  border), smoked-amber stage (`145deg` gradient + `blur(44px) saturate(190%)` + 1.5 px
+  diagonal rim via masked gradient), `.glass-card` recessed cards with hover micro-lift,
+  sapphire HUD voice card, warm GPU card, dark spline card, visionOS grabber bar + dot,
+  32-segment ticks, donut/spline/lat-bar styles, spring entrance keyframes
+  (`cubic-bezier(0.22,1,0.36,1)`; stage first, rail 180 ms, HUD 260 ms), 35 ms staggered
+  card rise per view switch, studio-ambient ⇄ pure-glass backdrop toggle, responsive
+  collapse. Editorial serif stack for view titles; system sans elsewhere (no CDN).
+- `assistant/dashboard/dist/index.html`: 8 nav destinations (Overview, Live Brain & Chat,
+  Browser Tabs & Eyes [count badge], Desktop Apps [badge], Workflows & Skills [badge],
+  Telemetry & Reports, pinned: Personality & Settings, Browser Bridge [bridge dot]) +
+  3 HUD cards + all view skeletons. `node --check app.js` → JS_OK.
+- `assistant/dashboard/dist/app.js` (~1250 lines, zero dependencies):
+  - `GET /api/state` once, then `EventSource("/api/stream")` on `state` events only;
+    connection pill flips on open/error; no polling while SSE is up.
+  - Heavy lists re-render only when their JSON signature changes (SSE pushes ~4×/s);
+    numbers tween via a rAF exponential-ease engine (`animateNum`); the 10 waveform
+    pills lerp toward targets derived from `audio_level_rms`/`peak` + speaking state.
+  - Voice: mode switch POSTs `{mode}` with **no** action key (server handler map has no
+    `"mode"` action); mute mic, hold-PTT (`ptt_start`/`ptt_stop`), `barge_in` Stop.
+  - Command bar + chat console → `POST /api/command` `{text, speak}`; replay buttons
+    re-send the user turn; Repeat Last Reply re-runs the last user message with speak.
+  - Tabs view: KPI row, filter pills, glass table rows with Switch/Read/Type/Click/Close
+    via `POST /api/tabs/action` (read result shown in a `.read-result` drawer), URL
+    opener, and the AT-SPI `@e` inspector wired to the new `POST /api/screen/action`.
+  - Apps view: `GET /api/apps` (auto-refresh 15 s while visible), search + running/
+    dev/media/system filters, Launch/Focus/Close → `POST /api/apps/action`.
+  - Skills: teach workflow (trigger + `;`-split actions), save fact, Run Now → command,
+    DELETE via `/api/skills`; facts/aliases listed with delete.
+  - Telemetry: stage averages, p50/p95 KPIs, VRAM bar, Catmull-Rom→bezier spline from
+    `latency_series` (shared `drawSpline` with the HUD pulse card), series rows.
+  - Settings: `GET/POST /api/config`; personality presets (JARVIS/tactical/warm),
+    brain_replies toggle, reply style, instant-save sliders (silence/max/follow-up/mic
+    volume), permission mode, identity; SSE config updates never clobber a focused
+    control (`syncSettings(force)` guard).
+  - Bridge: status dot from `GET /api/tabs` `bridge_connected` + extension setup guide.
+  - Theme toggle persisted via `localStorage` (`ultron-glass`); quick search routes into
+    the active view's filter (Enter on Overview sends the text to Ultron).
+  - All user/API text is escaped (`esc`) or set via `textContent` — no innerHTML sinks
+    for untrusted strings.
+- Reference-video check (2026-11-07): Nitin added the design video; this session cannot
+  view images, so the palette was measured programmatically (ffmpeg 1×1 region averages
+  + palettegen). Measured: rail `#2d2627`, stage `#352f2b`/`#2e2722`, right stack
+  `#2e2b32`, frame `#262021`, accents = muted emerald/teal + desaturated cyan + lavender
+  grey, text warm cream `#dad6c9`. The built glass tokens already match; `--ink` and the
+  serif title were softened toward that warm cream. Frame-extract script lives only in
+  the session scratchpad (not the repo).
+
+### Step 4 checkpoint — dashboard tests (2026-11-07)
+- `tests/test_phase10_dashboard.py` — **7 passed**. Covers: bundle exists on disk;
+  zero remote asset loads (local-only `<script src="app.js">` / `styles.css`, no
+  CDN/fonts/`@import`); `GET /` serves `dist/index.html` 200 with all 8 view sections
+  and every V18 marker (rail/stage/hud-stack/vision-grabber/waveform/spline/donut);
+  `styles.css` 200 `text/css` with the pinned glass values; `app.js` 200 with correct
+  JS MIME and all 11 API bindings incl. SSE `addEventListener("state")`, `barge_in`,
+  `ptt_start/stop`; SPA fallback + path-traversal 404; live API still answers on the
+  same instance (mode-only voice POST, `/api/command` echo, `/api/screen/action` route).
+
+### Step 5 checkpoint — live smoke on the real desktop (2026-11-07, actually run)
+
+```
+.venv/bin/python main.py environment --headless          # port 9932
+GET /api/health → {"ok":true,"llama_server":true,"voice_status":"listening"}
+GET /            → 200 text/html 30927 B (dist/index.html, V18 markers present)
+GET /styles.css  → 200 text/css 36267 B
+GET /app.js      → 200 application/javascript 51881 B   (MIME pin works)
+GET /api/stream  → retry: 1000; id: 474; event: state; full snapshot data
+POST /api/command {"text":"what is your name?","speak":false}
+                 → real LLM reply in 1602 ms
+POST /api/voice/control {"mode":"continuous"} → 200, voice_mode applied
+GET /api/apps    → 201 apps indexed, 22 running
+POST /api/browser/sync (1 WhatsApp tab) → tab_count 1; /api/tabs → bridge_connected true
+SIGTERM → clean stop: no llama-server, no ydotoold, no pw-record, no AT-SPI helper;
+          ports 9931/9932 free. (Only match left was the system's ibus main.py.)
+```
+
+### Step 6 checkpoint — verification + commit (2026-11-07)
+
+- `tests/test_phase10_dashboard.py`: 7 passed.
+- Full suite: **573 passed, 0 failed** (78.8 s).
+- Benchmark: **25/25 passed**, average **2.158 ms** (mocked routing; live mic/LLM latency
+  UNVERIFIED here — the smoke's real LLM turn measured 1602 ms).
+- Docs updated: `docs/LEFT_WORK.md` (this log), `docs/PROGRESS.md` (Gate 2B section),
+  `docs/DASHBOARD_API_CONTRACT.md` (new §10a `POST /api/screen/action` + corrected
+  mode-switch note: `{mode}` without an action key).
+- Staged by exact filename; the design video mp4 in the repo root was NOT staged.
+  Nothing pushed; `origin` untouched.
+
+## Gate 2B — done. How Nitin tests it
+
+```sh
+cd ~/Downloads/ULTRON
+.venv/bin/python main.py environment        # opens the dashboard window (or open
+                                            # http://127.0.0.1:9932/ in any browser)
+```
+- Overview: command bar (“what is your name?”) → heard/thinking/reply banners update;
+  ticks, donut and latency bars fill from live SSE.
+- Voice: switch mode in the header (Wake/Continuous/PTT), Mute Mic, hold PTT, Stop
+  (barge-in) — the sapphire card's state orb and 10 waveform pills react live.
+- Tabs & Eyes: with the extension loaded, rows show real Brave/Firefox tabs —
+  Switch/Read/Type/Click/Close work; the @e inspector lists live AT-SPI elements.
+- Apps: search “hermes” → Launch/Focus/Close.
+- Workflows: teach “work mode” → “open code; open github”, Run Now, Delete.
+- Settings: move the pause-tolerance slider → POST /api/config saves instantly.
+- Stop with Ctrl+C; verify: `ss -ltnp | grep -E "9931|9932" || echo ports free`.
 
 ---
 

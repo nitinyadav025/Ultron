@@ -333,6 +333,23 @@ and the next 800 ms poll executes it. `read` returns the cached DOM/extract imme
 When the extension is absent, the server falls back to wmctrl/AT-SPI/ydotool and the
 response contains `"method": "wmctrl" | "atspi"`.
 
+### 10a. `POST /api/screen/action` — live AT-SPI `@e` elements
+
+Acts on the screen elements published in `screen_state.visible_elements` (the
+`@e1…@eN` refs from the screen watcher / AT-SPI):
+
+```json
+{"action": "click", "ref": "@e1"}
+{"action": "read",  "ref": "@e3"}
+{"action": "type",  "ref": "@e2", "text": "hello"}
+{"action": "send",  "ref": "@e2", "text": "hello"}   // type + Enter
+```
+
+`action`: `click | read | type | send`. The response is the underlying
+`click_element` / `read_screen` / `focus_and_type` (+ `press_key("enter")`) tool result,
+e.g. `{"ok": true, ...}`; `send` adds `"submitted": true`. Unknown actions → `400`.
+Added in Gate 2B for the dashboard's Live Screen Elements inspector.
+
 ## 11. Browser bridge endpoints (used by the extension)
 
 `POST /api/browser/sync` (the extension pushes every 800 ms):
@@ -400,8 +417,8 @@ All three write through the existing workspace memory/skill files and return the
   spline chart from `telemetry.latency_series`; GPU ring from
   `gpu_vram_used_mb / gpu_vram_total_mb`; conversation from `conversation_feed`.
 - Voice controls map 1:1 to `/api/voice/control`; the Stop button must send `barge_in`.
-- Mode switch sends `{"action":"mode","mode":"wake_word|continuous|ptt"}` (or includes
-  `mode` with another action).
+- Mode switch sends `{"mode":"wake_word|continuous|ptt"}` **without** an `action` key
+  (an empty action applies the mode; there is no `"mode"` action in the handler map).
 - Microphone mute and Piper mute are independent (`mute_mic`, `mute_tts`).
 - All requests are localhost-only; no API key or auth header is required.
 - Do not add CDNs or remote fonts if offline purity matters; bundle assets in `dist/`.

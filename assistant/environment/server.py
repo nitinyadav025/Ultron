@@ -37,8 +37,15 @@ from assistant.environment.browser_bridge import BrowserBridgeHub, get_browser_b
 from assistant.environment.state import EnvironmentState, get_state
 from assistant.tools.apps import close_app, find_app, open_app, scan_desktop_apps, switch_app
 from assistant.tools.browser_tabs import interact_with_tab, list_browser_tabs, switch_to_tab
+from assistant.tools.desktop_control import press_key
+from assistant.tools.screen_actions import click_element, focus_and_type, read_screen
 
 logger = logging.getLogger("ultron.environment.server")
+
+# The Dashboard contract pins the classic JS MIME type (some systems default to
+# text/javascript, which older tooling rejects).
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 VERSION = "phase9-env"
 DEFAULT_PORT = int(os.environ.get("ULTRON_ENV_PORT") or 9932)
@@ -192,6 +199,8 @@ class EnvironmentServer:
             return 405, {"ok": False, "error": "method not allowed"}, "application/json"
         if path == "/api/tabs/action" and method == "POST":
             return self._tabs_action(body)
+        if path == "/api/screen/action" and method == "POST":
+            return self._screen_action(body)
         if path == "/api/browser/sync" and method == "POST":
             return 200, self.bridge.sync(body), "application/json"
         if path == "/api/browser/poll" and method == "GET":
@@ -463,6 +472,30 @@ class EnvironmentServer:
             self.state.set_action("", {}, "idle")
             return 500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, "application/json"
         self.state.set_action(f"tabs_{action}", {"query": query}, "done")
+        return 200, result, "application/json"
+
+    def _screen_action(self, body: dict[str, Any]) -> tuple[int, dict[str, Any], str]:
+        """Click/read/type a live AT-SPI ``@e`` element on the current screen."""
+        action = str(body.get("action") or "").strip().lower()
+        ref = str(body.get("ref") or body.get("target") or "").strip()
+        text = str(body.get("text") or "").strip()
+        self.state.set_action(f"screen_{action}", {"ref": ref}, "running")
+        try:
+            if action == "click":
+                result = click_element(ref)
+            elif action == "read":
+                result = read_screen(ref)
+            elif action in ("type", "send"):
+                result = focus_and_type(ref or "message box", text)
+                if action == "send" and result.get("ok"):
+                    press_key("enter")
+                    result = {**result, "submitted": True}
+            else:
+                return 400, {"ok": False, "error": f"unknown screen action {action!r}"}, "application/json"
+        except Exception as exc:
+            self.state.set_action("", {}, "idle")
+            return 500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, "application/json"
+        self.state.set_action(f"screen_{action}", {"ref": ref}, "done")
         return 200, result, "application/json"
 
     def _skills(self) -> dict[str, Any]:

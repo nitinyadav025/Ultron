@@ -1,7 +1,8 @@
 # Ultron progress — Phase 9 (current)
 
-Last updated: 2026-11-06 (Gate 2A standalone environment complete: **566 tests**, **25/25**
-benchmark; Gate 2B Liquid Glass dashboard is the next agent's task)
+Last updated: 2026-11-07 (Gate 2B Liquid Glass V18 dashboard complete: **573 tests**,
+**25/25** benchmark; live 9932 smoke of the served dashboard; commit on
+`phase9-fedora45-ultron-env`)
 
 > **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
 > now runs from `main.py environment` with a thread-safe live state, managed voice
@@ -61,6 +62,24 @@ The UI agent must read `docs/DASHBOARD_API_CONTRACT.md`, build a static bundle i
 The server already serves the bundle at `/` and streams state at `/api/stream`; no backend
 change is expected. Live microphone, real extension DOM clicks and hardware barge-in remain
 **UNVERIFIED** until Nitin exercises them.
+
+## Gate 2B — Liquid Glass V18 Dashboard (Nov 7)
+
+Branch: `phase9-fedora45-ultron-env` (local only, nothing pushed). Full build log:
+`docs/LEFT_WORK.md` (Steps 1–6 all DONE).
+
+| Part | What | Result |
+|---|---|---|
+| Bundle | `assistant/dashboard/dist/{index.html,styles.css,app.js}` — zero dependencies, zero CDN/remote fonts | DONE — visionOS smoked-glass 3-zone layout (240 px frosted rail, smoked-amber stage with visionOS grabber, 290 px detached 3-widget HUD stack at `rotateY(-3deg)`), 8 nav views, sapphire voice card with 10 live waveform pills, GPU/focus card, spline latency pulse, 32-segment ticks, SVG donut, spring entrances + 35 ms staggered card rise |
+| Live wiring | `GET /api/state` once → `EventSource /api/stream`; signature-guarded re-renders; rAF number count-up; command bar, barge-in, mode switch (`{mode}` without action key), mute, hold-PTT, tabs controller (switch/read/type/click/close), `@e` inspector via new `POST /api/screen/action`, app launcher (201 apps live), skill trainer, config studio, telemetry, bridge status | DONE — all 11 documented endpoints bound |
+| Backend additions (from the pre-Gate-2B session, shipped with it) | `state.set_planned_steps` + AgentLoop `next_planned_steps` planner feed; `POST /api/screen/action`; JS/CSS MIME pinning; contract updated (§10a + mode-switch note) | DONE |
+| Tests | `tests/test_phase10_dashboard.py` (7 tests: bundle on disk, no remote loads, all views/markers served, MIME types, API bindings, SPA fallback + traversal 404, live API round-trip) | DONE — full suite **573 passed, 0 failed**; benchmark **25/25** at 2.158 ms (mocked) |
+| Live smoke | `main.py environment --headless` on 9932 | DONE — `GET /` 200 (30.9 KB HTML), `/styles.css` 200 text/css, `/app.js` 200 application/javascript, SSE `retry: 1000` + `event: state`, `/api/command` real LLM reply 1602 ms, mode-only voice POST 200, `/api/apps` 201 apps / 22 running, bridge sync → `bridge_connected: true`; SIGTERM → no llama-server / ydotoold / pw-record / AT-SPI helper, ports 9931/9932 free |
+| Reference palette | Nitin's design video measured programmatically (no image viewing this session): rail `#2d2627`, stage `#352f2b`, stack `#2e2b32`, warm cream text `#dad6c9` | DONE — tokens already matched; text softened toward warm cream |
+
+**UNVERIFIED by this agent:** rendering in a real browser window (no GUI session here),
+the real microphone voice loop, extension DOM clicks in Brave/Firefox, hardware barge-in.
+Those need Nitin: `.venv/bin/python main.py environment` → open `http://127.0.0.1:9932/`.
 
 ## Phase 9 — Fedora 45 & ULTRON Repair (Nov 6)
 
