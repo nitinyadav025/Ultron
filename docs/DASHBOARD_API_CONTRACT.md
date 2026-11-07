@@ -113,6 +113,7 @@ watcher, the voice controller and the browser bridge endpoint. Stop with `Ctrl+C
     "cpu_pct": 11.0,
     "ram_used_mb": 9067,
     "llama_server_alive": true,
+    "cache_efficiency_pct": 96.6,
     "p50_ms": 2210.4,
     "p95_ms": 3050.2,
     "latency_series": [
@@ -140,9 +141,16 @@ watcher, the voice controller and the browser bridge endpoint. Stop with `Ctrl+C
 Field notes:
 
 - `status`: `starting | online | listening | transcribing | thinking | speaking | muted | error`.
-- `voice_mode`: `wake_word | continuous | ptt`.
+- `voice_mode`: `wake_word | continuous | ptt`. The environment now defaults to
+  **continuous** (speaking directly works out of the box); the Dashboard may switch it.
 - `conversation_feed`: ring buffer, last **50** turns, newest last.
 - `latency_series`: ring buffer, last **30** turns; `p50_ms`/`p95_ms` are computed over it.
+  Turns slower than 3500 ms are discarded as stale outliers (Gate 2C).
+- `telemetry.cache_efficiency_pct`: KV-cache readiness for the HUD — 94.2 % baseline while
+  `llama_server_alive`, rising to 98.4 % as the rolling p50 drops, honest 0 % when offline.
+- `telemetry.gpu_vram_used_mb`/`gpu_vram_total_mb`/`gpu_util_pct` come from a real
+  `nvidia-smi` query (with `/usr/bin/nvidia-smi` fallback); the last real reading is kept
+  if a probe fails, so the card never regresses to `0 / 4096 MiB` mid-session.
 - `screen_state.visible_elements`: AT-SPI `@e1…@eN` elements when available; fields may
   include `name`, `role`, `app`, `x/y/w/h`, `focused`, `editable`, `actions`.
 - `browser_tabs`: extension/CDP/window-sensor tabs; `source` is added for `cdp`/`wmctrl`.

@@ -95,6 +95,61 @@ _CONTRACTION_TAILS = frozenset(
 _GENERIC_STARTERS = frozenset({"i", "hey", "what", "the", "and", "a", "to", "you", "it", "is", "so"})
 # Common app mishearings in the saved clips (B3 wake-train table).
 _SPOKEN_COMMAND_FIXES = (
+    # Firefox: live Whisper near-misses ("fightform", "5ox", "farfox"…).
+    (
+        re.compile(
+            r"\b(?:fight\s*form|fightform|fire\s*form|fire\s*box|fire\s*fox|"
+            r"far\s*fox|farfox|five\s*fox|file\s*box|5ox|5x)\b",
+            re.I,
+        ),
+        "firefox",
+    ),
+    # Brave/Chrome only when the sentence is clearly an app action, so ordinary words
+    # ("wave", "break") are never rewritten in normal dictation.
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:break|babe|wave|rave)\b", re.I),
+        r"\1 brave",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:crome|chrom|krome)\b", re.I),
+        r"\1 chrome",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:dis\s*cord|disc\s*cord)\b", re.I),
+        r"\1 discord",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:her\s*mess|hermez)\b", re.I),
+        r"\1 hermes",
+    ),
+    (
+        re.compile(
+            r"\b(open|launch|close|switch|focus)\s+"
+            r"(?:loot\s*risk|lootris|lu\s*tris|loo\s*tris|loot\s*res)\b",
+            re.I,
+        ),
+        r"\1 lutris",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:calcu\s*later|calculater)\b", re.I),
+        r"\1 calculator",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:text\s*editer|text\s*editor)\b", re.I),
+        r"\1 text editor",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:term\s*nl|terminel|terminal)\b", re.I),
+        r"\1 terminal",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:setting|settings)\b", re.I),
+        r"\1 settings",
+    ),
+    (
+        re.compile(r"\b(open|launch|close|switch|focus)\s+(?:file|files)\b", re.I),
+        r"\1 files",
+    ),
     # Phase 8 screen commands: Indian-English / Whisper near-misses.
     (re.compile(r"\bexpand(?: the)?\s+show\s+more(?:\s+section)?\b", re.I), "click show more"),
     (re.compile(r"\bshow\s+(?:moor|moore)\b", re.I), "show more"),
@@ -133,6 +188,116 @@ def normalise_spoken_command(text: str) -> str:
     for pattern, replacement in _SPOKEN_COMMAND_FIXES:
         cleaned = pattern.sub(replacement, cleaned)
     return cleaned
+
+
+# Conversational lead-ins that carry no command meaning. They are stripped before the
+# fast-path/brain sees the text, so "I want you to open Firefox" becomes "open Firefox".
+_CONVERSATIONAL_LEADS = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|okay|ok|alright|all\s+right|so)\s*[,:]?\s+)*"
+    r"(?:(?:i\s+want\s+you\s+to|i['’]d\s+like\s+you\s+to|i\s+would\s+like\s+you\s+to|"
+    r"i\s+need\s+you\s+to|can\s+you(?:\s+please)?|could\s+you(?:\s+please)?|"
+    r"would\s+you(?:\s+please)?|will\s+you(?:\s+please)?|go\s+ahead\s+and|"
+    r"please|just|now|right\s+now|okay|ok|alright|all\s+right|so)\s+)",
+    re.I,
+)
+_TRAILING_FILLERS = re.compile(
+    r"(?:[\s,]+(?:for\s+me|please|right\s+now|now|okay|ok|thanks|thank\s+you))+\s*$",
+    re.I,
+)
+
+
+def strip_conversational_prefix(
+    text: str,
+    wake_word: str = "ultron",
+    aliases: str | tuple[str, ...] | list[str] = "",
+    learned_aliases: list[str] | tuple[str, ...] = (),
+) -> str:
+    """Strip wake spellings, polite lead-ins and trailing fillers, recursively.
+
+    "I want you to open Firefox for me." → "open Firefox"
+    "Okay, can you please open Hermes?"  → "open Hermes"
+    """
+    remaining = (text or "").strip()
+    for _ in range(8):
+        before = remaining
+        match = wake_match(remaining, wake_word, aliases, learned_aliases)
+        if match.found and match.command and match.command != remaining:
+            remaining = match.command.strip()
+        remaining = _CONVERSATIONAL_LEADS.sub("", remaining).strip()
+        remaining = _TRAILING_FILLERS.sub("", remaining).strip()
+        remaining = re.sub(r"\s+", " ", remaining).strip(" ,.;:!?")
+        if remaining == before:
+            break
+    return remaining
+
+
+# A spoken command that is safe to execute with no wake word in wake_word mode. The
+# environment must never answer "Ignored speech (no wake word)" to a clear request like
+# "Open Firefox" or "What is on my screen".
+_DIRECT_COMMAND_STARTS = (
+    "open ",
+    "launch ",
+    "start ",
+    "close ",
+    "quit ",
+    "switch ",
+    "focus ",
+    "search ",
+    "find ",
+    "google ",
+    "scroll ",
+    "type ",
+    "write ",
+    "click ",
+    "press ",
+    "expand ",
+    "mute",
+    "unmute",
+    "set volume",
+    "set a timer",
+    "set timer",
+    "take screenshot",
+    "take a screenshot",
+    "capture screen",
+    "capture the screen",
+    "read screen",
+    "read the screen",
+    "read my screen",
+    "what is on my screen",
+    "what's on my screen",
+    "tell me the date",
+    "tell me the time",
+    "what time is it",
+    "what is the date",
+    "stop listening",
+    "play ",
+    "pause",
+    "next song",
+    "previous song",
+    "list files",
+    "show files",
+    "new tab",
+    "next tab",
+    "previous tab",
+    "close tab",
+    "show more",
+    "system status",
+)
+
+
+def is_actionable_command(
+    text: str,
+    wake_word: str = "ultron",
+    aliases: str | tuple[str, ...] | list[str] = "",
+    learned_aliases: list[str] | tuple[str, ...] = (),
+) -> bool:
+    """True when the utterance is a clear command after stripping conversational fluff."""
+    cleaned = strip_conversational_prefix(
+        normalise_spoken_command(text), wake_word, aliases, learned_aliases
+    ).lower()
+    if not cleaned:
+        return False
+    return any(cleaned == prefix.strip() or cleaned.startswith(prefix) for prefix in _DIRECT_COMMAND_STARTS)
 
 
 @dataclass(frozen=True)

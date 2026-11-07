@@ -38,8 +38,10 @@ from assistant.speech.recorder import (
 )
 from assistant.speech.wake import (
     aliases_for,
+    is_actionable_command,
     load_learned_aliases,
     normalise_spoken_command,
+    strip_conversational_prefix,
     strip_wake_prefixes,
     wake_match,
     wake_match_anywhere,
@@ -377,9 +379,22 @@ class EnvironmentVoiceController:
             wake_found = match.found
             in_followup = now < self._followup_until
             if not wake_found and not in_followup:
-                self.state.set_thought("Ignored speech (no wake word).")
-                return False
-            if wake_found:
+                # A clear spoken command must never be dropped just because "Ultron"
+                # was not said ("Open Firefox", "What is on my screen"). The stripped,
+                # high-confidence utterance goes straight to the brain.
+                if is_actionable_command(
+                    text,
+                    getattr(self.config, "wake_word", "ultron"),
+                    getattr(self.config, "wake_aliases", ""),
+                    self.learned_aliases,
+                ):
+                    command = text
+                    self.state.set_thought("Direct command (no wake word).")
+                    logger.info("Environment accepted a direct command without the wake word")
+                else:
+                    self.state.set_thought("Ignored speech (no wake word).")
+                    return False
+            elif wake_found:
                 command = match.command
                 if not command.strip():
                     self._say("Yes?")
@@ -400,6 +415,14 @@ class EnvironmentVoiceController:
         else:  # ptt
             command = self._without_leading_wake(text)
 
+        # Remove polite/conversational lead-ins for every mode so the fast path sees
+        # "open firefox" and not "I want you to open firefox".
+        command = strip_conversational_prefix(
+            command,
+            getattr(self.config, "wake_word", "ultron"),
+            getattr(self.config, "wake_aliases", ""),
+            self.learned_aliases,
+        )
         command = normalise_spoken_command(command).strip(" ,.")
         if not command:
             self.state.set_status("listening")

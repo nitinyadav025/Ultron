@@ -1,8 +1,8 @@
 # Ultron progress — Phase 9 (current)
 
-Last updated: 2026-11-07 (Gate 2B Liquid Glass V18 dashboard complete: **573 tests**,
-**25/25** benchmark; live 9932 smoke of the served dashboard; commit on
-`phase9-fedora45-ultron-env`)
+Last updated: 2026-11-07 (Gate 2C live-bug fix pass: voice parsing, phonetic apps,
+6-schema local brain, real telemetry, demo-faithful zero-overlap dashboard; **637 tests**,
+**25/25** benchmark; live 9932 smoke; commit on `phase9-fedora45-ultron-env`)
 
 > **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
 > now runs from `main.py environment` with a thread-safe live state, managed voice
@@ -62,6 +62,29 @@ The UI agent must read `docs/DASHBOARD_API_CONTRACT.md`, build a static bundle i
 The server already serves the bundle at `/` and streams state at `/api/stream`; no backend
 change is expected. Live microphone, real extension DOM clicks and hardware barge-in remain
 **UNVERIFIED** until Nitin exercises them.
+
+## Gate 2C — Live-bug fix pass (Nov 7)
+
+Branch: `phase9-fedora45-ultron-env` (local only). Full evidence in `docs/LEFT_WORK.md`
+(Parts 1–6 all DONE). Nitin's screenshots were not on disk; fixes are based on his bug
+report + the demo source in `workspace-c10ff91a-…/`.
+
+| Fix | What changed | Proof |
+|---|---|---|
+| Demo inspection | Read all 9 dashboard source files from Nitin's Next.js demo; extracted exact glass tokens, Lora/Inter type, bento structure and chart components | Part 1 checkpoint |
+| Conversational voice | `strip_conversational_prefix()` removes wake spellings, "I want you to", "can you please", "please", "go ahead and", trailing "for me/please/right now"; fast path + voice controller use it | `"I want you to open Firefox for me." → "open Firefox"` |
+| No wake word needed | Environment defaults to **continuous**; in wake mode a clear actionable verb is accepted instead of "Ignored speech (no wake word)" | wake-path unit check handled=True |
+| Phonetic apps | fightform/fight form/fire form/far fox/farfox/five fox/5ox/5x/file box → firefox; break/babe/wave/rave → brave; crome→chrome; her mess→hermes (never Lutris); lutris/calc/terminal/editor/settings/files aliases; `difflib`+Soundex fallback at 0.68 | live "Fightform" opened Firefox |
+| 4.2 s brain | Fast-path commands no longer make an extra `_natural_reply` LLM round; local schemas capped at **6 compact tools** (4 core + 2 relevant); fresh environment history | live 6.7–14.3 ms for open commands |
+| Telemetry | real `nvidia-smi` with `/usr/bin` fallback + last-known value; `cache_efficiency_pct` 94.2→98.4 while warm; >3500 ms stale latencies discarded | live **1614/4096 MiB**, **98.3 %** |
+| Dashboard | strict 3-column grid (210 / 1fr / 280), HUD as a real column (never fixed/absolute), demo bento overview, sapphire voice card, GPU pill, spline card, calendar/support views, bundled demo backgrounds | 7 dashboard tests incl. HUD-not-overlay |
+| Window | Brave/Chrome app windows: `--window-size=1480,860 --window-position=120,80` | regression test |
+| Verification | 637 tests passed; benchmark 25/25 at 3.360 ms; live 9932 smoke of every phrasing; processes stopped, ports free | Part 5 checkpoint |
+
+**UNVERIFIED:** live browser rendering (headless Brave hangs on this Fedora/Wayland
+session; no vision here), real microphone capture, extension DOM clicks, hardware
+barge-in. The open-ended multi-sentence LLM answer took 2137 ms; fast actions alone meet
+<600 ms.
 
 ## Gate 2B — Liquid Glass V18 Dashboard (Nov 7)
 

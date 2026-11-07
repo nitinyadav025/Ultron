@@ -24,14 +24,12 @@ from assistant.brain import build_adapter
 from assistant.brain.agent_loop import AgentLoop
 from assistant.brain.context import ensure_accessibility
 from assistant.brain.fast_path import match_fast_command, run_fast_command
-from assistant.brain.prompts import build_chat_prompt
 from assistant.brain.server_manager import LlamaServerError, LlamaServerManager
 from assistant.config import AssistantConfig
 from assistant.environment.browser_bridge import get_browser_bridge
 from assistant.environment.server import DEFAULT_PORT, EnvironmentServer
 from assistant.environment.state import EnvironmentState, get_state
 from assistant.environment.voice_controller import EnvironmentVoiceController
-from assistant.genai_types import types
 from assistant.safety.killswitch import WatchdogMonitor
 from assistant.safety.permissions import PermissionGate
 from assistant.speech.ears import WhisperEars
@@ -108,9 +106,45 @@ class TelemetryCollector(threading.Thread):
         self.state = state
         self.interval = max(0.5, float(interval))
         self._stop = threading.Event()
+        # Keep the last real VRAM reading: a single failed nvidia-smi probe must not
+        # repaint the Dashboard as "0 / 4096 MiB".
+        self._last_used_mb = 0
+        self._last_total_mb = 0
 
     def stop(self) -> None:
         self._stop.set()
+
+    @staticmethod
+    def _nvidia_smi_path() -> str:
+        """Find nvidia-smi even when the GUI session PATH is minimal."""
+        found = shutil.which("nvidia-smi")
+        if found:
+            return found
+        fallback = "/usr/bin/nvidia-smi"
+        return fallback if os.path.exists(fallback) else ""
+
+    def _gpu_sample(self) -> tuple[int, int, float] | None:
+        smi = self._nvidia_smi_path()
+        if not smi:
+            return None
+        try:
+            done = subprocess.run(
+                [
+                    smi,
+                    "--query-gpu=memory.used,memory.total,utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            parts = [part.strip() for part in done.stdout.strip().splitlines()[0].split(",")]
+            if len(parts) >= 3:
+                return int(float(parts[0])), int(float(parts[1])), float(parts[2])
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            return None
+        return None
 
     def run(self) -> None:
         while not self._stop.is_set():
@@ -121,25 +155,17 @@ class TelemetryCollector(threading.Thread):
             self._stop.wait(self.interval)
 
     def _sample(self) -> None:
-        used_mb = total_mb = util = 0
-        if shutil.which("nvidia-smi"):
-            try:
-                done = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=memory.used,memory.total,utilization.gpu",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=1.5,
-                    check=False,
-                )
-                parts = [part.strip() for part in done.stdout.strip().split(",")]
-                if len(parts) >= 3:
-                    used_mb, total_mb, util = int(float(parts[0])), int(float(parts[1])), float(parts[2])
-            except (OSError, subprocess.SubprocessError, ValueError):
-                pass
+        gpu = self._gpu_sample()
+        if gpu is not None:
+            used_mb, total_mb, util = gpu
+            self._last_used_mb, self._last_total_mb = used_mb, total_mb
+        else:
+            # Never reset a known GPU reading to zero just because one probe failed.
+            used_mb = self._last_used_mb
+            total_mb = self._last_total_mb
+            util = 0.0
+        if not total_mb:
+            total_mb = 4096
         memory = psutil.virtual_memory()
         llama_alive = False
         try:
@@ -228,7 +254,7 @@ class EnvironmentLauncher:
             return False
 
     def _brain(self, text: str, source: str = "api") -> dict[str, Any]:
-        """Fast actions + a genuine LLM sentence; open questions go through AgentLoop."""
+        """Fast actions answer in code (<150 ms); open questions go through AgentLoop."""
         tools_called: list[str] = []
         started = time.perf_counter()
         command = match_fast_command(text)
@@ -242,9 +268,10 @@ class EnvironmentLauncher:
                 sub_tool = dict(sub).get("tool")
                 if sub_tool:
                     tools_called.append(str(sub_tool))
-            natural = self._natural_reply(text, reply, tools_called)
+            # Deterministic confirmation: no extra LLM round. The old natural-reply
+            # call added 1–4 s to every fast action (the 4,200 ms live bug).
             return {
-                "reply": natural or reply,
+                "reply": reply or "Done.",
                 "tools_called": tools_called,
                 "llm_ms": (time.perf_counter() - started) * 1000.0,
             }
@@ -261,38 +288,6 @@ class EnvironmentLauncher:
             "tools_called": list(dict.fromkeys(tools_called)),
             "llm_ms": (time.perf_counter() - started) * 1000.0,
         }
-
-    def _natural_reply(self, user_text: str, tool_reply: str, tools: list[str]) -> str:
-        """Ask the local model to phrase a real tool outcome naturally (brain_replies)."""
-        if not self.state.get_config().get("brain_replies", True):
-            return tool_reply
-        if self.adapter is None or not tool_reply:
-            return tool_reply
-        live = self.state.get_config()
-        prompt = (
-            f"User asked: {user_text}\n"
-            f"Real tool result: {tool_reply}\n"
-            f"Tools used: {', '.join(tools) or 'none'}\n"
-            "Reply with one natural spoken sentence that states the real outcome. "
-            "Do not invent extra facts."
-        )
-        try:
-            response, _usage = self.adapter.generate_turn(
-                contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
-                system_instruction=build_chat_prompt(
-                    self.config,
-                    personality=str(live.get("personality_prompt") or ""),
-                    user_name=str(live.get("user_name") or ""),
-                    reply_style=str(live.get("reply_style") or "natural"),
-                ),
-                tools=None,
-                max_output_tokens=120,
-            )
-            text = (response.text or "").strip()
-            return text or tool_reply
-        except Exception as exc:
-            logger.info("Natural reply fallback to the tool sentence: %s", type(exc).__name__)
-            return tool_reply
 
     def _apply_gate_config(self, live: dict[str, Any]) -> None:
         mode = str(live.get("permission_mode") or "")
@@ -313,6 +308,9 @@ class EnvironmentLauncher:
             self.config.max_steps, self.config.wall_clock_timeout_sec, self.config.idle_standdown_sec
         )
         self.loop = AgentLoop(self.config, self.adapter, self.registry, watchdog)
+        # A fresh environment session never inherits stale LLM turns; this also keeps
+        # an earlier "JavaScript files" answer from polluting the next command prompt.
+        self.loop.history.clear()
 
         if not os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("ULTRON_NO_INPUT"):
             try:
@@ -360,10 +358,17 @@ class EnvironmentLauncher:
 
     def _open_dashboard(self, url: str) -> None:
         commands: list[list[str]] = []
+        # Always a widescreen spatial frame: the live bug showed a ~780 px window that
+        # collapsed the 3-column layout.
+        window = ["--window-size=1480,860", "--window-position=120,80"]
         if shutil.which("brave-browser"):
-            commands.append(["brave-browser", f"--app={url}", "--force-renderer-accessibility"])
+            commands.append(
+                ["brave-browser", f"--app={url}", "--force-renderer-accessibility", *window]
+            )
         if shutil.which("google-chrome"):
-            commands.append(["google-chrome", f"--app={url}", "--force-renderer-accessibility"])
+            commands.append(
+                ["google-chrome", f"--app={url}", "--force-renderer-accessibility", *window]
+            )
         if shutil.which("firefox"):
             commands.append(["firefox", "--new-window", url])
         if shutil.which("xdg-open"):

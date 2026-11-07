@@ -21,10 +21,16 @@ from assistant.tools.registry import tool
 
 logger = logging.getLogger("ultron.apps")
 
-# Spellings Whisper/user text really produced ("5ox", "file box") plus common names.
+# Spellings Whisper/user text really produced ("5ox", "file box", "fightform") plus names.
 APP_ALIASES: dict[str, str] = {
     "fire fox": "firefox",
     "firefox": "firefox",
+    "fightform": "firefox",
+    "fight form": "firefox",
+    "fire form": "firefox",
+    "far fox": "firefox",
+    "farfox": "firefox",
+    "five fox": "firefox",
     "5ox": "firefox",
     "5x": "firefox",
     "file box": "firefox",
@@ -79,8 +85,15 @@ APP_ALIASES: dict[str, str] = {
     "extensions": "extensions",
     "brave browser": "brave",
     "brave": "brave",
+    "break": "brave",
+    "babe": "brave",
+    "wave": "brave",
+    "rave": "brave",
     "google chrome": "chrome",
     "chrome": "chrome",
+    "crome": "chrome",
+    "chrom": "chrome",
+    "krome": "chrome",
     "spotify": "spotify",
     "vlc": "vlc",
     "lutris": "lutris",
@@ -89,6 +102,16 @@ APP_ALIASES: dict[str, str] = {
     "lootris": "lutris",
     "lu tris": "lutris",
     "loot res": "lutris",
+    "hermes": "hermes",
+    "her mess": "hermes",
+    "hermez": "hermes",
+    "hermes desktop": "hermes",
+    "dis cord": "discord",
+    "disc cord": "discord",
+    "calculater": "calculator",
+    "calcu later": "calculator",
+    "terminel": "terminal",
+    "text editer": "text editor",
     "web browser": "firefox",
     "browser": "firefox",
 }
@@ -582,6 +605,33 @@ def _desktop_path_for_id(desktop_id: str) -> str:
     return ""
 
 
+def _close_match_app(query: str) -> DesktopApp | None:
+    """Fuzzy/phonetic fallback for STT near-misses ("fierfox" → Firefox).
+
+    Uses ``difflib.get_close_matches`` across every indexed display name and desktop
+    key at the 0.68 cutoff the live bug report requires, then a Soundex check for
+    homophones that difflib misses.
+    """
+    candidates: dict[str, DesktopApp] = {}
+    for app in scan_desktop_apps():
+        if app.no_display:
+            continue
+        for text in _match_texts(app):
+            if len(text) >= 4:
+                candidates.setdefault(text, app)
+    close = difflib.get_close_matches(query, list(candidates), n=1, cutoff=0.68)
+    if close:
+        return candidates[close[0]]
+    # Soundex is only trustworthy for a single spoken word: a whole phrase reduces to
+    # one code ("some fake app" → S512) and would otherwise match nothing-similar names.
+    if " " not in query and 4 <= len(query) <= 12 and _soundex(query):
+        for text, app in candidates.items():
+            for word in text.split():
+                if len(word) >= 4 and _soundex(word) == _soundex(query):
+                    return app
+    return None
+
+
 def find_app(app_name: str) -> AppMatch | None:
     """Resolve a spoken name against apps.yaml (high priority) and .desktop files."""
     cleaned = normalise_app_name(app_name)
@@ -613,7 +663,12 @@ def find_app(app_name: str) -> AppMatch | None:
         if best is None or score > best[0]:
             best = (score, app)
     if best is None or best[0] < 0.86:
-        return None
+        # Last resort: a real STT near-miss ("fierfox", "hermez") that neither the
+        # alias table nor the strict 0.86 score caught.
+        matched = _close_match_app(scan_query)
+        if matched is None:
+            return None
+        best = (0.68, matched)
     app = best[1]
     return AppMatch(
         key=key or normalise_app_name(app.key),

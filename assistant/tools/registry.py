@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, get_type_hints
+from typing import Any, Callable, Iterable, get_type_hints
 
 from assistant.config import AssistantConfig
 from assistant.safety.audit import log_audit_event
@@ -232,16 +232,22 @@ class ToolRegistry:
             out.append(types.Tool(google_search=types.GoogleSearch()))
         return out
 
-    def get_openai_tools(self, compact: bool = False) -> list[dict[str, Any]]:
+    def get_openai_tools(
+        self, compact: bool = False, names: Iterable[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Build OpenAI-compatible function schemas from the registered tools (for llama.cpp).
 
         ``compact=True`` is the local 1.7B path: only the 12 tools that still need a model
         round, short descriptions, required params plus the few optional ones the model
-        really uses. The default keeps every tool/param for Gemini and for tests.
+        really uses. ``names`` limits the payload further (the Dashboard turn-selector caps
+        it at six schemas). The default keeps every tool/param for Gemini and for tests.
         """
+        allowed = set(names) if names is not None else None
         out: list[dict[str, Any]] = []
         for spec in self._tools.values():
             decl = spec.declaration
+            if allowed is not None and decl.name not in allowed:
+                continue
             if compact and LOCAL_SCHEMA_TOOLS and decl.name not in LOCAL_SCHEMA_TOOLS:
                 continue
             required = list(decl.required)

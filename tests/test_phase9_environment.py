@@ -35,7 +35,7 @@ from assistant.speech.mouth import PiperMouth
 def test_state_defaults_turns_latency_and_snapshot(tmp_path: Path) -> None:
     state = EnvironmentState(config_path=tmp_path / "env.json")
     assert state.status == "starting"
-    assert state.voice_mode == "wake_word"
+    assert state.voice_mode == "continuous"  # the environment listens without a wake word
     assert state.get_config()["assistant_name"] == "Ultron"
     assert state.get_config()["brain_replies"] is True
     assert state.get_config()["listen_followup_s"] == 8.0

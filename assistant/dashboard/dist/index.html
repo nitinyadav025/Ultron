@@ -9,501 +9,597 @@
 </head>
 <body>
 
-<div class="ambient-backdrop" aria-hidden="true"></div>
+<div class="studio-bg" aria-hidden="true"></div>
 
-<div class="app-shell">
+<div class="app-viewport">
+  <!-- Strict 3-column spatial grid: rail | stage | detached HUD stack -->
+  <div class="spatial-shell">
 
-  <!-- ==================== A) LEFT FROSTED NAVIGATION RAIL ==================== -->
-  <nav class="rail" aria-label="Workspace navigation">
-    <div class="rail-header">
-      <div class="core-avatar" aria-hidden="true"></div>
-      <div>
-        <div class="title">Nitin's Workspace</div>
-        <div class="subtitle">Ultron OS · Local GPU</div>
+    <!-- ==================== A) LEFT FROSTED NAVIGATION RAIL ==================== -->
+    <nav class="rail" aria-label="Workspace navigation">
+      <div class="rail-profile">
+        <div class="core-avatar" aria-hidden="true"></div>
+        <div class="who">
+          <div class="name">Nitin's Workspace</div>
+          <div class="plan">Ultron Core · Local</div>
+        </div>
       </div>
-    </div>
 
-    <div class="rail-nav" id="rail-nav">
-      <button class="nav-item active" data-view="overview">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>
-        <span>Overview</span>
-      </button>
-      <button class="nav-item" data-view="chat">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3a7 7 0 0 1 7 7v3l2 3-4 1a7 7 0 0 1-10-4V10a7 7 0 0 1 5-7z"/><circle cx="9.5" cy="10" r="1" fill="currentColor"/><circle cx="14.5" cy="10" r="1" fill="currentColor"/><path d="M9 13.5c1 .8 4 .8 6 0"/></svg>
-        <span>Live Brain &amp; Chat</span>
-      </button>
-      <button class="nav-item" data-view="tabs">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/><circle cx="17" cy="6.5" r="1" fill="currentColor"/><circle cx="14" cy="6.5" r="1" fill="currentColor"/><path d="M8 13h5M8 16h8"/></svg>
-        <span>Tabs &amp; Eyes</span>
-        <span class="nav-badge" id="badge-tabs">0</span>
-      </button>
-      <button class="nav-item" data-view="apps">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="3" width="6" height="6" rx="2"/><rect x="15" y="3" width="6" height="6" rx="2"/><rect x="3" y="15" width="6" height="6" rx="2"/><rect x="15" y="15" width="6" height="6" rx="2"/></svg>
-        <span>Desktop Apps</span>
-        <span class="nav-badge" id="badge-apps">0</span>
-      </button>
-      <button class="nav-item" data-view="skills">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v3m0 12v3M4.9 7l2.1 2m10 6l2 2M3 12h3m12 0h3M4.9 17l2.1-2m10-6l2-2"/><circle cx="12" cy="12" r="4"/></svg>
-        <span>Workflows &amp; Skills</span>
-        <span class="nav-badge" id="badge-skills">0</span>
-      </button>
-      <button class="nav-item" data-view="telemetry">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 20h18"/><path d="M5 16l4-6 4 3 5-8"/></svg>
-        <span>Telemetry &amp; Reports</span>
-      </button>
-
-      <div class="rail-section-label">Pinned</div>
-      <button class="nav-item" data-view="settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4l2.1 2.1M2 12h3m14 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
-        <span>Personality &amp; Settings</span>
-      </button>
-      <button class="nav-item" data-view="bridge">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14 0 18M12 3c-3 3.5-3 14 0 18"/></svg>
-        <span>Browser Bridge</span>
-        <span class="nav-badge" id="badge-bridge">·</span>
-      </button>
-    </div>
-  </nav>
-
-  <!-- ====================== B) CENTER SMOKED-GLASS STAGE ====================== -->
-  <main class="stage">
-    <header class="stage-header">
-      <div>
-        <h1 class="view-title" id="view-title">Good Evening, Nitin</h1>
-        <div class="view-subtitle" id="view-subtitle">Executive Command Deck</div>
-      </div>
-      <div class="header-controls">
-        <label class="quick-search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
-          <input id="quick-search" type="search" placeholder="Quick search…" autocomplete="off">
-        </label>
-        <span class="pill" id="pill-llama"><span class="dot"></span><span id="pill-llama-text">llama-server · …</span></span>
-        <span class="pill" id="pill-conn"><span class="dot"></span><span id="pill-conn-text">connecting</span></span>
-        <button class="icon-btn" id="btn-theme" title="Studio Ambient ⇄ Pure Transparent Glass" aria-label="Toggle backdrop">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+      <div class="rail-nav">
+        <button class="nav-item active" data-view="overview">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>
+          <span class="label">Overview</span>
         </button>
-        <div class="mode-select" id="mode-select" role="group" aria-label="Voice mode">
-          <button data-mode="wake_word">Wake Word</button>
-          <button data-mode="continuous">Continuous</button>
-          <button data-mode="ptt">Push-to-Talk</button>
+        <button class="nav-item" data-view="chat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 5h16v11H9l-5 4V5z"/><path d="M8 9h8M8 12h5"/></svg>
+          <span class="label">Inbox / Live Chat</span>
+          <span class="nav-badge" id="badge-chat">0</span>
+        </button>
+        <button class="nav-item" data-view="tabs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/><path d="M7 13h6M7 16h9"/></svg>
+          <span class="label">Browser Tabs</span>
+          <span class="nav-badge" id="badge-tabs">0</span>
+        </button>
+        <button class="nav-item" data-view="apps">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
+          <span class="label">Desktop Apps</span>
+          <span class="nav-badge" id="badge-apps">0</span>
+        </button>
+        <button class="nav-item" data-view="skills">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v3m0 12v3M4.9 7l2.1 2m10 6l2 2M3 12h3m12 0h3M4.9 17l2.1-2m10-6l2-2"/><circle cx="12" cy="12" r="4"/></svg>
+          <span class="label">Workflows</span>
+          <span class="nav-badge" id="badge-skills">0</span>
+        </button>
+        <button class="nav-item" data-view="calendar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></svg>
+          <span class="label">Calendar &amp; Timers</span>
+        </button>
+        <button class="nav-item" data-view="telemetry">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 20h18"/><path d="M5 16l4-6 4 3 5-8"/></svg>
+          <span class="label">Reports &amp; Metrics</span>
+        </button>
+        <button class="nav-item" data-view="bridge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14 0 18M12 3c-3 3.5-3 14 0 18"/></svg>
+          <span class="label">Integrations / Bridge</span>
+          <span class="nav-badge" id="badge-bridge">·</span>
+        </button>
+      </div>
+
+      <div class="rail-footer">
+        <button class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4l2.1 2.1M2 12h3m14 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+          <span class="label">Settings</span>
+        </button>
+        <button class="nav-item" data-view="support">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1 1-1.1 1.8v.5"/><circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"/></svg>
+          <span class="label">Support / Doctor</span>
+        </button>
+      </div>
+    </nav>
+
+    <!-- ====================== B) CENTER SMOKED-GLASS STAGE ====================== -->
+    <main class="stage">
+      <header class="stage-header">
+        <div>
+          <h1 class="view-title" id="view-title">Good Evening, Nitin</h1>
+          <div class="view-subtitle" id="view-subtitle">Your real-time Ultron intelligence &amp; desktop command deck</div>
+        </div>
+        <div class="deck-controls">
+          <label class="search-pill quick-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+            <input id="quick-search" type="search" placeholder="Search" autocomplete="off">
+          </label>
+          <span class="glass-pill" id="pill-sync"><span class="dot"></span>Last sync <b id="sync-time">—</b></span>
+          <span class="glass-pill" id="pill-llama"><span class="dot"></span><span id="pill-llama-text">llama-server</span></span>
+          <button class="icon-btn" id="btn-theme" title="Studio background ⇄ pure transparent glass" aria-label="Toggle backdrop">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+          </button>
+          <div class="mode-select mode-pills" id="mode-select" role="group" aria-label="Voice mode" style="margin-top:0">
+            <button data-mode="continuous">Continuous</button>
+            <button data-mode="wake_word">Wake Word</button>
+            <button data-mode="ptt">PTT</button>
+          </div>
+          <div class="header-avatar" id="header-avatar" title="Nitin">N</div>
+        </div>
+      </header>
+
+      <div class="view-viewport">
+
+        <!-- ============================ VIEW 1 · OVERVIEW ======================== -->
+        <section class="view active" id="view-overview">
+          <div class="bento-row row-1">
+            <div class="glass-card hoverable" style="--stagger:120ms">
+              <div class="card-title">Brain Readiness <span class="hint" id="ov-brain-hint">llama-server</span></div>
+              <div class="metric-row">
+                <span class="metric-big"><span id="ov-cache-pct">0</span>%</span>
+                <span class="badge-emerald" id="ov-cache-badge">+2.3%</span>
+                <span class="metric-side" id="ov-cache-side">kv-cache warm</span>
+              </div>
+              <div class="tick-bar" id="ov-ticks" aria-hidden="true"></div>
+            </div>
+
+            <div class="glass-card hoverable" style="--stagger:210ms">
+              <div class="card-title">Active Tools &amp; Skills <span class="hint" id="ov-mode-hint">mode</span></div>
+              <div class="metric-row">
+                <span class="metric-big" id="ov-tools">28</span>
+                <span class="badge-blue" id="ov-tools-badge">• online</span>
+                <span class="metric-side">registered tools</span>
+              </div>
+              <div class="seg-bar"><span id="ov-arsenal-bar" style="width:72%"></span></div>
+              <div class="mode-pills" id="ov-mode-pills">
+                <button data-mode="continuous">Continuous</button>
+                <button data-mode="wake_word">Wake Word</button>
+                <button data-mode="ptt">PTT</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="bento-row row-2">
+            <div class="glass-card hoverable" style="--stagger:300ms">
+              <div class="card-title">Active Windows &amp; Tabs <span class="hint" id="ov-wt-hint">live</span></div>
+              <div class="deck-list" id="ov-wt-list"></div>
+            </div>
+
+            <div class="glass-card hoverable" style="--stagger:390ms">
+              <div class="card-title">Execution By Type <span class="hint">this session</span></div>
+              <div class="donut-wrap">
+                <svg id="ov-donut" viewBox="0 0 132 132" role="img" aria-label="Execution donut chart">
+                  <circle cx="66" cy="66" r="52" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="13"/>
+                  <g id="ov-donut-segs" transform="rotate(-90 66 66)"></g>
+                  <text id="ov-donut-total" x="66" y="62" text-anchor="middle" fill="#fff" font-family="Lora, Georgia, serif" font-size="22" font-weight="600">0</text>
+                  <text x="66" y="78" text-anchor="middle" fill="rgba(255,255,255,0.5)" font-size="7.5" letter-spacing="1.2">TURNS</text>
+                </svg>
+                <div class="donut-legend" id="ov-donut-legend"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bento-row row-3">
+            <div class="glass-card activity-card" style="--stagger:480ms">
+              <div class="activity-head">
+                <div class="card-title">Neural Activity &amp; Live Voice Stream <span class="hint" id="ov-lat-hint">last turns</span></div>
+              </div>
+              <div class="activity-bar">
+                <input class="prompt-input" id="cmd-input" type="text" placeholder="Ask or command Ultron (e.g. Open Firefox, Search F1 in YouTube)…" autocomplete="off">
+                <button class="btn-blue" id="cmd-send">Send</button>
+                <button class="glass-pill" id="cmd-speak" title="Toggle spoken replies">🔊 Speak</button>
+                <button class="glass-pill" id="cmd-barge" title="Stop speaking (barge-in)">■ Stop</button>
+              </div>
+              <div class="live-line"><span class="k">Heard</span><b id="ov-heard">—</b></div>
+              <div class="live-line"><span class="k">Thinking</span><b id="ov-thought">—</b></div>
+              <div class="live-line"><span class="k">Reply</span><b id="ov-reply">—</b></div>
+              <div class="lat-bars" id="ov-lat-bars"></div>
+              <div class="lat-legend">
+                <span><i style="background:#3b6fe3"></i>Transcribe</span>
+                <span><i style="background:#2f9a6a"></i>LLM</span>
+                <span><i style="background:#bd8127"></i>Tools</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================= VIEW 2 · LIVE BRAIN & CHAT =================== -->
+        <section class="view view-scroll" id="view-chat">
+          <div class="chat-layout">
+            <div class="glass-card thought-panel" style="--stagger:120ms">
+              <div class="card-title">Thinking &amp; Planning <span class="hint" id="ch-status-hint">—</span></div>
+              <div class="thought-line"><span class="k">Thinking</span><span class="v" id="ch-thought">—</span></div>
+              <div class="thought-line"><span class="k">Action</span><span class="v" id="ch-action">—</span></div>
+              <div class="thought-line"><span class="k">Heard</span><span class="v" id="ch-heard">—</span></div>
+              <div class="thought-line"><span class="k">Plan</span><ol class="plan-steps" id="ch-plan"></ol></div>
+              <div class="chat-actions" style="margin-top:auto; padding-top:10px">
+                <button class="glass-pill" id="chat-voice-start">▶ Listen</button>
+                <button class="glass-pill" id="chat-voice-stop">⏸ Pause</button>
+                <button class="glass-pill" id="chat-barge">■ Stop voice</button>
+                <button class="glass-pill" id="chat-repeat">↻ Repeat</button>
+              </div>
+            </div>
+
+            <div class="glass-card" style="--stagger:210ms; display:flex; flex-direction:column; min-height:0">
+              <div class="card-title">Conversation Transcript <span class="hint">last 50 turns</span></div>
+              <input class="glass-input" id="chat-search" type="search" placeholder="Search conversation history…" style="margin:8px 0 6px" autocomplete="off">
+              <div class="chat-feed" id="chat-feed"></div>
+              <div class="chat-composer" style="margin-top:10px">
+                <textarea id="chat-input" rows="2" placeholder="Tell Ultron what to do, or speak naturally…"></textarea>
+                <div class="composer-actions">
+                  <button class="glass-pill" id="chat-speak" title="Toggle spoken replies">🔊</button>
+                  <button class="btn-blue" id="chat-send" style="height:42px; padding:0 18px">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ====================== VIEW 3 · BROWSER TABS & EYES =================== -->
+        <section class="view" id="view-tabs">
+          <div class="kpi-grid">
+            <div class="kpi-card"><div class="kpi-label">Open Browser Tabs</div><div class="kpi-value" id="tb-kpi-tabs">0</div></div>
+            <div class="kpi-card"><div class="kpi-label">Desktop Windows</div><div class="kpi-value" id="tb-kpi-windows">0</div></div>
+            <div class="kpi-card"><div class="kpi-label">Visible UI Refs</div><div class="kpi-value" id="tb-kpi-refs">0</div></div>
+            <div class="kpi-card"><div class="kpi-label">Active Site</div><div class="kpi-value" id="tb-kpi-site" style="font-size:16px; text-transform:capitalize">—</div></div>
+          </div>
+
+          <div class="filter-pills" id="tb-pills">
+            <button data-filter="all" class="active">All Tabs &amp; Windows</button>
+            <button data-filter="tabs">Brave / Firefox Tabs</button>
+            <button data-filter="refs">Visible UI Elements</button>
+            <button data-filter="web">Quick Web Actions</button>
+          </div>
+
+          <div class="glass-card data-card" id="tb-table-card" style="--stagger:300ms">
+            <div class="table-head"><span>Icon</span><span>Tab / Window</span><span>Status</span><span>Actions</span></div>
+            <div class="table-body" id="tb-rows"></div>
+            <div id="tb-read-result"></div>
+          </div>
+
+          <div class="glass-card data-card sub-card" id="tb-refs-card" style="--stagger:390ms; flex:0 1 190px">
+            <div class="card-title">Live Screen Elements <span class="hint">AT-SPI @e refs</span></div>
+            <div class="table-body" id="tb-refs"></div>
+          </div>
+
+          <div class="glass-card sub-card" id="tb-web-card" style="--stagger:480ms; display:none">
+            <div class="card-title">Quick Web Actions</div>
+            <div class="inline-prompt" style="margin-top:8px">
+              <input id="tb-open-url" type="text" placeholder="https://github.com" autocomplete="off">
+              <button class="btn-blue" id="tb-open-btn" style="height:28px; padding:0 14px">Open Tab</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============================ VIEW 4 · DESKTOP APPS ==================== -->
+        <section class="view" id="view-apps">
+          <div class="apps-toolbar">
+            <label class="apps-search">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+              <input id="apps-search" type="search" placeholder="Search 176+ installed apps — Hermes, Lutris, Calculator, VS Code…" autocomplete="off">
+            </label>
+          </div>
+          <div class="filter-pills" id="apps-pills">
+            <button data-filter="running">Running Now</button>
+            <button data-filter="all" class="active">All Apps</button>
+            <button data-filter="development">Development</button>
+            <button data-filter="media">Media &amp; Games</button>
+            <button data-filter="system">System</button>
+          </div>
+          <div class="apps-grid" id="apps-grid"></div>
+        </section>
+
+        <!-- ======================= VIEW 5 · WORKFLOWS & SKILLS =================== -->
+        <section class="view view-scroll" id="view-skills">
+          <div class="glass-card" style="--stagger:120ms">
+            <div class="card-title">+ Teach New Workflow</div>
+            <div class="skills-layout" style="margin-top:4px">
+              <div class="field" style="margin-top:6px">
+                <label>Voice trigger phrase</label>
+                <input class="glass-input" id="sk-trigger" placeholder='e.g. "start work on ultron"' autocomplete="off">
+              </div>
+              <div class="field" style="margin-top:6px">
+                <label>Action steps <span style="color:var(--ink-35);font-weight:400">(semicolon separated)</span></label>
+                <input class="glass-input" id="sk-actions" placeholder="open code; open github" autocomplete="off">
+              </div>
+            </div>
+            <div class="filter-pills" style="margin-top:10px">
+              <button class="btn-blue" id="sk-save" style="height:30px; padding:0 16px">Save Workflow</button>
+            </div>
+            <div class="settings-grid" style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.08)">
+              <div class="field" style="margin-top:0">
+                <label>Save a personal fact</label>
+                <input class="glass-input" id="sk-fact-name" placeholder="fact name — e.g. email" autocomplete="off">
+              </div>
+              <div class="field" style="margin-top:0">
+                <label>Fact value</label>
+                <input class="glass-input" id="sk-fact-value" placeholder="nitin@example.com" autocomplete="off">
+              </div>
+            </div>
+            <div class="filter-pills" style="margin-top:10px">
+              <button class="btn-blue" id="sk-fact-save" style="height:30px; padding:0 16px">Save Fact</button>
+            </div>
+          </div>
+
+          <div class="skills-layout" style="flex:1; min-height:0">
+            <div class="glass-card" style="--stagger:210ms; display:flex; flex-direction:column; min-height:0">
+              <div class="card-title">Taught Workflows <span class="hint" id="sk-count-hint"></span></div>
+              <div class="list-scroll" id="sk-list"></div>
+            </div>
+            <div class="glass-card" style="--stagger:300ms; display:flex; flex-direction:column; min-height:0">
+              <div class="card-title">User Memory <span class="hint">facts &amp; aliases</span></div>
+              <div class="list-scroll" id="sk-facts"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ======================= VIEW 6 · CALENDAR & TIMERS ==================== -->
+        <section class="view" id="view-calendar">
+          <div class="calendar-layout">
+            <div class="glass-card calendar-grid-card" style="--stagger:150ms">
+              <div class="card-title" style="margin-bottom:6px">Week of <span id="cal-week-label" style="margin-left:4px">—</span> <span class="hint">live activity</span></div>
+              <div class="cal-days" id="cal-days"></div>
+              <div class="cal-scroll">
+                <div class="cal-grid" id="cal-grid"></div>
+              </div>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:14px; min-height:0">
+              <div class="glass-card" style="--stagger:240ms">
+                <div class="card-title">Active Timer</div>
+                <div class="live-clock" id="live-clock">—</div>
+                <div class="clock-date" id="clock-date">—</div>
+                <div class="support-note" style="margin-top:8px">Timers run inside Ultron's <code>set_timer</code> tool; this clock is live local time.</div>
+              </div>
+              <div class="glass-card agenda-card" style="--stagger:330ms; flex:1; min-height:0">
+                <div class="card-title">Today's Activity <span class="hint">from live turns</span></div>
+                <div class="table-body" id="agenda-list"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ======================== VIEW 7 · REPORTS & METRICS ================== -->
+        <section class="view view-scroll" id="view-telemetry">
+          <div class="kpi-grid">
+            <div class="kpi-card"><div class="kpi-label">p50 Latency</div><div class="kpi-value"><span id="tl-kpi-p50">—</span><small> ms</small></div></div>
+            <div class="kpi-card"><div class="kpi-label">p95 Latency</div><div class="kpi-value"><span id="tl-kpi-p95">—</span><small> ms</small></div></div>
+            <div class="kpi-card"><div class="kpi-label">GPU Utilization</div><div class="kpi-value"><span id="tl-kpi-gpu">—</span><small> %</small></div></div>
+            <div class="kpi-card"><div class="kpi-label">CPU / RAM</div><div class="kpi-value" id="tl-kpi-cpu" style="font-size:15px">—</div></div>
+          </div>
+
+          <div class="telemetry-grid">
+            <div class="glass-card" style="--stagger:200ms">
+              <div class="card-title">Latency Breakdown <span class="hint">average by stage</span></div>
+              <div id="tl-stages"></div>
+              <div class="chart-bars" id="tl-bars"></div>
+            </div>
+            <div class="glass-card" style="--stagger:290ms; display:flex; flex-direction:column; min-height:0">
+              <div class="card-title">Tool Usage <span class="hint">this session</span></div>
+              <div class="donut-wrap">
+                <svg id="tl-donut" viewBox="0 0 132 132" role="img" aria-label="Tool usage donut">
+                  <circle cx="66" cy="66" r="52" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="13"/>
+                  <g id="tl-donut-segs" transform="rotate(-90 66 66)"></g>
+                  <text id="tl-donut-total" x="66" y="62" text-anchor="middle" fill="#fff" font-family="Lora, Georgia, serif" font-size="22" font-weight="600">0</text>
+                  <text x="66" y="78" text-anchor="middle" fill="rgba(255,255,255,0.5)" font-size="7.5" letter-spacing="1.2">CALLS</text>
+                </svg>
+                <div class="donut-legend" id="tl-donut-legend"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="telemetry-grid" style="flex:1; min-height:0">
+            <div class="glass-card spline-box-card" style="--stagger:380ms; display:flex; flex-direction:column; min-height:0">
+              <div class="card-title">Neural Latency Pulse <span class="hint" id="tl-series-hint"></span></div>
+              <div class="spline-box" style="flex:1; min-height:60px">
+                <svg id="tl-spline" viewBox="0 0 600 140" preserveAspectRatio="none" role="img" aria-label="Latency spline">
+                  <defs>
+                    <linearGradient id="latencyGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#7ef0c9" stop-opacity="0.55"/>
+                      <stop offset="100%" stop-color="#7ef0c9" stop-opacity="0"/>
+                    </linearGradient>
+                  </defs>
+                  <path class="spline-fill" id="tl-spline-fill" style="fill:url(#latencyGradient)" d=""/>
+                  <path class="spline-line" id="tl-spline-line" d=""/>
+                  <circle class="spline-end" id="tl-spline-dot" r="3.4" cx="0" cy="0"/>
+                </svg>
+              </div>
+              <div id="tl-series-rows" style="margin-top:6px"></div>
+            </div>
+            <div class="glass-card" style="--stagger:470ms; display:flex; flex-direction:column; min-height:0">
+              <div class="card-title">Tool Leaderboard</div>
+              <div class="table-body" id="tl-leaderboard"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== VIEW 8 · PERSONALITY & SETTINGS ================ -->
+        <section class="view view-scroll" id="view-settings">
+          <div class="settings-grid">
+            <div class="glass-card" style="--stagger:120ms">
+              <div class="card-title">Ultron's Personality <span class="hint">live editor</span></div>
+              <div class="preset-row" id="st-presets">
+                <button class="glass-pill" data-preset="jarvis">Executive J.A.R.V.I.S.</button>
+                <button class="glass-pill" data-preset="tactical">Concise Tactical</button>
+                <button class="glass-pill" data-preset="warm">Warm Companion</button>
+                <button class="glass-pill" data-preset="custom">Custom</button>
+              </div>
+              <div class="field">
+                <label>Personality prompt</label>
+                <textarea class="glass-input" id="st-personality" placeholder="Describe how Ultron should behave, speak and address you…"></textarea>
+              </div>
+              <div class="filter-pills" style="margin-top:10px">
+                <button class="btn-blue" id="st-personality-save" style="height:30px; padding:0 16px">Save Personality</button>
+              </div>
+              <div class="field">
+                <label>Reply Style</label>
+                <select class="glass-input" id="st-reply-style">
+                  <option value="natural">natural</option>
+                  <option value="concise">concise</option>
+                  <option value="detailed">detailed</option>
+                </select>
+              </div>
+              <div class="settings-row" style="margin-top:8px">
+                <span class="name">Brain Replies (100% LLM generated)<small>off = deterministic code replies</small></span>
+                <button class="toggle on" id="st-brain-replies" role="switch" aria-checked="true" aria-label="Brain replies"></button>
+              </div>
+            </div>
+
+            <div class="glass-card" style="--stagger:210ms">
+              <div class="card-title">Voice &amp; Mic Studio <span class="hint">saves instantly</span></div>
+              <div class="field">
+                <label>Natural Pause Tolerance <span class="val" id="st-silence-val"></span></label>
+                <input type="range" class="glass-range" id="st-silence" min="800" max="4500" step="100">
+              </div>
+              <div class="field">
+                <label>Max Speaking Duration <span class="val" id="st-maxsec-val"></span></label>
+                <input type="range" class="glass-range" id="st-maxsec" min="10" max="120" step="1">
+              </div>
+              <div class="field">
+                <label>Follow-Up Window <span class="val" id="st-followup-val"></span></label>
+                <input type="range" class="glass-range" id="st-followup" min="3" max="20" step="0.5">
+              </div>
+              <div class="field">
+                <label>Mic Input Volume <span class="val" id="st-micvol-val"></span></label>
+                <input type="range" class="glass-range" id="st-micvol" min="0.05" max="0.5" step="0.01">
+              </div>
+              <div class="field">
+                <label>Permission Mode</label>
+                <select class="glass-input" id="st-permission">
+                  <option value="auto-safe">auto-safe</option>
+                  <option value="ask">ask</option>
+                  <option value="human-only">human-only</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="glass-card" style="--stagger:300ms">
+              <div class="card-title">Identity &amp; Search</div>
+              <div class="field"><label>Assistant name</label><input class="glass-input" id="st-assistant-name"></div>
+              <div class="field"><label>Your name</label><input class="glass-input" id="st-user-name"></div>
+              <div class="field">
+                <label>Default Search Engine</label>
+                <select class="glass-input" id="st-search-engine">
+                  <option value="google">Google</option>
+                  <option value="duckduckgo">DuckDuckGo</option>
+                  <option value="bing">Bing</option>
+                </select>
+              </div>
+              <div class="filter-pills" style="margin-top:12px">
+                <button class="btn-blue" id="st-identity-save" style="height:30px; padding:0 16px">Save Identity</button>
+              </div>
+            </div>
+
+            <div class="glass-card" style="--stagger:390ms">
+              <div class="card-title">Local Stack <span class="hint">read-only</span></div>
+              <div class="settings-list">
+                <div class="settings-row"><span class="name">Brain<small>llama.cpp LFM3-1.7B · 127.0.0.1:9931</small></span><span class="status-dot green"></span></div>
+                <div class="settings-row"><span class="name">Ears / Mouth<small>faster-whisper small.en · Piper lessac (CPU)</small></span><span class="status-dot blue"></span></div>
+                <div class="settings-row"><span class="name">Dashboard<small>served by the environment server on 9932</small></span><span class="status-dot green"></span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================== VIEW 9 · BRIDGE =========================== -->
+        <section class="view view-scroll" id="view-bridge">
+          <div class="glass-card" style="--stagger:120ms; max-width:760px">
+            <div class="card-title">Browser Bridge Status <span class="hint" id="br-state-hint">checking…</span></div>
+            <div class="settings-row" style="margin-top:8px">
+              <span class="status-dot grey" id="br-dot"></span>
+              <span class="name" id="br-state">Bridge connection</span>
+              <button class="glass-pill" id="br-refresh">Refresh</button>
+            </div>
+            <p class="support-note" style="margin-top:12px; font-size:11.5px">
+              Load the bundled extension once and every open tab, its DOM buttons, and
+              WhatsApp / Gemini / Claude / YouTube / Gmail content become live in Browser Tabs.</p>
+            <ol class="plan-steps" style="font-size:12px; line-height:2; margin-top:8px">
+              <li><b>Brave:</b> open <code>brave://extensions</code> → Developer mode →
+                  “Load unpacked” → select <code>extensions/ultron-browser-bridge/</code></li>
+              <li><b>Firefox:</b> open <code>about:debugging</code> → “This Firefox” →
+                  “Load Temporary Add-on” → select <code>manifest.firefox.json</code></li>
+              <li>The extension syncs tabs + DOM every 800 ms to <code>POST /api/browser/sync</code>
+                  and picks up actions on <code>GET /api/browser/poll</code>.</li>
+              <li>Come back here — the status dot turns green within a second.</li>
+            </ol>
+          </div>
+        </section>
+
+        <!-- ========================== VIEW 10 · SUPPORT ========================= -->
+        <section class="view view-scroll" id="view-support">
+          <div class="support-wrap">
+            <div class="glass-card support-card" style="--stagger:120ms">
+              <div class="card-title">Doctor / Live Checks</div>
+              <div class="settings-list">
+                <div class="settings-row"><span class="name">llama-server (LFM3-1.7B)<small id="sup-llama">checking…</small></span><span class="status-dot grey" id="sup-llama-dot"></span></div>
+                <div class="settings-row"><span class="name">Voice controller<small id="sup-voice">checking…</small></span><span class="status-dot grey" id="sup-voice-dot"></span></div>
+                <div class="settings-row"><span class="name">Browser bridge<small id="sup-bridge">checking…</small></span><span class="status-dot grey" id="sup-bridge-dot"></span></div>
+                <div class="settings-row"><span class="name">GPU (GTX 1650)<small id="sup-gpu">checking…</small></span><span class="status-dot grey" id="sup-gpu-dot"></span></div>
+              </div>
+              <p class="support-note">If something fails, run <code>.venv/bin/python main.py doctor</code>
+                and <code>.venv/bin/python -m pytest -q</code> in the project folder.</p>
+            </div>
+            <div class="glass-card support-card" style="--stagger:210ms">
+              <div class="card-title">Manual Test Commands</div>
+              <ol class="plan-steps" style="font-size:11.5px; line-height:1.9; margin-top:8px">
+                <li>Say <b>“Open Firefox”</b> — no wake word needed.</li>
+                <li>Say <b>“I want you to open Fightform”</b> — repairs to Firefox.</li>
+                <li>Say <b>“Search F1 in YouTube”</b>.</li>
+                <li>Say <b>“What is on my screen?”</b>.</li>
+                <li>Check the HUD: VRAM and Response Speed update live.</li>
+              </ol>
+              <p class="support-note">Tests never open a real app; the live check above is safe.</p>
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+      <div class="vision-grabber" aria-hidden="true"><span class="grabber-dot"></span><span class="grabber-bar"></span></div>
+    </main>
+
+    <!-- ==================== C) DETACHED 3-WIDGET HUD STACK ===================== -->
+    <aside class="hud-stack" aria-label="Live HUD">
+
+      <!-- TOP: sapphire voice & ears -->
+      <div class="hud-card hud-voice">
+        <div class="hud-head">
+          <span class="hud-title">Voice &amp; Ears</span>
+          <span class="drag-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        </div>
+        <div class="voice-state"><span class="voice-orb" id="hud-orb"></span><span id="hud-voice-state">…</span></div>
+        <div class="voice-badge-row">
+          <span class="voice-badge" id="hud-voice-badge">Continuous · small.en</span>
+          <span class="voice-badge" id="hud-turn-count">0 turns</span>
+        </div>
+        <div class="waveform" id="hud-waveform" aria-hidden="true"></div>
+        <div class="rms-line"><span id="hud-rms">RMS —</span><span id="hud-db">— dB</span></div>
+        <div class="voice-btns">
+          <button class="btn-ghost" id="hud-mic" title="Mute / unmute microphone">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            <span id="hud-mic-label">Mute</span>
+          </button>
+          <button class="btn-ghost" id="hud-ptt" title="Hold to talk (Push-to-Talk)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.4" fill="currentColor"/></svg>
+            <span>Hold PTT</span>
+          </button>
+          <button class="btn-ghost" id="hud-barge" title="Stop speaking (barge-in)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
+            <span>Stop</span>
+          </button>
         </div>
       </div>
-    </header>
 
-    <div class="view-viewport">
+      <!-- MIDDLE: warm frosted GPU pill -->
+      <div class="hud-card hud-gpu">
+        <span class="hud-title">GPU VRAM · GTX 1650</span>
+        <div class="vram-value"><span id="hud-vram">0</span><small> / <span id="hud-vram-total">4,096</span> MiB</small></div>
+        <span class="focus-line" id="hud-focus-sub">Focused: —</span>
+        <button class="plus-trigger" id="hud-plus" title="Quick command" aria-label="Open quick command">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
 
-      <!-- ============================ VIEW 1 · OVERVIEW ============================ -->
-      <section class="view active" id="view-overview">
-        <div class="glass-card hoverable" style="margin-bottom:16px">
-          <div class="command-bar">
-            <input id="cmd-input" type="text" placeholder="Tell Ultron what to do, or speak naturally…" autocomplete="off">
-            <button class="btn small ghost" id="cmd-speak-toggle" title="Toggle spoken replies for this command">🔊 Speak</button>
-            <button class="btn small primary" id="cmd-send">Send</button>
-            <button class="btn small danger" id="cmd-barge" title="Stop speaking now (barge-in)">■ Stop</button>
-          </div>
-          <div class="banner-strip">
-            <div class="banner-cell"><div class="banner-label">What Ultron Heard</div><div class="banner-text" id="ov-heard">—</div></div>
-            <div class="banner-cell"><div class="banner-label">What Ultron Is Thinking</div><div class="banner-text" id="ov-thought">—</div></div>
-            <div class="banner-cell"><div class="banner-label">Ultron's Latest Reply</div><div class="banner-text" id="ov-reply">—</div></div>
-          </div>
+      <!-- BOTTOM: dark smoked spline card -->
+      <div class="hud-card hud-latency spline-card">
+        <div class="hud-head">
+          <span class="hud-title">Response Speed</span>
+          <span class="voice-badge">Live ms</span>
         </div>
-
-        <div class="grid-2">
-          <div class="glass-card hoverable">
-            <div class="card-title">Brain &amp; Cache Efficiency <span class="hint" id="ov-brain-hint">llama-server</span></div>
-            <div class="metric-xl"><span id="ov-cache-pct">0</span><small>%</small></div>
-            <div class="metric-label">KV-cache readiness · prompt reuse</div>
-            <div class="tick-bar" id="ov-ticks" aria-hidden="true"></div>
-            <div class="line-row"><span class="status-dot green"></span><span class="name">Brain server <span class="sub" id="ov-brain-state">checking…</span></span></div>
-            <div class="line-row"><span class="status-dot cobalt"></span><span class="name">Prompt cache <span class="sub" id="ov-p50-line">p50 —</span></span></div>
-          </div>
-
-          <div class="glass-card hoverable">
-            <div class="card-title">Active Arsenal &amp; Voice Mode <span class="hint" id="ov-mode-hint">mode</span></div>
-            <div class="metric-xl"><span id="ov-tools">28</span><small> tools</small></div>
-            <div class="metric-label">Registered tools ready for Ultron's brain</div>
-            <div class="seg-bar"><span id="ov-arsenal-bar" style="width:72%"></span></div>
-            <div class="filter-pills" style="margin:6px 0 0" id="ov-mode-pills">
-              <button data-mode="wake_word">Wake Word</button>
-              <button data-mode="continuous">Continuous</button>
-              <button data-mode="ptt">PTT</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="grid-2">
-          <div class="glass-card hoverable">
-            <div class="card-title">Active Windows &amp; Browser Tabs <span class="hint" id="ov-wt-hint"></span></div>
-            <div id="ov-wt-list"></div>
-          </div>
-          <div class="glass-card hoverable">
-            <div class="card-title">Activity by Subsystem <span class="hint">turns by source</span></div>
-            <div class="donut-wrap">
-              <svg id="ov-donut" width="132" height="132" viewBox="0 0 132 132" role="img" aria-label="Activity donut chart">
-                <defs>
-                  <linearGradient id="donutGlow" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0%" stop-color="#34d399"/><stop offset="100%" stop-color="#22d3ee"/>
-                  </linearGradient>
-                </defs>
-                <circle cx="66" cy="66" r="52" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="15"/>
-                <g id="ov-donut-segs"></g>
-                <text class="donut-center" id="ov-donut-total" x="66" y="60">0</text>
-                <text x="66" y="80" font-size="9" fill="rgba(255,246,236,0.45)" text-anchor="middle" letter-spacing="1.4">TURNS</text>
-              </svg>
-              <div class="donut-legend" id="ov-donut-legend"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="glass-card hoverable">
-          <div class="card-title">Turn Latency &amp; Activity Timeline <span class="hint" id="ov-lat-hint">last turns</span></div>
-          <div class="lat-bars" id="ov-lat-bars"></div>
-          <div class="lat-legend">
-            <span><i style="background:#3b82f6"></i>Transcribe</span>
-            <span><i style="background:#059669"></i>LLM</span>
-            <span><i style="background:#d97706"></i>Tools</span>
-          </div>
-          <div id="ov-recent-turns" style="margin-top:14px"></div>
-        </div>
-      </section>
-
-      <!-- ========================= VIEW 2 · LIVE BRAIN & CHAT ====================== -->
-      <section class="view" id="view-chat">
-        <div class="glass-card spline-card" style="margin-bottom:16px">
-          <div class="card-title">What Ultron Is Thinking &amp; Planning Next <span class="hint" id="ch-status-hint">—</span></div>
-          <div class="thought-line"><span class="k">Thinking</span><span id="ch-thought">—</span></div>
-          <div class="thought-line"><span class="k">Action</span><span id="ch-action">—</span></div>
-          <div class="thought-line"><span class="k">Heard</span><span id="ch-heard">—</span></div>
-          <div class="thought-line"><span class="k">Plan</span><ol class="plan-steps" id="ch-plan"></ol></div>
-        </div>
-
-        <div class="glass-card" style="margin-bottom:16px">
-          <div class="card-title">Conversation Transcript <span class="hint">last 50 turns</span></div>
-          <input class="glass-input" id="chat-search" type="search" placeholder="Search conversation history…" style="margin:10px 0 4px; max-width:340px" autocomplete="off">
-          <div class="chat-feed" id="chat-feed" style="margin-top:10px; max-height:46vh; overflow:auto; padding:4px"></div>
-        </div>
-
-        <div class="glass-card">
-          <div class="command-bar">
-            <textarea id="chat-input" class="glass-input" rows="2" placeholder="Type a paragraph to Ultron… (Shift+Enter for newline)" style="flex:1; resize:none; background:none; border:none; padding:6px 0"></textarea>
-            <button class="btn small ghost" id="chat-speak-toggle">🔊 Speak</button>
-            <button class="btn small primary" id="chat-send">Send</button>
-          </div>
-          <div class="filter-pills" style="margin:12px 0 0">
-            <button id="chat-voice-start">▶ Start Listening</button>
-            <button id="chat-voice-stop">⏸ Stop Listening</button>
-            <button id="chat-barge" class="danger">■ Barge-In Dismiss</button>
-            <button id="chat-repeat">↻ Repeat Last Reply</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- ====================== VIEW 3 · BROWSER TABS & EYES ====================== -->
-      <section class="view" id="view-tabs">
-        <div class="grid-4">
-          <div class="kpi-card"><div class="kpi-label">Open Browser Tabs</div><div class="kpi-value" id="tb-kpi-tabs">0</div></div>
-          <div class="kpi-card"><div class="kpi-label">Desktop Windows</div><div class="kpi-value" id="tb-kpi-windows">0</div></div>
-          <div class="kpi-card"><div class="kpi-label">Visible UI Refs (@e/@b)</div><div class="kpi-value" id="tb-kpi-refs">0</div></div>
-          <div class="kpi-card"><div class="kpi-label">Active Site</div><div class="kpi-value" id="tb-kpi-site" style="font-size:17px; text-transform:capitalize">—</div></div>
-        </div>
-
-        <div class="filter-pills" id="tb-pills">
-          <button data-filter="all" class="active">All Tabs &amp; Windows</button>
-          <button data-filter="tabs">Brave / Firefox Tabs</button>
-          <button data-filter="refs">Visible UI Elements (@ref)</button>
-          <button data-filter="web">Quick Web Actions</button>
-        </div>
-
-        <div class="glass-card" id="tb-table-card">
-          <div class="table-head"><span>Icon</span><span>Tab / Window</span><span>Status</span><span>Actions</span></div>
-          <div id="tb-rows"></div>
-          <div id="tb-read-result"></div>
-        </div>
-
-        <div class="glass-card" id="tb-refs-card" style="margin-top:16px">
-          <div class="card-title">Live Screen Elements Inspector <span class="hint">AT-SPI @e refs on screen now</span></div>
-          <div id="tb-refs"></div>
-        </div>
-
-        <div class="glass-card" id="tb-web-card" style="margin-top:16px">
-          <div class="card-title">Quick Web Actions <span class="hint">open a URL through the bridge</span></div>
-          <div class="inline-prompt" style="margin-top:10px">
-            <input id="tb-open-url" type="text" placeholder="https://github.com" autocomplete="off">
-            <button class="btn small primary" id="tb-open-btn">Open Tab</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============================ VIEW 4 · DESKTOP APPS ======================== -->
-      <section class="view" id="view-apps">
-        <div class="command-bar" style="margin-bottom:16px; max-width:560px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;opacity:.55"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
-          <input id="apps-search" type="search" placeholder="Search 176+ installed apps — Hermes, Lutris, Calculator, VS Code…" autocomplete="off">
-        </div>
-        <div class="filter-pills" id="apps-pills">
-          <button data-filter="running">Running Now</button>
-          <button data-filter="all" class="active">All Apps</button>
-          <button data-filter="development">Development</button>
-          <button data-filter="media">Media &amp; Games</button>
-          <button data-filter="system">System</button>
-        </div>
-        <div class="apps-grid" id="apps-grid"></div>
-      </section>
-
-      <!-- ======================= VIEW 5 · WORKFLOWS & SKILLS ====================== -->
-      <section class="view" id="view-skills">
-        <div class="glass-card" style="margin-bottom:16px">
-          <div class="card-title">+ Teach New Workflow</div>
-          <div class="settings-grid">
-            <div class="field">
-              <label>Voice trigger phrase</label>
-              <input class="glass-input" id="sk-trigger" placeholder='e.g. "start work on ultron"' autocomplete="off">
-            </div>
-            <div class="field">
-              <label>Action steps <span style="color:var(--ink-faint); font-weight:400">(semicolon separated)</span></label>
-              <input class="glass-input" id="sk-actions" placeholder="open code; open github" autocomplete="off">
-            </div>
-          </div>
-          <div class="filter-pills" style="margin-top:12px">
-            <button class="btn small primary" id="sk-save">Save Workflow</button>
-          </div>
-          <div class="settings-grid" style="margin-top:18px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.07)">
-            <div class="field" style="margin-top:0">
-              <label>Save a personal fact</label>
-              <input class="glass-input" id="sk-fact-name" placeholder="fact name — e.g. email" autocomplete="off">
-            </div>
-            <div class="field" style="margin-top:0">
-              <label>Fact value</label>
-              <input class="glass-input" id="sk-fact-value" placeholder="nitin@example.com" autocomplete="off">
-            </div>
-          </div>
-          <div class="filter-pills" style="margin-top:12px">
-            <button class="btn small primary" id="sk-fact-save">Save Fact</button>
-          </div>
-        </div>
-
-        <div class="grid-2">
-          <div class="glass-card">
-            <div class="card-title">Taught Workflows <span class="hint" id="sk-count-hint"></span></div>
-            <div id="sk-list" class="col" style="gap:10px"></div>
-          </div>
-          <div class="glass-card">
-            <div class="card-title">User Memory <span class="hint">facts &amp; aliases</span></div>
-            <div id="sk-facts"></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ========================= VIEW 6 · TELEMETRY & REPORTS ==================== -->
-      <section class="view" id="view-telemetry">
-        <div class="grid-4">
-          <div class="kpi-card"><div class="kpi-label">p50 Latency</div><div class="kpi-value"><span id="tl-kpi-p50">—</span><small style="font-size:12px"> ms</small></div></div>
-          <div class="kpi-card"><div class="kpi-label">p95 Latency</div><div class="kpi-value"><span id="tl-kpi-p95">—</span><small style="font-size:12px"> ms</small></div></div>
-          <div class="kpi-card"><div class="kpi-label">GPU Utilization</div><div class="kpi-value"><span id="tl-kpi-gpu">—</span><small style="font-size:12px"> %</small></div></div>
-          <div class="kpi-card"><div class="kpi-label">CPU / RAM</div><div class="kpi-value" id="tl-kpi-cpu" style="font-size:18px">—</div></div>
-        </div>
-        <div class="grid-2">
-          <div class="glass-card hoverable">
-            <div class="card-title">Latency Breakdown by Stage <span class="hint">average over the series</span></div>
-            <div id="tl-stages"></div>
-          </div>
-          <div class="glass-card hoverable">
-            <div class="card-title">GPU VRAM <span class="hint" id="tl-gpu-hint">GTX 1650 4 GB</span></div>
-            <div class="metric-xl"><span id="tl-vram">—</span><small> MiB</small></div>
-            <div class="seg-bar"><span id="tl-vram-bar" style="width:0%"></span></div>
-            <div class="line-row"><span class="status-dot cobalt"></span><span class="name">Utilization <span class="sub" id="tl-gpu-util">—</span></span></div>
-            <div class="line-row"><span class="status-dot green"></span><span class="name">llama-server <span class="sub" id="tl-llama">—</span></span></div>
-          </div>
-        </div>
-        <div class="glass-card spline-card">
-          <div class="card-title">Neural Latency Pulse <span class="hint" id="tl-series-hint"></span></div>
-          <svg id="tl-spline" viewBox="0 0 600 140" preserveAspectRatio="none" role="img" aria-label="Latency spline">
+        <div class="metric-big"><span id="hud-lat">—</span><small> ms</small></div>
+        <div class="lat-sub"><span class="badge-emerald" id="hud-lat-badge">p50 — / p95 —</span></div>
+        <div class="spline-box">
+          <svg viewBox="0 0 260 84" preserveAspectRatio="none" style="width:100%;height:100%">
             <defs>
-              <linearGradient id="latencyGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#7ef0c9" stop-opacity="0.55"/>
-                <stop offset="100%" stop-color="#7ef0c9" stop-opacity="0"/>
+              <linearGradient id="latGradHud" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+                <stop offset="100%" stop-color="#ffffff" stop-opacity="0.02"/>
               </linearGradient>
             </defs>
-            <path class="spline-fill" id="tl-spline-fill" d=""/>
-            <path class="spline-line" id="tl-spline-line" d=""/>
-            <circle class="spline-end" id="tl-spline-dot" r="3.4" cx="0" cy="0"/>
+            <path class="spline-fill" id="hud-spline-fill" style="fill:url(#latGradHud)" d=""/>
+            <path class="spline-line" id="hud-spline-line" d=""/>
+            <circle class="spline-end" id="hud-spline-dot" r="3" cx="0" cy="0"/>
           </svg>
-          <div id="tl-series-rows" style="margin-top:12px"></div>
         </div>
-      </section>
-
-      <!-- ====================== VIEW 7 · PERSONALITY & SETTINGS ==================== -->
-      <section class="view" id="view-settings">
-        <div class="settings-grid">
-          <div class="glass-card hoverable">
-            <div class="card-title">Ultron's Personality Prompt <span class="hint">live editor</span></div>
-            <div class="preset-row" id="st-presets">
-              <button class="btn small" data-preset="jarvis">Executive J.A.R.V.I.S.</button>
-              <button class="btn small" data-preset="tactical">Concise Tactical</button>
-              <button class="btn small" data-preset="warm">Warm Companion</button>
-              <button class="btn small" data-preset="custom">Custom</button>
-            </div>
-            <textarea class="glass-input" id="st-personality" placeholder="Describe how Ultron should behave, speak and address you…" style="margin-top:12px"></textarea>
-            <div class="filter-pills" style="margin-top:12px">
-              <button class="btn small primary" id="st-personality-save">Save Personality</button>
-            </div>
-            <div class="field">
-              <label>Reply Style</label>
-              <select class="glass-input" id="st-reply-style">
-                <option value="natural">natural</option>
-                <option value="concise">concise</option>
-                <option value="detailed">detailed</option>
-              </select>
-            </div>
-            <div class="line-row" style="margin-top:14px">
-              <span class="name">Brain Replies (100% LLM generated)<span class="sub">off = deterministic code replies</span></span>
-              <button class="toggle on" id="st-brain-replies" role="switch" aria-checked="true" aria-label="Brain replies"></button>
-            </div>
-          </div>
-
-          <div class="glass-card hoverable">
-            <div class="card-title">Voice &amp; Mic Studio <span class="hint">saves instantly</span></div>
-            <div class="field">
-              <label>Natural Pause Tolerance <span class="val" id="st-silence-val"></span></label>
-              <input type="range" class="glass-range" id="st-silence" min="800" max="4500" step="100">
-            </div>
-            <div class="field">
-              <label>Max Speaking Duration <span class="val" id="st-maxsec-val"></span></label>
-              <input type="range" class="glass-range" id="st-maxsec" min="10" max="120" step="1">
-            </div>
-            <div class="field">
-              <label>Follow-Up Window <span class="val" id="st-followup-val"></span></label>
-              <input type="range" class="glass-range" id="st-followup" min="3" max="20" step="0.5">
-            </div>
-            <div class="field">
-              <label>Mic Input Volume <span class="val" id="st-micvol-val"></span></label>
-              <input type="range" class="glass-range" id="st-micvol" min="0.05" max="0.5" step="0.01">
-            </div>
-            <div class="field">
-              <label>Permission Mode</label>
-              <select class="glass-input" id="st-permission">
-                <option value="auto-safe">auto-safe</option>
-                <option value="ask">ask</option>
-                <option value="human-only">human-only</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="glass-card hoverable">
-            <div class="card-title">Identity &amp; Search</div>
-            <div class="field"><label>Assistant name</label><input class="glass-input" id="st-assistant-name"></div>
-            <div class="field"><label>Your name</label><input class="glass-input" id="st-user-name"></div>
-            <div class="field">
-              <label>Default Search Engine</label>
-              <select class="glass-input" id="st-search-engine">
-                <option value="google">Google</option>
-                <option value="duckduckgo">DuckDuckGo</option>
-                <option value="bing">Bing</option>
-              </select>
-            </div>
-            <div class="filter-pills" style="margin-top:14px">
-              <button class="btn small primary" id="st-identity-save">Save Identity</button>
-            </div>
-          </div>
-
-          <div class="glass-card hoverable">
-            <div class="card-title">Danger Zone <span class="hint">read-only info</span></div>
-            <div class="line-row"><span class="name">Backend<span class="sub">llama.cpp LFM3-1.7B · 127.0.0.1:9931</span></span><span class="status-dot green"></span></div>
-            <div class="line-row"><span class="name">Ears / Mouth<span class="sub">faster-whisper base.en · Piper lessac (CPU)</span></span><span class="status-dot cobalt"></span></div>
-            <div class="line-row"><span class="name">Dashboard<span class="sub">served by the environment server on 9932</span></span><span class="status-dot green"></span></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ========================== VIEW 8 · BROWSER BRIDGE ======================= -->
-      <section class="view" id="view-bridge">
-        <div class="glass-card" style="max-width:720px">
-          <div class="card-title">Browser Bridge Status <span class="hint" id="br-state-hint">checking…</span></div>
-          <div class="line-row">
-            <span id="br-dot" class="status-dot grey"></span>
-            <span class="name" id="br-state">Bridge connection</span>
-            <button class="btn small" id="br-refresh">Refresh</button>
-          </div>
-          <p style="font-size:13px; line-height:1.7; color:var(--ink-dim); margin-top:14px">
-            Load the bundled extension once and every open tab, its DOM buttons, and WhatsApp /
-            Gemini / Claude / YouTube / Gmail content become live in the Tabs &amp; Eyes view.</p>
-          <ol class="plan-steps" style="font-size:13px; line-height:2; margin-top:8px">
-            <li><b>Brave:</b> open <code>brave://extensions</code> → enable Developer mode →
-                “Load unpacked” → select <code>extensions/ultron-browser-bridge/</code></li>
-            <li><b>Firefox:</b> open <code>about:debugging</code> → “This Firefox” →
-                “Load Temporary Add-on” → select <code>manifest.firefox.json</code> inside the same folder</li>
-            <li>The extension syncs tabs + DOM every 800 ms to
-                <code>POST /api/browser/sync</code> and picks up actions on
-                <code>GET /api/browser/poll</code>.</li>
-            <li>Come back here — the status dot turns green within a second.</li>
-          </ol>
-        </div>
-      </section>
-
-    </div>
-
-    <div class="vision-grabber"><span class="grabber-dot"></span><span class="grabber-bar"></span></div>
-  </main>
-
-  <!-- ==================== C) RIGHT DETACHED 3-WIDGET HUD STACK ==================== -->
-  <aside class="hud-stack" aria-label="Live HUD">
-
-    <!-- TOP: sapphire voice & spectrum -->
-    <div class="hud-card hud-voice">
-      <div class="hud-head">
-        <div class="voice-state"><span class="voice-orb" id="hud-orb"></span><span id="hud-voice-state">…</span></div>
-        <span class="rms-readout" id="hud-rms">— dB</span>
       </div>
-      <div class="waveform" id="hud-waveform" aria-hidden="true"></div>
-      <div class="voice-btns">
-        <button class="btn" id="hud-mic" title="Mute / unmute microphone">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-          <span id="hud-mic-label">Mute Mic</span>
-        </button>
-        <button class="btn" id="hud-ptt" title="Hold to talk (Push-to-Talk)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.4" fill="currentColor"/></svg>
-          <span>Hold PTT</span>
-        </button>
-        <button class="btn" id="hud-barge" title="Stop speaking (barge-in)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
-          <span>Stop</span>
-        </button>
-      </div>
-    </div>
 
-    <!-- MIDDLE: GPU VRAM & active focus -->
-    <div class="hud-card hud-gpu">
-      <div class="card-title" style="font-size:12px">GPU VRAM <span class="hint" style="font-size:10px">GTX 1650</span></div>
-      <div class="vram-row"><span class="vram-value" id="hud-vram">0</span><small class="vram-value" style="font-size:12px; color:var(--ink-dim)"> / 4096 MiB</small></div>
-      <div class="seg-bar" style="margin:8px 0 2px"><span id="hud-vram-bar" style="width:0%"></span></div>
-      <div class="focus-row">
-        <span class="status-dot cobalt" id="hud-focus-dot"></span>
-        <span class="focus-name" id="hud-focus">—<span class="focus-sub" id="hud-focus-sub">active focus</span></span>
-        <button class="plus-trigger" id="hud-plus" title="Quick command" aria-label="Open quick command">+</button>
-      </div>
-    </div>
-
-    <!-- BOTTOM: latency spline -->
-    <div class="hud-card hud-latency spline-card">
-      <div class="card-title" style="font-size:12px">Neural Latency Pulse</div>
-      <div class="lat-row">
-        <span class="lat-value" id="hud-lat">—</span><small style="font-size:11px; color:var(--ink-dim)"> ms</small>
-        <span class="lat-badge" id="hud-lat-badge" style="margin-left:auto">p50 — / p95 —</span>
-      </div>
-      <svg viewBox="0 0 260 84" preserveAspectRatio="none" style="width:100%; height:84px; display:block; margin-top:8px">
-        <defs>
-          <linearGradient id="latGradHud" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#7ef0c9" stop-opacity="0.55"/>
-            <stop offset="100%" stop-color="#7ef0c9" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        <path class="spline-fill" id="hud-spline-fill" style="fill:url(#latGradHud)" d=""/>
-        <path class="spline-line" id="hud-spline-line" d=""/>
-        <circle class="spline-end" id="hud-spline-dot" r="3" cx="0" cy="0"/>
-      </svg>
-    </div>
-
-  </aside>
+    </aside>
+  </div>
 </div>
 
 <div class="toast-root" id="toast-root" aria-live="polite"></div>

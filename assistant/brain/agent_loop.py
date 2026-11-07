@@ -99,6 +99,72 @@ def looks_like_pure_chat(text: str) -> bool:
     return not bool(_TOOL_INTENT.search(cleaned))
 
 
+# Always offered to the local brain: the four actions that cover most spoken requests.
+CORE_TOOL_NAMES: tuple[str, ...] = ("open_app", "close_app", "web_search", "type_text")
+
+# Keyword → tool relevance for the local 1.7B model. Exposing all 28 schemas (~2.5k
+# tokens) pushed prompt eval to 4.2 s and made the model hallucinate; six compact
+# schemas keep the turn around ~350 tokens.
+_TOOL_INTENT_HINTS: dict[str, str] = {
+    "open_app": r"\b(open|launch|start)\b",
+    "close_app": r"\b(close|quit|exit|kill)\b",
+    "switch_app": r"\b(switch|focus|jump|bring|go to)\b",
+    "web_search": r"\b(search|google|look up|find online|web)\b",
+    "open_first_result": r"\b(first (?:link|result|video)|play first)\b",
+    "type_text": r"\b(type|dictate|write|enter text)\b",
+    "press_key": r"\b(press|key|enter|escape|arrow|tab key)\b",
+    "scroll_page": r"\b(scroll|page down|page up)\b",
+    "browser_tab_control": r"\b(tab|tabs|new tab|close tab|next tab|previous tab)\b",
+    "window_control": r"\b(window|maximize|minimize|full ?screen|workspace|overview)\b",
+    "set_brightness": r"\bbrightness\b",
+    "media_control": r"\b(play|pause|resume|song|track|music|media)\b",
+    "system_info": r"\b(battery|time|date|status|system info)\b",
+    "take_screenshot": r"\b(screenshot|capture screen)\b",
+    "set_timer": r"\b(timer|countdown|remind me in)\b",
+    "list_files": r"\b(files?|folders?|directories|downloads|documents|desktop)\b",
+    "read_file": r"\bread (?:the )?file\b",
+    "read_screen": r"\b(screen|clickable|visible|what is on)\b",
+    "click_element": r"\b(click|tap|select|press)\b",
+    "focus_and_type": r"\b(type|enter|write|fill)\b.*\b(field|box|email|search|message|name)\b",
+    "volume_up": r"\b(volume up|louder|increase volume)\b",
+    "volume_down": r"\b(volume down|quieter|decrease volume)\b",
+    "set_volume": r"\b(volume|sound level)\b",
+    "mute_audio": r"\b(mute|unmute|silence)\b",
+    "learn_skill": r"\b(teach|remember|when i say|workflow)\b",
+    "list_browser_tabs": r"\b(tabs?|browser)\b",
+    "switch_to_tab": r"\b(switch|focus|go)\b.*\btab\b",
+    "interact_with_tab": r"\b(whatsapp|gmail|gemini|claude|youtube|github|tab)\b",
+}
+
+
+def select_tools_for_turn(
+    user_text: str, available_tools: list[str] | tuple[str, ...], max_tools: int = 6
+) -> list[str]:
+    """Pick at most ``max_tools`` tool schemas relevant to this turn.
+
+    The four core actions are always present (stable order first); remaining slots go to
+    keyword matches, best score first. Unknown turns still get the core four, which keeps
+    the prompt small without losing the common actions.
+    """
+    available = list(dict.fromkeys(available_tools))
+    text = (user_text or "").lower()
+    chosen: list[str] = [name for name in CORE_TOOL_NAMES if name in available]
+    scored: list[tuple[int, int, str]] = []
+    for index, name in enumerate(available):
+        if name in chosen:
+            continue
+        pattern = _TOOL_INTENT_HINTS.get(name)
+        score = len(re.findall(pattern, text)) if pattern else 0
+        if score:
+            scored.append((-score, index, name))
+    scored.sort()
+    for _score, _index, name in scored:
+        if len(chosen) >= max(1, max_tools):
+            break
+        chosen.append(name)
+    return chosen[: max(1, max_tools)]
+
+
 # Phase 7: 220 tokens so a type_text paragraph and a 1-2 sentence spoken reply are never
 # chopped mid-sentence ("...goals on." / "...use for."). The sentence guard in
 # reply_style.clean_llm_reply trims a reply that still hits the cap.
@@ -546,7 +612,22 @@ class AgentLoop:
                 elif local_tool_round_cap is not None and tool_rounds >= local_tool_round_cap:
                     tools_payload = None  # small local model: force a final answer after 3 tool rounds
                 elif self.config.backend == "local":
-                    tools_payload = self.registry.get_openai_tools(compact=True)
+                    # Cap the schema payload at six compact tools (~350 prompt tokens).
+                    # Earlier rounds' tools stay visible so a follow-up call can continue.
+                    already_used = " ".join(name for name, _args in last_executed_tools)
+                    all_schemas = self.registry.get_openai_tools(compact=True)
+                    selected = set(
+                        select_tools_for_turn(
+                            f"{cleaned} {already_used}",
+                            [item["function"]["name"] for item in all_schemas],
+                            max_tools=6,
+                        )
+                    )
+                    tools_payload = [
+                        item
+                        for item in all_schemas
+                        if item["function"]["name"] in selected
+                    ]
                 else:
                     tools_payload = self.registry.get_gemini_tools()
                 try:

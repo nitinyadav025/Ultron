@@ -17,7 +17,7 @@ import re
 from assistant.brain.context import SESSION
 from assistant.brain.skills import memory_value
 from assistant.brain.tool_replies import code_reply_for_tool
-from assistant.speech.wake import normalise_spoken_command
+from assistant.speech.wake import normalise_spoken_command, strip_conversational_prefix
 from assistant.tools.apps import app_key
 from assistant.tools.desktop_control import parse_duration_seconds
 from assistant.tools.registry import ToolRegistry
@@ -154,9 +154,10 @@ def _screen_command(cleaned: str, request: str) -> dict[str, object] | None:
 
 
 def _prepare_text(text: str) -> str:
-    """Drop the "I'll turn" wake miss and turn ", Ultron" into a command joiner."""
+    """Drop wake misses, polite lead-ins and convert ", Ultron" into a command joiner."""
     cleaned = _LEADING_TURN.sub("", text or "")
     cleaned = _WAKE_COMMA.sub(" and ", cleaned)
+    cleaned = strip_conversational_prefix(cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 

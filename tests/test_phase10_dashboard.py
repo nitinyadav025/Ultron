@@ -132,12 +132,13 @@ def test_styles_and_app_served_with_correct_mime(dashboard_server) -> None:
     assert content_type.startswith("text/css")
     css = body.decode("utf-8")
     for marker in (
-        "rgba(38, 33, 29, 0.46)",          # frosted rail glass
-        "blur(36px) saturate(175%)",        # rail backdrop
-        "blur(44px) saturate(190%)",        # stage backdrop
-        "rgba(59, 130, 246, 0.62)",         # sapphire HUD voice card
-        "cubic-bezier(0.22, 1, 0.36, 1)",   # spatial spring
-        "Instrument Serif",                 # editorial serif stack
+        "grid-template-columns: var(--rail-width) minmax(640px, 1fr) var(--hud-width)",
+        "rgba(58, 50, 44, 0.52)",           # frosted rail glass (demo)
+        "blur(36px) saturate(160%)",         # rail backdrop
+        "blur(44px) saturate(180%)",         # stage backdrop
+        "rgba(68, 138, 255, 0.72)",          # sapphire HUD voice card
+        "cubic-bezier(0.22, 1, 0.36, 1)",    # spatial spring
+        "Lora", "Inter",                     # demo typography stacks
         "vision-grabber", "grabber-bar", "glass-card", "pure-glass",
     ):
         assert marker in css, f"styles.css missing: {marker}"
@@ -168,6 +169,25 @@ def test_static_fallback_and_traversal_rejected(dashboard_server) -> None:
     status, _, body = _get(url, "/../assistant/environment/server.py")
     assert status == 404, "path traversal must be rejected"
     assert b"dispatch" not in body
+
+
+def test_hud_column_is_never_an_overlay() -> None:
+    """The 3-widget stack must be a grid column, never a fixed/absolute overlay."""
+    css = (DIST / "styles.css").read_text(encoding="utf-8")
+    start = css.index(".hud-stack {")
+    block = css[start : css.index("}", start)]
+    assert "position: fixed" not in block
+    assert "position: absolute" not in block
+    assert "grid-column: 3" in block
+    html = (DIST / "index.html").read_text(encoding="utf-8")
+    assert 'class="spatial-shell"' in html
+    assert 'class="rail"' in html and 'class="stage"' in html and 'class="hud-stack"' in html
+
+
+def test_launcher_opens_a_widescreen_window() -> None:
+    source = (PROJECT_ROOT / "assistant" / "environment" / "launcher.py").read_text(encoding="utf-8")
+    assert "--window-size=1480,860" in source
+    assert "--window-position=120,80" in source
 
 
 def test_dashboard_interacts_with_live_api(dashboard_server) -> None:
