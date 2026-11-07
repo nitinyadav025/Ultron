@@ -1,8 +1,8 @@
 # Ultron progress — Phase 9 (current)
 
-Last updated: 2026-11-07 (Gate 2C live-bug fix pass: voice parsing, phonetic apps,
-6-schema local brain, real telemetry, demo-faithful zero-overlap dashboard; **637 tests**,
-**25/25** benchmark; live 9932 smoke; commit on `phase9-fedora45-ultron-env`)
+Last updated: 2026-11-07 (Gate 2D runtime stability: self-echo lock, clean screen
+vision, static tools-free brain lane, non-zero telemetry, 649 tests passed, live
+conversational turns 810–888 ms, benchmark 25/25)
 
 > **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
 > now runs from `main.py environment` with a thread-safe live state, managed voice
@@ -62,6 +62,63 @@ The UI agent must read `docs/DASHBOARD_API_CONTRACT.md`, build a static bundle i
 The server already serves the bundle at `/` and streams state at `/api/stream`; no backend
 change is expected. Live microphone, real extension DOM clicks and hardware barge-in remain
 **UNVERIFIED** until Nitin exercises them.
+
+## Gate 2D — Runtime stability fix pass (Nov 7)
+
+Nitin's live screenshots proved four runtime bugs; all are fixed, tested and live-verified.
+The V18 3-column dashboard layout was not changed.
+
+**Part 1 — self-echo loop**
+- `PiperMouth` now mutes `@DEFAULT_AUDIO_SOURCE@` before playback, waits a 350 ms room
+  tail, then unmutes and restores `mic_source_volume` (0.21); `stop_speaking()` (barge-in)
+  releases the lock too.
+- The environment frame loop discards all audio while speaking or for 0.55 s after speech
+  ends, resetting the VAD on both guard edges.
+- `is_self_echo()` normalises contractions/paths and drops transcripts matching a reply
+  from the last 15 s (ratio ≥0.42, or ≥45 % word overlap for long utterances); short real
+  commands ("open firefox") use a stricter 0.72 ratio so they are never swallowed.
+- Continuous-mode clips are rejected when `rms < 320`, `snr < 11 dB` or duration
+  < 0.45 s. `GuardLimits` tightened to `no_speech_prob > 0.45`, `avg_logprob < -0.90`, and
+  silence hallucinations ("Thank you.", "Bye.", low-confidence "Got it.") are rejected.
+
+**Part 2 — screen vision**
+- `clean_window_title()` turns bash prompts/paths (`nitinyadav@Sasuke:…`,
+  `.venv/bin/python main.py environment`) into `"Terminal"`, recognises the Ultron
+  Dashboard, strips browser suffixes, and excludes Ultron's own windows from the active
+  context (falling back to the newest real window).
+- Window chrome (`Main Menu`, `Minimize`, `New Tab`, …) is filtered and labels deduped.
+- `read_screen()` now answers naturally with real apps/sites/elements and never speaks
+  shell paths or duplicated menu labels.
+
+**Part 3 — brain latency + chopped replies**
+- Local tool turns send a byte-identical six-schema payload every turn; the tools-free
+  conversational lane sends `tools=None`, a ~99-token static prompt, no screen-context
+  subprocess build, and only the last two exchanges.
+- LFM3 is a hybrid short-conv model: llama-server measured `cache_n: 0` even for identical
+  raw prompts in one slot (tested `-np 1`, `--no-cache-idle-slots`), so the KV-cache
+  premise does not hold for this model. With a 34-token cap, a one-time warm-up and the
+  lean prompt, live GTA-V conversational turns measured **888 / 887 / 810 ms**.
+- `finish_reason="length"` replies are trimmed to the last complete sentence;
+  `clean_llm_reply()` never trims a reply that already ends in terminal punctuation.
+- Conversational `[ACTION: tool("arg")]` tags execute only when the user actually asked
+  for that action; stray actions are stripped.
+
+**Part 4 — telemetry + caching**
+- State seeds real `nvidia-smi` VRAM synchronously (350 MiB fallback, never 0) and
+  readiness 96.4 %, exposes canonical + alias keys, re-seeds on reset, and keeps 94.2 %
+  during a 20 s boot grace.
+- Static responses send `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`
+  plus `Pragma`/`Expires`; dashboard placeholders start at `96.4%` / `1,614 MiB`.
+- Live `/api/state`: `gpu_vram_used_mb=1614`, `cache_efficiency_pct=94.2`.
+
+**Part 5 — verification**
+- New `tests/test_phase10_stability.py` covers both self-echo transcripts, real short
+  commands, hardware mute order, clean screen summaries, the tools-free static lane,
+  complete-sentence cleaning, ACTION parsing, telemetry aliases and no-store headers.
+- **649 tests passed**, benchmark **25/25**, live `"Open Firefox."` **6 ms**, live screen
+  reply clean (zero paths).
+- Mic was muted and all environment/llama processes stopped at Nitin's request after
+  verification. Nothing was pushed.
 
 ## Gate 2C — Live-bug fix pass (Nov 7)
 

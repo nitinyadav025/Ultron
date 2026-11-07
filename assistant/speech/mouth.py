@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import re
 import shutil
 import subprocess
 import threading
 import time
 import wave
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,6 +39,10 @@ LEAD_SILENCE_MS = 120
 TAIL_SILENCE_MS = 200
 PEAK_CEILING = 0.95  # leave a little headroom so nothing clips
 MAX_SENTENCES = 6
+# The speaker keeps ringing for a moment after pw-play exits. Stay muted through it so
+# the next microphone frames can never contain Ultron's own voice.
+ECHO_TAIL_S = 0.35
+MIC_VOLUME_DEFAULT = "0.21"
 
 
 class MouthError(RuntimeError):
@@ -84,7 +90,13 @@ def _default_voice_factory(model_path: Path, config_path: Path) -> Any:
 class PiperMouth:
     """Piper wrapper that loads the voice exactly once and synthesizes WAV bytes per sentence."""
 
-    def __init__(self, config: AssistantConfig, voice_factory: Callable[[Path, Path], Any] | None = None) -> None:
+    def __init__(
+        self,
+        config: AssistantConfig,
+        voice_factory: Callable[[Path, Path], Any] | None = None,
+        *,
+        wpctl_runner: Callable[[list[str]], Any] | None = None,
+    ) -> None:
         self.config = config
         self._voice: Any = None
         self._voice_factory = voice_factory or _default_voice_factory
@@ -95,6 +107,14 @@ class PiperMouth:
         self._active_player: subprocess.Popen[bytes] | None = None
         self._stop_event = threading.Event()
         self._speaking = False
+        # Echo lock: mic muted from the first synthesized sentence until the 350 ms room
+        # tail has passed; the watchdog records when it is safe to listen again.
+        self._echo_lock = threading.Lock()
+        self._echo_locked = False
+        self._wpctl_runner = wpctl_runner
+        self.last_speech_end_time = 0.0
+        self.recent_spoken_texts: deque[str] = deque(maxlen=5)
+        self.recent_speech: deque[tuple[float, str]] = deque(maxlen=5)
 
     # -- live state --------------------------------------------------------------
 
@@ -119,11 +139,99 @@ class PiperMouth:
         except Exception:
             pass
 
+    # -- echo lock ---------------------------------------------------------------
+
+    def _wpctl(self, *args: str) -> bool:
+        """Run one wpctl command quietly (mic mute/volume). Never raises."""
+        if self._wpctl_runner is not None:
+            try:
+                self._wpctl_runner(["wpctl", *args])
+                return True
+            except Exception:
+                return False
+        # Tests must never touch the real microphone source.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
+        if not shutil.which("wpctl"):
+            return False
+        try:
+            subprocess.run(
+                ["wpctl", *args],
+                timeout=0.5,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def note_spoken(self, text: str) -> None:
+        """Remember what was just spoken so the echo filter can recognise it."""
+        cleaned = re.sub(r"\s+", " ", (text or "")).strip()
+        if not cleaned:
+            return
+        now = time.monotonic()
+        self.recent_spoken_texts.append(cleaned)
+        self.recent_speech.append((now, cleaned))
+        state = self._state()
+        if state is not None:
+            try:
+                state.note_spoken(cleaned)
+            except Exception:
+                pass
+
+    def recent_texts(self, max_age_s: float = 15.0) -> list[str]:
+        """Replies spoken in the last ``max_age_s`` seconds (newest last)."""
+        cutoff = time.monotonic() - max(0.0, float(max_age_s))
+        return [text for stamp, text in self.recent_speech if stamp >= cutoff]
+
+    def begin_speaking(self, text: str = "") -> None:
+        """Mute the mic, remember the text, and mark TTS as active (idempotent)."""
+        self.note_spoken(text)
+        with self._echo_lock:
+            if self._echo_locked:
+                return
+            self._echo_locked = True
+        self._wpctl("set-mute", "@DEFAULT_AUDIO_SOURCE@", "1")
+        logger.info("Echo lock: microphone muted for playback.")
+
+    def end_speaking(self, *, wait_tail: bool = True) -> None:
+        """Wait for the room tail, unmute, restore the mic volume and timestamp the end."""
+        with self._echo_lock:
+            if not self._echo_locked:
+                self.last_speech_end_time = time.monotonic()
+                return
+            self._echo_locked = False
+        if wait_tail and not os.environ.get("PYTEST_CURRENT_TEST"):
+            time.sleep(ECHO_TAIL_S)
+        self._wpctl("set-mute", "@DEFAULT_AUDIO_SOURCE@", "0")
+        volume = str(getattr(self.config, "mic_source_volume", "") or MIC_VOLUME_DEFAULT)
+        self._wpctl("set-volume", "@DEFAULT_AUDIO_SOURCE@", volume)
+        self.last_speech_end_time = time.monotonic()
+        state = self._state()
+        if state is not None:
+            try:
+                state.note_speech_end()
+            except Exception:
+                pass
+        logger.info("Echo lock released; microphone restored after the room tail.")
+
+    def echo_guard_active(self, cooldown_s: float = 0.55) -> bool:
+        """True while playback is active or the room tail is still settling."""
+        if self.is_speaking:
+            return True
+        last = float(getattr(self, "last_speech_end_time", 0.0) or 0.0)
+        return last > 0.0 and (time.monotonic() - last) < max(0.0, cooldown_s)
+
     @property
     def is_speaking(self) -> bool:
         with self._player_lock:
             proc = self._active_player
-        return self._speaking or (proc is not None and proc.poll() is None)
+        with self._echo_lock:
+            locked = self._echo_locked
+        return self._speaking or locked or (proc is not None and proc.poll() is None)
 
     def adopt_player(self, proc: subprocess.Popen[Any] | None) -> None:
         """Let the CLI/GUI voice path share its pw-play handle with the barge-in switch."""
@@ -157,6 +265,7 @@ class PiperMouth:
                     pass
             killed = True
         self._speaking = False
+        self.end_speaking()
         self._publish(status="online", rms=0, peak=0)
         return killed
 
@@ -220,6 +329,7 @@ class PiperMouth:
                 if self._active_player is proc:
                     self._active_player = None
                 self._speaking = False
+            self.last_speech_end_time = time.monotonic()
             self._publish(status="online", rms=0, peak=0)
 
     def speak(self, text: str) -> tuple[bool, str]:
@@ -230,19 +340,24 @@ class PiperMouth:
         self._stop_event.clear()
         spoken = 0
         player = ""
-        for sentence in sentences:
-            if self._stop_event.is_set():
-                break
-            try:
-                wav_bytes = self.synthesize_wav(sentence)
-            except MouthError as exc:
-                return spoken > 0, str(exc)
-            ok, info = self.play_wav_bytes(wav_bytes)
-            if not ok:
-                return spoken > 0, info
-            player = info
-            spoken += 1
-        return True, f"Piper ({self.config.piper_voice}) via {player}"
+        # Hardware echo lock spans the whole reply, including synthesis gaps.
+        self.begin_speaking(text)
+        try:
+            for sentence in sentences:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    wav_bytes = self.synthesize_wav(sentence)
+                except MouthError as exc:
+                    return spoken > 0, str(exc)
+                ok, info = self.play_wav_bytes(wav_bytes)
+                if not ok:
+                    return spoken > 0, info
+                player = info
+                spoken += 1
+            return True, f"Piper ({self.config.piper_voice}) via {player}"
+        finally:
+            self.end_speaking()
 
     @property
     def voice_dir(self) -> Path:

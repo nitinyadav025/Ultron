@@ -162,7 +162,9 @@ class RecorderRegistry:
         self.calls.append((tool_name, dict(arguments)))
         return {"ok": True, "raw_summary": {"ok": True}}
 
-    def get_openai_tools(self, compact: bool = False) -> list[dict[str, Any]]:
+    def get_openai_tools(
+        self, compact: bool = False, names: Any | None = None
+    ) -> list[dict[str, Any]]:
         return []
 
 
@@ -435,7 +437,7 @@ def test_screen_watcher_refresh_updates_session_and_stops() -> None:
 
     assert watcher.refresh() is snapshot
     assert SESSION.screen_elements[0]["name"] == "Show more"
-    assert SESSION.focused_window == "YouTube - Mozilla Firefox"
+    assert SESSION.focused_window == "YouTube"
     assert SESSION.active_site == "youtube"
     assert SESSION.screen_source == "atspi"
 
@@ -633,8 +635,7 @@ def test_read_screen_summarises_window_site_and_buttons() -> None:
     result = read_screen()
 
     assert result["ok"] is True
-    assert "YouTube - Mozilla Firefox" in result["reply"]
-    assert "YouTube" in result["reply"]
+    assert "Mozilla Firefox open to YouTube" in result["reply"]
     assert "Show more" in result["reply"]
     assert result["elements"] == 3
     assert "@e1:button" in result["visible_ui"]

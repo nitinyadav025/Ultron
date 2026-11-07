@@ -14,6 +14,7 @@ Piper playback, no LLM, no tool.
 from __future__ import annotations
 
 import array
+import difflib
 import json
 import logging
 import math
@@ -161,6 +162,96 @@ class Transcript:
     text: str
     raw: str = ""
     reason: str = ""
+
+
+# --------------------------------------------------------------------------------------
+# Self-echo detection (Layer 3)
+# --------------------------------------------------------------------------------------
+
+_ECHO_CONTRACTIONS: tuple[tuple[str, str], ...] = (
+    (r"\byou're\b", "you are"),
+    (r"\byou’re\b", "you are"),
+    (r"\bi'm\b", "i am"),
+    (r"\bi’m\b", "i am"),
+    (r"\bit's\b", "it is"),
+    (r"\bthat's\b", "that is"),
+    (r"\bdon't\b", "do not"),
+    (r"\bcan't\b", "cannot"),
+    (r"\bwon't\b", "will not"),
+    (r"\bi've\b", "i have"),
+    (r"\bwe're\b", "we are"),
+    (r"\bthey're\b", "they are"),
+)
+_ECHO_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "you", "are", "was", "were", "with", "this", "that",
+        "from", "have", "has", "had", "not", "but", "your", "our", "their", "its",
+        "can", "could", "would", "will", "what", "when", "where", "which", "who",
+        "then", "than", "them", "there", "here", "into", "onto", "just", "very",
+    }
+)
+
+
+def _normalise_echo_text(text: str) -> str:
+    lowered = (text or "").lower()
+    for pattern, replacement in _ECHO_CONTRACTIONS:
+        lowered = re.sub(pattern, replacement, lowered)
+    lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+def _significant_echo_words(normalised: str) -> list[str]:
+    return [
+        word
+        for word in normalised.split()
+        if len(word) >= 3 and word not in _ECHO_STOPWORDS
+    ]
+
+
+def is_self_echo(
+    heard: str,
+    recent_replies: list[str] | tuple[str, ...],
+    *,
+    ratio_threshold: float = 0.42,
+    word_overlap_threshold: float = 0.45,
+) -> bool:
+    """True when ``heard`` is Ultron's own recent speech coming back through the mic.
+
+    Two independent signals:
+    * normalised similarity >= 0.42 (covers "you're in firefox, mitten" vs
+      "You're in Firefox, Nitin"), and
+    * for utterances with at least five significant words, >= 45 % of those words appear
+      in a recent reply (covers the long garbled terminal path echo). The word rule is
+      never applied to short commands ("open firefox" must still work).
+    """
+    normalised_heard = _normalise_echo_text(heard)
+    if not normalised_heard:
+        return False
+    heard_words = _significant_echo_words(normalised_heard)
+    for reply in recent_replies:
+        normalised_reply = _normalise_echo_text(reply)
+        if not normalised_reply:
+            continue
+        ratio = difflib.SequenceMatcher(None, normalised_heard, normalised_reply).ratio()
+        # Long echoes are caught at 0.42. A short REAL command ("open firefox") is also
+        # ~0.6 similar to "I've opened Firefox for you.", so short utterances need a
+        # stricter 0.72 or the genuine command would be discarded as an echo.
+        threshold = ratio_threshold if len(heard_words) >= 4 else 0.72
+        if ratio >= threshold:
+            return True
+        if len(heard_words) >= 5:
+            reply_words = set(_significant_echo_words(normalised_reply))
+            matched = 0
+            for word in heard_words:
+                if any(
+                    word == other
+                    or (len(word) >= 4 and (other.startswith(word) or word.startswith(other)))
+                    for other in reply_words
+                ):
+                    matched += 1
+            if matched / len(heard_words) >= word_overlap_threshold:
+                return True
+    return False
 
 
 class UtteranceDetector:
@@ -616,6 +707,9 @@ class HandsFreeListener:
         self.stop_requested = False
         self.followup_until_ms = 0
         self.ignore_until_ms = 0
+        # Texts spoken by Ultron in the last 15 s. A transcript that matches one of these
+        # is the speaker's own audio, never a user turn.
+        self._recent_replies: deque[tuple[float, str]] = deque(maxlen=5)
         self._carry = b""
         self._ready = False
         self._discard_tail: deque[array.array] = deque(maxlen=max(1, 400 // FRAME_MS))
@@ -833,6 +927,25 @@ class HandsFreeListener:
             self.detector.reset()
             return
 
+        now_speech = self.clock()
+        recent = [
+            reply for stamp, reply in self._recent_replies if now_speech - stamp <= 15.0
+        ]
+        if is_self_echo(text, recent):
+            self.ignored += 1
+            logger.info("Hands-free: dropped Ultron's own voice (self_echo).")
+            self._log_utterance("self_echo")
+            self.detector.reset()
+            return
+        if recent and now_speech - self._recent_replies[-1][0] < 2.0:
+            bare = re.sub(r"[^a-z ]+", "", text.lower()).strip()
+            if bare in {"thank you", "thanks for watching", "got it", "bye", "you", "okay"}:
+                self.ignored += 1
+                logger.info("Hands-free: dropped a TTS-adjacent silence hallucination.")
+                self._log_utterance("hallucination")
+                self.detector.reset()
+                return
+
         wake_word = getattr(self.config, "wake_word", "ultron")
         wake_aliases = getattr(self.config, "wake_aliases", "")
         match = wake_match(wake_text, wake_word, wake_aliases, self.learned_aliases)
@@ -928,6 +1041,7 @@ class HandsFreeListener:
         self._speak(reply)
 
     def _speak(self, text: str) -> None:
+        self._recent_replies.append((self.clock(), text))
         self.speak(text)
         self._drain()
         after = int(getattr(self.config, "listen_after_speech_ms", 600))

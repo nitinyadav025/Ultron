@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -182,13 +183,28 @@ class LocalAdapter:
     # -- Response parsing -----------------------------------------------------
 
     @staticmethod
+    def _trim_at_sentence(text: str) -> str:
+        """When max_tokens cuts generation, keep only complete sentences."""
+        matches = list(re.finditer(r"[.!?](?=\s|$)", text))
+        if matches:
+            return text[: matches[-1].end()].strip()
+        return text
+
+    @staticmethod
     def _extract(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         try:
-            message = data["choices"][0]["message"]
+            choice = data["choices"][0]
+            message = choice["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("Local LLM server returned an unexpected response shape.") from exc
 
-        text = clean_llm_reply(str(message.get("content") or "").strip())
+        text = str(message.get("content") or "").strip()
+        # A token-limit cut often ends mid-word ("...journey—GTA V's sprawli"). Trim to
+        # the last complete sentence before any reply shaping, so Piper never says a
+        # chopped fragment.
+        if str(choice.get("finish_reason") or "") == "length":
+            text = LocalAdapter._trim_at_sentence(text)
+        text = clean_llm_reply(text)
         usage = data.get("usage") or {}
         calls: list[dict[str, Any]] = []
         for index, raw_call in enumerate(message.get("tool_calls") or []):

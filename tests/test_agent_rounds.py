@@ -397,7 +397,9 @@ def test_pure_chat_uses_one_lean_request_without_tools() -> None:
     assert adapter.tools_seen == [None]  # no tool schemas on a conversation turn
     assert "no tools are available" in adapter.system_prompts[0]
     # The Dashboard persona adds the user's name (Nitin) to the lean prompt.
-    assert len(adapter.system_prompts[0]) < 360  # lean chat prompt
+    # The lean chat prompt is ~90 words (<110) and byte-identical across turns.
+    assert len(adapter.system_prompts[0]) < 700
+    assert len(adapter.system_prompts[0].split()) <= 110
     assert adapter.history_lengths[0] <= 8  # last four turns only
 
 

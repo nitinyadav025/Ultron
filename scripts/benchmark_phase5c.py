@@ -227,7 +227,9 @@ class BenchmarkRegistry:
         self.calls.append((tool_name, dict(arguments)))
         return _fake_result(tool_name, arguments)
 
-    def get_openai_tools(self, compact: bool = False) -> list[dict[str, Any]]:
+    def get_openai_tools(
+        self, compact: bool = False, names: Any | None = None
+    ) -> list[dict[str, Any]]:
         return []
 
 

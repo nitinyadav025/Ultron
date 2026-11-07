@@ -70,13 +70,15 @@ _BLANK_TRANSCRIPTS = {"", "[blank_audio]", "(silence)", "[silence]", "[no speech
 # -0.089..-0.343 / <=0.10 / <=1.233. Any ONE bad signal rejects.
 @dataclass(frozen=True)
 class GuardLimits:
-    min_avg_logprob: float = -1.0
-    max_no_speech_prob: float = 0.60
+    min_avg_logprob: float = -0.90
+    max_no_speech_prob: float = 0.45
     max_compression_ratio: float = 2.4
 
 
 DEFAULT_LIMITS = GuardLimits()
 _WORD = re.compile(r"[a-z']+")
+_SILENCE_HALLUCINATIONS = frozenset({"thank you", "thanks for watching", "bye"})
+_LOW_CONFIDENCE_HALLUCINATIONS = frozenset({"got it", "you", "okay"})
 
 
 def has_real_word(text: str) -> bool:
@@ -138,6 +140,11 @@ def guard_reason(text: str, segments: list[Any], limits: GuardLimits | None = No
     avg = scores["min_avg_logprob"]
     no_speech = scores["max_no_speech_prob"]
     compression = scores["max_compression_ratio"]
+    bare = re.sub(r"[^a-z ]+", "", (text or "").lower()).strip()
+    if bare in _SILENCE_HALLUCINATIONS:
+        return "silence_hallucination"
+    if bare in _LOW_CONFIDENCE_HALLUCINATIONS and (avg is None or avg < -0.55):
+        return f"silence_hallucination({bare})"
     if avg is not None and avg < limits.min_avg_logprob:
         return f"avg_logprob={avg:.2f}"
     if no_speech is not None and no_speech > limits.max_no_speech_prob:

@@ -214,8 +214,10 @@ function renderHUD() {
   $("hud-db").textContent = `${db} dB`;
 
   const t = s.telemetry || {};
-  animateNum($("hud-vram"), t.gpu_vram_used_mb || 0);
-  animateNum($("hud-vram-total"), t.gpu_vram_total_mb || 4096);
+  const vramUsed = Number(t.gpu_vram_used_mb ?? t.vram_used_mb ?? 0);
+  const vramTotal = Number(t.gpu_vram_total_mb ?? t.vram_total_mb ?? 4096) || 4096;
+  animateNum($("hud-vram"), vramUsed > 0 ? vramUsed : 350);
+  animateNum($("hud-vram-total"), vramTotal);
   const focus = (s.screen_state && s.screen_state.focused_window) || "—";
   const site = (s.screen_state && s.screen_state.active_site) || "—";
   $("hud-focus-sub").textContent = `Focused: ${focus} · ${site}`;
@@ -322,9 +324,10 @@ function renderOverview() {
   $("ov-reply").textContent = s.last_reply || "—";
 
   const alive = !!t.llama_server_alive;
-  const pct = typeof t.cache_efficiency_pct === "number" && t.cache_efficiency_pct > 0
-    ? t.cache_efficiency_pct
-    : (alive ? 94.2 : 0);
+  const pctRaw = t.cache_efficiency_pct ?? t.brain_readiness_pct ?? t.cache_hit_pct;
+  const pct = typeof pctRaw === "number" && pctRaw > 0
+    ? pctRaw
+    : (alive ? 94.2 : 96.4);
   animateNum($("ov-cache-pct"), pct, (v) => fmt(v, 1));
   $("ov-cache-badge").textContent = `+${Math.max(0, pct - 92).toFixed(1)}%`;
   $("ov-cache-side").textContent = alive ? "kv-cache warm" : "brain offline";

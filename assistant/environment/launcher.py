@@ -311,6 +311,16 @@ class EnvironmentLauncher:
         # A fresh environment session never inherits stale LLM turns; this also keeps
         # an earlier "JavaScript files" answer from polluting the next command prompt.
         self.loop.history.clear()
+        if self.config.backend == "local" and not os.environ.get("PYTEST_CURRENT_TEST"):
+            # Warm llama-server's kernels/graphs once, so the user's first real
+            # conversational turn already meets the <900 ms target instead of paying
+            # the ~350 ms cold-start penalty.
+            try:
+                self.loop.run_task("Hello")
+                self.loop.history.clear()
+                self.state.set_thought("Ready. Say “Ultron” or use the Dashboard.")
+            except Exception as exc:
+                logger.debug("Local brain warm-up skipped: %s", exc)
 
         if not os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("ULTRON_NO_INPUT"):
             try:

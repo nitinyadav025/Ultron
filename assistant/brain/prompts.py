@@ -78,13 +78,19 @@ def build_chat_prompt(
     user_name: str = "",
     reply_style: str = "natural",
 ) -> str:
-    """A tiny, static prompt for pure conversation: no tool rules and no tool schemas."""
+    """A tiny, static prompt for pure conversation: no tool rules and no tool schemas.
+
+    It is under 110 words and byte-identical across turns for a given persona, so
+    llama-server keeps the whole prompt in slot 0. Desktop actions are expressed with a
+    compact ``[ACTION: ...]`` tag that AgentLoop strips and executes.
+    """
     lines = [
-        _LOCAL_HEADER,
-        f"- {VOICE_RULE}",
-        "- Sound natural and warm; use contractions, never robotic.",
+        "You are Ultron, a calm, sharp local voice assistant.",
+        "- Reply in one or two short spoken sentences, under 25 words; natural, no lists or markdown.",
         *_persona_lines(personality, user_name, reply_style),
-        "- Answer directly and naturally; no tools are available in this turn.",
+        "- Answer directly; no tools are available in this turn.",
+        '- Only if the user explicitly asks for a desktop action, begin with '
+        '[ACTION: open_app("name")] or [ACTION: web_search("query")]; never invent one.',
     ]
     return "\n".join(lines) + "\n"
 

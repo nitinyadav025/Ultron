@@ -92,82 +92,102 @@ _TOOL_INTENT = re.compile(
 
 
 def looks_like_pure_chat(text: str) -> bool:
-    """True for a conversational turn that cannot need a tool."""
+    """True only for a conversational question/story that cannot need context or tools.
+
+    "What do you think about open world games?" contains "open", but it is a question.
+    Imperative turns ("activate work mode", "click Show more") keep their screen/skills
+    context tag even when they match no tool schema, so the LLM still sees the screen.
+    """
     cleaned = (text or "").strip()
     if not cleaned:
         return False
-    return not bool(_TOOL_INTENT.search(cleaned))
+    return bool(_CHAT_OPENER.search(cleaned))
 
 
-# Always offered to the local brain: the four actions that cover most spoken requests.
-CORE_TOOL_NAMES: tuple[str, ...] = ("open_app", "close_app", "web_search", "type_text")
+_CHAT_OPENER = re.compile(
+    r"^(?:hey|hi|hello|okay|so)?[,\s]*(?:ultron[,\s]+)?"
+    r"(?:what|why|how|who|when|where|which|do you|did you|are you|"
+    r"can you tell|tell me|explain|describe|talk to me|i think|i was|i've been|"
+    r"we were|we've been|my friends|yesterday|last night|this morning|"
+    r"opinion|thoughts|should i|would you recommend)\b",
+    re.I,
+)
 
-# Keyword → tool relevance for the local 1.7B model. Exposing all 28 schemas (~2.5k
-# tokens) pushed prompt eval to 4.2 s and made the model hallucinate; six compact
-# schemas keep the turn around ~350 tokens.
-_TOOL_INTENT_HINTS: dict[str, str] = {
-    "open_app": r"\b(open|launch|start)\b",
-    "close_app": r"\b(close|quit|exit|kill)\b",
-    "switch_app": r"\b(switch|focus|jump|bring|go to)\b",
-    "web_search": r"\b(search|google|look up|find online|web)\b",
-    "open_first_result": r"\b(first (?:link|result|video)|play first)\b",
-    "type_text": r"\b(type|dictate|write|enter text)\b",
-    "press_key": r"\b(press|key|enter|escape|arrow|tab key)\b",
-    "scroll_page": r"\b(scroll|page down|page up)\b",
-    "browser_tab_control": r"\b(tab|tabs|new tab|close tab|next tab|previous tab)\b",
-    "window_control": r"\b(window|maximize|minimize|full ?screen|workspace|overview)\b",
-    "set_brightness": r"\bbrightness\b",
-    "media_control": r"\b(play|pause|resume|song|track|music|media)\b",
-    "system_info": r"\b(battery|time|date|status|system info)\b",
-    "take_screenshot": r"\b(screenshot|capture screen)\b",
-    "set_timer": r"\b(timer|countdown|remind me in)\b",
-    "list_files": r"\b(files?|folders?|directories|downloads|documents|desktop)\b",
-    "read_file": r"\bread (?:the )?file\b",
-    "read_screen": r"\b(screen|clickable|visible|what is on)\b",
-    "click_element": r"\b(click|tap|select|press)\b",
-    "focus_and_type": r"\b(type|enter|write|fill)\b.*\b(field|box|email|search|message|name)\b",
-    "volume_up": r"\b(volume up|louder|increase volume)\b",
-    "volume_down": r"\b(volume down|quieter|decrease volume)\b",
-    "set_volume": r"\b(volume|sound level)\b",
-    "mute_audio": r"\b(mute|unmute|silence)\b",
-    "learn_skill": r"\b(teach|remember|when i say|workflow)\b",
-    "list_browser_tabs": r"\b(tabs?|browser)\b",
-    "switch_to_tab": r"\b(switch|focus|go)\b.*\btab\b",
-    "interact_with_tab": r"\b(whatsapp|gmail|gemini|claude|youtube|github|tab)\b",
+# llama-server receives the SAME six schemas on every turn. A per-turn list rewrites token
+# 0 of the Jinja prompt and throws away 100 % of the KV cache — the 4.1-4.8 s bug. Lane 1
+# (fast_path) covers common commands; the tools-free conversational lane can emit
+# [ACTION: tool("arg")] tags instead of schemas.
+LOCAL_STATIC_TOOL_NAMES: tuple[str, ...] = (
+    "open_app",
+    "close_app",
+    "switch_app",
+    "web_search",
+    "type_text",
+    "read_screen",
+)
+
+# Compact ACTION tags the tools-free conversational lane may emit and we execute.
+_ACTION_TAG = re.compile(
+    r"\[ACTION:\s*([a-z_]+)\s*\(\s*(?:\"([^\"]*)\"|'([^']*)'|([^)]*))?\s*\)\s*\]",
+    re.I,
+)
+_TAG_ARGUMENTS: dict[str, str] = {
+    "open_app": "app_name",
+    "close_app": "app_name",
+    "switch_app": "app_name",
+    "web_search": "query",
+    "type_text": "text",
+    "read_screen": "",
+    "click_element": "target",
+    "press_key": "key",
+    "scroll_page": "action",
+    "set_timer": "seconds",
+    "set_volume": "percent",
+    "mute_audio": "muted",
+    "browser_tab_control": "action",
+    "window_control": "action",
+    "take_screenshot": "",
+    "system_info": "kind",
 }
+_COERCE_INT = frozenset({"seconds", "percent"})
+_COERCE_BOOL = frozenset({"muted"})
 
 
-def select_tools_for_turn(
-    user_text: str, available_tools: list[str] | tuple[str, ...], max_tools: int = 6
-) -> list[str]:
-    """Pick at most ``max_tools`` tool schemas relevant to this turn.
+def extract_action_tags(text: str) -> tuple[str, list[tuple[str, dict[str, Any]]]]:
+    """Split a reply into clean text plus executable ``[ACTION: tool("arg")]`` calls."""
+    actions: list[tuple[str, dict[str, Any]]] = []
 
-    The four core actions are always present (stable order first); remaining slots go to
-    keyword matches, best score first. Unknown turns still get the core four, which keeps
-    the prompt small without losing the common actions.
-    """
-    available = list(dict.fromkeys(available_tools))
-    text = (user_text or "").lower()
-    chosen: list[str] = [name for name in CORE_TOOL_NAMES if name in available]
-    scored: list[tuple[int, int, str]] = []
-    for index, name in enumerate(available):
-        if name in chosen:
-            continue
-        pattern = _TOOL_INTENT_HINTS.get(name)
-        score = len(re.findall(pattern, text)) if pattern else 0
-        if score:
-            scored.append((-score, index, name))
-    scored.sort()
-    for _score, _index, name in scored:
-        if len(chosen) >= max(1, max_tools):
-            break
-        chosen.append(name)
-    return chosen[: max(1, max_tools)]
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1).lower()
+        if name not in _TAG_ARGUMENTS:
+            return ""
+        value = next(
+            (group for group in match.groups()[1:] if group is not None), ""
+        ).strip()
+        key = _TAG_ARGUMENTS[name]
+        args: dict[str, Any] = {}
+        if key and value:
+            if key in _COERCE_INT:
+                try:
+                    args[key] = int(float(value))
+                except ValueError:
+                    args[key] = 0
+            elif key in _COERCE_BOOL:
+                args[key] = value.strip().lower() in {"1", "true", "yes", "on"}
+            else:
+                args[key] = value
+        actions.append((name, args))
+        return ""
+
+    cleaned = _ACTION_TAG.sub(_replace, text or "")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned, actions
 
 
 # Phase 7: 220 tokens so a type_text paragraph and a 1-2 sentence spoken reply are never
 # chopped mid-sentence ("...goals on." / "...use for."). The sentence guard in
 # reply_style.clean_llm_reply trims a reply that still hits the cap.
+LOCAL_CHAT_MAX_TOKENS = 34
 LOCAL_MAX_TOKENS_FIRST = 220
 LOCAL_MAX_TOKENS_FOLLOWUP = 220
 
@@ -392,6 +412,60 @@ class AgentLoop:
             return f"open_app({args['app_name']!r}) -> {' '.join(cmd)}"
         return f"{fn_name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
 
+    def _tag_is_requested(self, name: str, request_text: str) -> bool:
+        """Never run an action the user did not ask for (the GTA stray-search bug)."""
+        text = (request_text or "").lower()
+        if name in {"open_app", "close_app", "switch_app"}:
+            return request_wants_app_action(request_text)
+        patterns = {
+            "web_search": r"\b(search|google|look up|find online|web)\b",
+            "type_text": r"\b(type|write|enter|dictate)\b",
+            "read_screen": r"\b(screen|visible|looking at|what.*(see|open))\b",
+            "click_element": r"\b(click|tap|press|select)\b",
+            "press_key": r"\b(press|key|enter|escape)\b",
+            "scroll_page": r"\bscroll\b",
+            "set_timer": r"\b(timer|countdown|remind)\b",
+            "set_volume": r"\bvolume\b",
+            "mute_audio": r"\b(mute|unmute|silence)\b",
+            "browser_tab_control": r"\btabs?\b",
+            "window_control": r"\b(window|maximize|minimize|fullscreen)\b",
+            "take_screenshot": r"\b(screenshot|capture)\b",
+            "system_info": r"\b(time|date|battery|status)\b",
+        }
+        pattern = patterns.get(name)
+        return bool(pattern and re.search(pattern, text))
+
+    def _execute_tag_actions(
+        self,
+        reply: str,
+        actions: list[tuple[str, dict[str, Any]]],
+        request_text: str,
+        dry_run: bool = False,
+    ) -> str:
+        """Run compact ``[ACTION: ...]`` calls from the tools-free conversational lane."""
+        if not actions or dry_run or self.config.backend != "local":
+            return reply
+        confirmations: list[str] = []
+        for name, args in actions:
+            if not self._tag_is_requested(name, request_text):
+                logger.debug("Ignored unrequested ACTION tag %s", name)
+                continue
+            self.step_callback(f"Acting: {name}")
+            self._set_action(name, args, "running")
+            try:
+                result = self.registry.execute(name, args, request_text)
+            except Exception as exc:
+                logger.debug("ACTION tag %s failed: %s", name, exc)
+                self._set_action(name, args, "failed")
+                continue
+            self._set_action(name, args, "done")
+            built = code_reply_for_tool(name, result)
+            if built:
+                confirmations.append(built)
+        if reply.strip(" .") in {"", "Done"} and confirmations:
+            return " ".join(dict.fromkeys(confirmations))
+        return reply
+
     def _finalize_reply(self, text: str, last_tool: tuple[str, dict[str, Any]] | None = None) -> str:
         """Local voice replies are forced to one short plain sentence (no markdown, no sizes).
 
@@ -460,9 +534,6 @@ class AgentLoop:
 
     def _run_task(self, user_input: str, dry_run: bool = False) -> AgentTaskResult:
         request_text = user_input.strip()
-        live_screen = get_screen_context()
-        skills_hint = prompt_hint(request_text, self.config)
-        turn_context = context_tag(live_screen, skills_hint)
         # Static for every call in this task: screen/skills never enter the system message.
         gate_mode = getattr(self.registry.gate, "mode", "auto-safe")
         personality, user_name, reply_style = self._live_persona()
@@ -479,6 +550,14 @@ class AgentLoop:
             cleaned = cleaned[9:].lstrip(": ").strip() or user_input
         if dry_run:
             cleaned = f"[DRY RUN / PLAN ONLY] Print the step-by-step plan without executing tools for: {cleaned}"
+        pure_chat = self.config.backend == "local" and looks_like_pure_chat(cleaned)
+        turn_context = ""
+        if not pure_chat:
+            # Screen/skills context costs subprocess time and prompt tokens. Pure
+            # conversation needs neither, and skipping it keeps chat under 900 ms.
+            live_screen = get_screen_context()
+            skills_hint = prompt_hint(request_text, self.config)
+            turn_context = context_tag(live_screen, skills_hint)
         self._set_thought(f"Thinking about: {cleaned}")
 
         self.watchdog.start_task()
@@ -551,10 +630,11 @@ class AgentLoop:
                 usage=usage_acc,
             )
 
-        if self.config.backend == "local" and looks_like_pure_chat(cleaned):
-            # Pure conversation: no tool schemas, but keep the full 16-turn memory.
+        if pure_chat:
+            # Pure conversation: no tool schemas, but keep the last two exchanges so the
+            # 1.7B model has enough context without paying prompt eval for old turns.
             self.step_callback("Thinking (chat)...")
-            history = self.history[-self.HISTORY_MAX_MESSAGES:]
+            history = self.history[-4:]
             resp, turn_u = self.adapter.generate_turn(
                 contents=self._tagged_contents(history, turn_context),
                 system_instruction=build_chat_prompt(
@@ -564,7 +644,7 @@ class AgentLoop:
                     reply_style=reply_style,
                 ),
                 tools=None,
-                max_output_tokens=LOCAL_MAX_TOKENS_FOLLOWUP,
+                max_output_tokens=LOCAL_CHAT_MAX_TOKENS,
             )
             usage_acc.prompt_tokens += turn_u.prompt_tokens
             usage_acc.candidate_tokens += turn_u.candidate_tokens
@@ -574,7 +654,9 @@ class AgentLoop:
             self.watchdog.stop_task()
             if not resp.candidates:
                 return AgentTaskResult(False, "No response candidates returned.", 1, usage_acc)
-            reply = self._finalize_reply(resp.text or "I'm not sure how to answer that.")
+            chat_text, chat_actions = extract_action_tags(resp.text or "")
+            reply = self._finalize_reply(chat_text or "I'm not sure how to answer that.")
+            reply = self._execute_tag_actions(reply, chat_actions, request_text, dry_run)
             self.history.append(types.Content(role="model", parts=[types.Part.from_text(text=reply)]))
             return AgentTaskResult(True, reply, 1, usage_acc, dry_run=dry_run)
 
@@ -612,22 +694,12 @@ class AgentLoop:
                 elif local_tool_round_cap is not None and tool_rounds >= local_tool_round_cap:
                     tools_payload = None  # small local model: force a final answer after 3 tool rounds
                 elif self.config.backend == "local":
-                    # Cap the schema payload at six compact tools (~350 prompt tokens).
-                    # Earlier rounds' tools stay visible so a follow-up call can continue.
-                    already_used = " ".join(name for name, _args in last_executed_tools)
-                    all_schemas = self.registry.get_openai_tools(compact=True)
-                    selected = set(
-                        select_tools_for_turn(
-                            f"{cleaned} {already_used}",
-                            [item["function"]["name"] for item in all_schemas],
-                            max_tools=6,
-                        )
+                    # Byte-identical six-schema payload on every tool turn. Never change
+                    # this list per turn: llama-server renders tools at token 0, so a
+                    # changing list invalidates the whole KV cache (the 4.8 s bug).
+                    tools_payload = self.registry.get_openai_tools(
+                        compact=True, names=LOCAL_STATIC_TOOL_NAMES
                     )
-                    tools_payload = [
-                        item
-                        for item in all_schemas
-                        if item["function"]["name"] in selected
-                    ]
                 else:
                     tools_payload = self.registry.get_gemini_tools()
                 try:
@@ -677,9 +749,14 @@ class AgentLoop:
                     self.step_callback("Idle — task complete.")
                     self._set_thought("")
                     self._set_action("", {}, "idle")
+                    final_text, final_actions = extract_action_tags(resp.text or "Done.")
+                    final_reply = self._finalize_reply(final_text or "Done.", last_tool)
+                    final_reply = self._execute_tag_actions(
+                        final_reply, final_actions, request_text, dry_run
+                    )
                     return AgentTaskResult(
                         True,
-                        self._finalize_reply(resp.text or "Done.", last_tool),
+                        final_reply,
                         steps,
                         usage_acc,
                         dry_run=dry_run,

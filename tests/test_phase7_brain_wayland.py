@@ -151,7 +151,11 @@ class RecorderRegistry:
             return {"ok": True, "raw_summary": {"ok": True, "path": "/tmp/shot.png"}}
         return {"ok": True, "raw_summary": {"ok": True}}
 
-    def get_openai_tools(self, compact: bool = False) -> list[dict[str, Any]]:
+    def get_openai_tools(
+        self,
+        compact: bool = False,
+        names: Any | None = None,
+    ) -> list[dict[str, Any]]:
         return []
 
 
@@ -258,10 +262,10 @@ def test_refresh_screen_context_uses_native_introspect_and_focus() -> None:
         process_runner=lambda argv, **_k: _done(argv, 1, ""),
     )
 
-    assert context["windows"] == ["F1 - YouTube - Mozilla Firefox", "Downloads"]
+    assert context["windows"] == ["F1 - YouTube", "Downloads"]
     assert context["browser"] == "firefox"
     assert context["site"] == "youtube"
-    assert context["focused_window"] == "F1 - YouTube - Mozilla Firefox"
+    assert context["focused_window"] == "F1 - YouTube"
     assert context["focused_app"] == "firefox"
     assert SESSION.active_site == "youtube"
 
@@ -395,13 +399,18 @@ def test_agent_loop_uses_220_tokens_on_every_local_call(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("cut", "expected"),
     [
-        ("The main goals are on.", "The main goals are."),
-        ("I can use it for.", "I can use it."),
-        ("First complete sentence. It depends on.", "First complete sentence."),
-        ("Search for information about AI and.", "Search for information about AI."),
-        ("Choose the tools with.", "Choose the tools."),
+        # A reply that already ends with terminal punctuation is complete: never trim it,
+        # even when the last word is a preposition (the "page open for ." bug).
+        ("The main goals are on.", "The main goals are on."),
+        ("I can use it for.", "I can use it for."),
+        ("First complete sentence. It depends on.", "First complete sentence. It depends on."),
+        ("Search for information about AI and.", "Search for information about AI and."),
+        ("Choose the tools with.", "Choose the tools with."),
         ("This is already complete.", "This is already complete."),
         ("What is this for?", "What is this for?"),
+        # Only unterminated token-limit cuts are repaired.
+        ("The main goals are on", "The main goals are."),
+        ("Choose the tools with", "Choose the tools."),
     ],
 )
 def test_clean_llm_reply_finishes_a_token_limited_sentence(cut: str, expected: str) -> None:

@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from assistant.brain.agent_loop import CORE_TOOL_NAMES, select_tools_for_turn
+from assistant.brain.agent_loop import LOCAL_STATIC_TOOL_NAMES
 from assistant.brain.fast_path import match_fast_command
 from assistant.config import load_config
 from assistant.environment.launcher import EnvironmentLauncher, TelemetryCollector
@@ -156,36 +156,15 @@ def test_hermes_is_never_lutris() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Dynamic tool pruning
+# Static tool payload (KV-cache stable)
 # --------------------------------------------------------------------------------------
 
-ALL_TOOLS = (
-    "open_app", "close_app", "switch_app", "web_search", "open_first_result", "type_text",
-    "press_key", "scroll_page", "browser_tab_control", "window_control", "set_brightness",
-    "media_control", "system_info", "take_screenshot", "set_timer", "list_files",
-    "read_file", "read_screen", "click_element", "focus_and_type", "volume_up",
-    "volume_down", "set_volume", "mute_audio", "learn_skill", "list_browser_tabs",
-    "switch_to_tab", "interact_with_tab",
-)
 
-
-@pytest.mark.parametrize(
-    ("text", "expected_extra"),
-    [
-        ("open firefox", None),
-        ("what is on my screen", "read_screen"),
-        ("search f1 in youtube", "interact_with_tab"),
-        ("turn the volume down", "volume_down"),
-        ("set a timer for 5 minutes", "set_timer"),
-    ],
-)
-def test_tool_selection_is_capped_and_relevant(text: str, expected_extra: str | None) -> None:
-    selected = select_tools_for_turn(text, ALL_TOOLS)
-    assert len(selected) <= 6
-    for core in CORE_TOOL_NAMES:
-        assert core in selected
-    if expected_extra:
-        assert expected_extra in selected
+def test_local_tool_payload_is_static_small_and_core() -> None:
+    assert len(LOCAL_STATIC_TOOL_NAMES) <= 6
+    assert len(set(LOCAL_STATIC_TOOL_NAMES)) == len(LOCAL_STATIC_TOOL_NAMES)
+    for core in ("open_app", "close_app", "web_search", "type_text"):
+        assert core in LOCAL_STATIC_TOOL_NAMES
 
 
 def test_registry_schema_filter_returns_only_requested(local_registry) -> None:  # noqa: ANN001
@@ -233,6 +212,10 @@ def test_cache_efficiency_never_zero_while_brain_is_warm(tmp_path: pathlib.Path)
     state.add_latency(total_ms=320)
     warm = state.snapshot()["telemetry"]["cache_efficiency_pct"]
     assert 88.8 <= warm <= 98.4
+    state.update_telemetry(llama_server_alive=False)
+    # Boot grace: llama-server is still starting, so keep the warm baseline (never 0).
+    assert state.snapshot()["telemetry"]["cache_efficiency_pct"] == 94.2
+    state._started_monotonic -= 30
     state.update_telemetry(llama_server_alive=False)
     assert state.snapshot()["telemetry"]["cache_efficiency_pct"] == 0.0
 

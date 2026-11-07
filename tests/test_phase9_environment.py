@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import struct
 import threading
 import time
 import urllib.request
@@ -519,6 +521,18 @@ class _FakeBrain:
         return {"reply": "Sure, Nitin.", "tools_called": ["interact_with_tab"], "llm_ms": 12.0}
 
 
+def _speech_like_pcm(seconds: float = 1.2) -> bytes:
+    """A quiet floor followed by a loud tone: passes the RMS/SNR/duration gate."""
+    rate = 16000
+    frames = bytearray()
+    quiet = int(rate * 0.2)
+    for index in range(int(rate * seconds)):
+        amplitude = 30 if index < quiet else 5000
+        value = int(amplitude * math.sin(2 * math.pi * 220 * index / rate))
+        frames += struct.pack("<h", value)
+    return bytes(frames)
+
+
 def test_voice_controller_continuous_turn_and_barge_in(tmp_path: Path) -> None:
     state = EnvironmentState(config_path=tmp_path / "env.json")
     state.set_voice_mode("continuous")
@@ -527,7 +541,7 @@ def test_voice_controller_continuous_turn_and_barge_in(tmp_path: Path) -> None:
         load_config(), state=state, ears=ears, mouth=mouth, brain=brain
     )
 
-    controller._handle_pcm(b"\x00\x00" * 3200, source="voice")
+    controller._handle_pcm(_speech_like_pcm(), source="voice")
     snapshot = state.snapshot()
     assert brain.calls == [("check whatsapp", "voice")]
     assert mouth.said == ["Sure, Nitin."]

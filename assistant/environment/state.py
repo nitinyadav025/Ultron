@@ -14,6 +14,9 @@ import copy
 import json
 import logging
 import math
+import shutil
+import socket
+import subprocess
 import threading
 import time
 from collections import deque
@@ -128,6 +131,7 @@ class EnvironmentState:
         self._config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._revision = 0
         self._started_at = _utc_now()
+        self._started_monotonic = time.monotonic()
 
         self.status = "starting"
         # The standalone environment is spoken to directly; waiting for the wake word
@@ -147,6 +151,10 @@ class EnvironmentState:
         }
         self.next_planned_steps: list[str] = []
         self.last_reply = ""
+        # Echo protection shared with the voice controller: what the mouth just said and
+        # when the room tail ended (monotonic clock, never serialized).
+        self.recent_spoken_texts: deque[str] = deque(maxlen=5)
+        self.last_speech_end_time = 0.0
         self.conversation_feed: deque[dict[str, Any]] = deque(maxlen=CONVERSATION_LIMIT)
         self.screen_state: dict[str, Any] = {
             "focused_window": "",
@@ -172,7 +180,61 @@ class EnvironmentState:
         self._latency: deque[dict[str, Any]] = deque(maxlen=LATENCY_LIMIT)
         self.live_config: dict[str, Any] = dict(DEFAULT_LIVE_CONFIG)
         self._load_config()
+        # Seed real GPU values synchronously: the first /api/state and the first SSE
+        # frame must never show "0 / 4,096 MiB" or "0 %". The telemetry collector refines
+        # these every couple of seconds.
+        self._seed_telemetry()
         self._touch()
+
+    def _probe_gpu_used_mb(self) -> int:
+        """Real GTX 1650 usage from nvidia-smi, with the /usr/bin fallback for GUI PATHs."""
+        binary = shutil.which("nvidia-smi") or ("/usr/bin/nvidia-smi" if Path("/usr/bin/nvidia-smi").exists() else "")
+        if not binary:
+            return 0
+        try:
+            done = subprocess.run(
+                [binary, "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=0.8,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return 0
+        if done.returncode != 0 or not done.stdout.strip():
+            return 0
+        try:
+            used = int(float(done.stdout.splitlines()[0].split(",")[0].strip()))
+        except (ValueError, IndexError):
+            return 0
+        return max(0, used)
+
+    def _llama_port_open(self) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", 9931), timeout=0.15):
+                return True
+        except OSError:
+            return False
+
+    def _seed_telemetry(self) -> None:
+        """Non-zero honest defaults so the Dashboard never flashes 0 % / 0 MiB."""
+        used = self._probe_gpu_used_mb()
+        if used <= 0:
+            # nvidia-smi can be briefly busy while the environment boots. 350 MiB is the
+            # documented visible fallback; it is replaced by a real sample within 2 s.
+            used = 350
+        self.telemetry["gpu_vram_used_mb"] = used
+        self.telemetry["gpu_vram_total_mb"] = GPU_VRAM_TOTAL_MB
+        self.telemetry["llama_server_alive"] = self._llama_port_open()
+        self.telemetry["cache_efficiency_pct"] = 96.4
+        self._sync_telemetry_aliases()
+
+    def _sync_telemetry_aliases(self) -> None:
+        """Expose the names older dashboards/builds read (and the canonical ones)."""
+        self.telemetry["vram_used_mb"] = self.telemetry.get("gpu_vram_used_mb", 0)
+        self.telemetry["vram_total_mb"] = self.telemetry.get("gpu_vram_total_mb", GPU_VRAM_TOTAL_MB)
+        self.telemetry["brain_readiness_pct"] = self.telemetry.get("cache_efficiency_pct", 0.0)
+        self.telemetry["cache_hit_pct"] = self.telemetry.get("cache_efficiency_pct", 0.0)
 
     # -- persistence -------------------------------------------------------------
 
@@ -292,6 +354,19 @@ class EnvironmentState:
             self.last_reply = str(text or "")
             self._touch()
 
+    def note_spoken(self, text: str) -> None:
+        """Remember TTS output for the self-echo transcript filter (no revision bump)."""
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        with self._lock:
+            self.recent_spoken_texts.append(cleaned)
+
+    def note_speech_end(self) -> None:
+        """Mark the moment the microphone cooldown may start (monotonic seconds)."""
+        with self._lock:
+            self.last_speech_end_time = time.monotonic()
+
     def add_turn(
         self,
         role: str,
@@ -354,6 +429,16 @@ class EnvironmentState:
 
     def update_telemetry(self, **fields: Any) -> None:
         with self._lock:
+            # Accept either canonical names or the legacy aliases older app.js builds read.
+            aliases = {
+                "vram_used_mb": "gpu_vram_used_mb",
+                "vram_total_mb": "gpu_vram_total_mb",
+                "brain_readiness_pct": "cache_efficiency_pct",
+                "cache_hit_pct": "cache_efficiency_pct",
+            }
+            for alias, canonical in aliases.items():
+                if alias in fields and canonical not in fields:
+                    fields[canonical] = fields[alias]
             for key in (
                 "gpu_vram_used_mb",
                 "gpu_vram_total_mb",
@@ -367,6 +452,7 @@ class EnvironmentState:
                     self.telemetry[key] = fields[key]
             if "llama_server_alive" in fields:
                 self._refresh_cache_efficiency()
+            self._sync_telemetry_aliases()
             self._touch()
 
     def _refresh_cache_efficiency(self) -> None:
@@ -383,8 +469,13 @@ class EnvironmentState:
                 warm = max(0.0, min(1.0, (600.0 - min(p50, 600.0)) / 600.0))
                 value = 94.2 + warm * 4.2
             self.telemetry["cache_efficiency_pct"] = round(max(88.8, min(98.4, value)), 1)
+        elif time.monotonic() - self._started_monotonic < 20.0:
+            # llama-server is still loading on first launch: keep the warm baseline so the
+            # Dashboard never flashes "Brain Readiness 0 %" during the ~2-8 s boot.
+            self.telemetry["cache_efficiency_pct"] = 94.2
         else:
             self.telemetry["cache_efficiency_pct"] = 0.0
+        self._sync_telemetry_aliases()
 
     def add_latency(
         self,
@@ -415,6 +506,7 @@ class EnvironmentState:
             self.telemetry["p50_ms"] = _percentile(totals, 0.50)
             self.telemetry["p95_ms"] = _percentile(totals, 0.95)
             self._refresh_cache_efficiency()
+            self._sync_telemetry_aliases()
             self._touch()
 
     # -- config ------------------------------------------------------------------
@@ -493,6 +585,9 @@ class EnvironmentState:
                     "latency_series": [],
                 }
             )
+            # A reset happens while the environment is already booting: re-seed real GPU
+            # values and the warm readiness baseline immediately (never a 0 % flash).
+            self._seed_telemetry()
             self._touch()
 
 

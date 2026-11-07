@@ -14,15 +14,19 @@ mouth. Hardware is injectable so automated tests never open the real microphone.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
 from typing import Any, Callable
 
+import numpy as np
+
 from assistant.config import AssistantConfig
 from assistant.environment.state import EnvironmentState, get_state
 from assistant.interfaces.listen import (
     UtteranceDetector,
+    is_self_echo,
     is_stop_command,
     pcm_to_float32,
 )
@@ -50,6 +54,34 @@ from assistant.speech.wake import (
 logger = logging.getLogger("ultron.environment.voice")
 
 BrainCallable = Callable[..., Any]
+
+# Layer 4: a continuous-mode clip quieter or shorter than this is room noise, not a user.
+MIN_UTTERANCE_RMS = 320.0
+MIN_UTTERANCE_SNR_DB = 11.0
+MIN_UTTERANCE_SECONDS = 0.45
+ECHO_COOLDOWN_S = 0.55
+_HALLUCINATION_WORDS = frozenset(
+    {"thank you", "thanks for watching", "got it", "bye", "you", "okay"}
+)
+
+
+def pcm_quality(pcm: bytes, sample_rate: int = 16000) -> tuple[float, float, float]:
+    """Return (rms, snr_db, duration_s) for a 16-bit mono clip without touching hardware."""
+    samples = np.frombuffer(pcm or b"", dtype="<i2")
+    if samples.size == 0:
+        return 0.0, 0.0, 0.0
+    samples = samples.astype(np.float64)
+    duration = samples.size / float(sample_rate)
+    rms = float(np.sqrt(np.mean(samples * samples)))
+    frame = max(1, int(sample_rate * 0.02))
+    frame_rms = [
+        float(np.sqrt(np.mean(chunk * chunk)))
+        for chunk in (samples[i : i + frame] for i in range(0, samples.size, frame))
+        if chunk.size
+    ]
+    noise = float(np.percentile(frame_rms, 10)) if frame_rms else 0.0
+    snr = 20.0 * math.log10((rms + 1e-9) / (noise + 1e-9)) if rms > 0 else 0.0
+    return rms, snr, duration
 
 
 class EnvironmentVoiceController:
@@ -93,6 +125,7 @@ class EnvironmentVoiceController:
         self._ptt_frames = bytearray()
         self._level_counter = 0
         self._was_muted = False
+        self._echo_guard_was_active = False
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -274,6 +307,21 @@ class EnvironmentVoiceController:
                 if self._detector is not None:
                     self._detector.reset()
 
+            # Layers 1+2: never feed Piper's own audio (or the 550 ms room tail) to the
+            # detector. Frames are still read from pw-record, so the pipe buffer is
+            # continuously drained instead of replaying old speech later.
+            if self._echo_guard_active():
+                if not self._echo_guard_was_active:
+                    self._echo_guard_was_active = True
+                    self._ptt_frames.clear()
+                    if self._detector is not None:
+                        self._detector.reset()
+                continue
+            if self._echo_guard_was_active:
+                self._echo_guard_was_active = False
+                if self._detector is not None:
+                    self._detector.reset()
+
             mode = self.state.snapshot()["voice_mode"]
             if mode == "ptt":
                 if self._ptt_active.is_set():
@@ -303,11 +351,64 @@ class EnvironmentVoiceController:
         samples = pcm16_samples(raw_frame)
         self.state.set_audio_levels(frame_rms(samples), frame_peak(samples))
 
+    def _echo_guard_active(self) -> bool:
+        """Layers 1+2: speaking now, or inside the 550 ms post-speech cooldown."""
+        mouth = self.mouth
+        if mouth is not None and hasattr(mouth, "echo_guard_active"):
+            try:
+                if bool(mouth.echo_guard_active(ECHO_COOLDOWN_S)):
+                    return True
+            except Exception:
+                pass
+        last = float(getattr(self.state, "last_speech_end_time", 0.0) or 0.0)
+        if last <= 0.0 and mouth is not None:
+            last = float(getattr(mouth, "last_speech_end_time", 0.0) or 0.0)
+        return bool(last > 0.0 and (time.monotonic() - last) < ECHO_COOLDOWN_S)
+
+    def _recent_spoken(self) -> list[str]:
+        replies: list[str] = []
+        mouth = self.mouth
+        if mouth is not None and hasattr(mouth, "recent_texts"):
+            try:
+                replies.extend(str(item) for item in mouth.recent_texts(15.0))
+            except Exception:
+                pass
+        try:
+            replies.extend(str(item) for item in list(self.state.recent_spoken_texts))
+        except Exception:
+            pass
+        return list(dict.fromkeys(replies))
+
+    def _recent_speech_end(self) -> float:
+        end = float(getattr(self.state, "last_speech_end_time", 0.0) or 0.0)
+        if end <= 0.0 and self.mouth is not None:
+            end = float(getattr(self.mouth, "last_speech_end_time", 0.0) or 0.0)
+        return end
+
     # -- utterance handling ------------------------------------------------------
 
     def _handle_pcm(self, pcm: bytes, *, source: str) -> None:
         if self.state.snapshot()["mic_muted"]:
             return
+        if self._echo_guard_active():
+            logger.info("Environment dropped a clip captured during TTS (echo guard).")
+            return
+        if source != "ptt":
+            rms, snr, duration = pcm_quality(pcm)
+            if (
+                rms < MIN_UTTERANCE_RMS
+                or snr < MIN_UTTERANCE_SNR_DB
+                or duration < MIN_UTTERANCE_SECONDS
+            ):
+                logger.info(
+                    "Environment rejected a weak clip (rms=%.0f snr=%.1f duration=%.2fs).",
+                    rms,
+                    snr,
+                    duration,
+                )
+                self.state.set_thought("Heard room noise, ignored.")
+                self.state.set_status("listening")
+                return
         self.state.set_status("transcribing")
         self.state.set_thought(
             f"Transcribing with faster-whisper {getattr(self.config, 'whisper_model', 'small.en')}…"
@@ -346,6 +447,19 @@ class EnvironmentVoiceController:
         cleaned = normalise_spoken_command(text)
         if not has_real_word(cleaned):
             return ""
+        # Layer 3: Whisper must never turn Ultron's own speaker output into a user turn.
+        if is_self_echo(cleaned, self._recent_spoken()):
+            logger.info("Environment dropped its own speech (self_echo).")
+            self.state.set_thought("Ignored my own speech.")
+            return ""
+        # A short "Thank you."/"Got it." decode within 2 s of TTS is a silence hallucination.
+        last_end = self._recent_speech_end()
+        if last_end > 0.0 and (time.monotonic() - last_end) < 2.0:
+            bare = re.sub(r"[^a-z ]+", "", cleaned.lower()).strip()
+            if bare in _HALLUCINATION_WORDS:
+                logger.info("Environment dropped a TTS-adjacent silence hallucination.")
+                self.state.set_thought("Ignored a silence hallucination.")
+                return ""
         # WhisperEars already ran the same guard behind transcript_is_unreliable(); its
         # verdict keeps rejected/noise decodes out of continuous mode.
         verdict = str(getattr(ears, "last_confidence", {}).get("verdict") or "ok")

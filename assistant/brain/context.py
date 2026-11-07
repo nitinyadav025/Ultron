@@ -60,6 +60,84 @@ _WMCTRL_TIMEOUT_S = 0.2
 _INTROSPECT_TIMEOUT_S = 0.35
 _PROCESS_TIMEOUT_S = 0.2
 
+# Windows that belong to Ultron itself, never to the user's work.
+_ULTRON_WINDOW_HINTS = (
+    "ultron · nitin's workspace",
+    "ultron - nitin's workspace",
+    "ultron’s workspace",
+    "127.0.0.1:9932",
+    "localhost:9932",
+)
+_ULTRON_LAUNCH_HINTS = (
+    ".venv/bin/python",
+    "main.py environment",
+    "scripts/ultron-launch.sh",
+)
+_SHELL_PROMPT = re.compile(r"^[\w.-]+@[\w.-]+:")
+_TERMINAL_TITLES = frozenset(
+    {"terminal", "konsole", "ptyxis", "gnome-terminal", "tilix", "kitty", "alacritty"}
+)
+_CHROME_SUFFIX = re.compile(
+    r"\s*[—–-]\s*(?:Mozilla Firefox|Firefox|Brave|Google Chrome|Chromium)\s*$", re.I
+)
+_VSCODE_SUFFIX = re.compile(r"\s*[-—–]\s*Visual Studio Code\s*$", re.I)
+
+
+def is_ultron_window(raw_title: str) -> bool:
+    """True for Ultron's own Dashboard window."""
+    lowered = re.sub(r"\s+", " ", str(raw_title or "")).lower()
+    return any(hint in lowered for hint in _ULTRON_WINDOW_HINTS)
+
+
+def is_launcher_window(raw_title: str) -> bool:
+    """True for the Dashboard and the terminal that launched Ultron (never user context)."""
+    lowered = re.sub(r"\s+", " ", str(raw_title or "")).lower()
+    if is_ultron_window(raw_title):
+        return True
+    return any(hint in lowered for hint in _ULTRON_LAUNCH_HINTS)
+
+
+def clean_window_title(raw_title: str) -> str:
+    """Turn a raw GNOME window title into a short, human name.
+
+    Bash prompts, usernames/hostnames and command lines become ``"Terminal"``; Ultron's
+    own Dashboard is recognised; browser suffixes are removed so ``"YouTube — Mozilla
+    Firefox"`` reads as ``"YouTube"``. Raw paths are never returned.
+    """
+    title = re.sub(r"\s+", " ", str(raw_title or "")).strip()
+    if not title:
+        return ""
+    if is_ultron_window(title):
+        return "Ultron Dashboard"
+    lowered = title.lower()
+    if (
+        _SHELL_PROMPT.match(title)
+        or any(hint in lowered for hint in _ULTRON_LAUNCH_HINTS)
+        or "~/downloads/ultron" in lowered
+        or "/downloads/ultron/" in lowered
+        or (".venv/bin" in lowered)
+    ):
+        return "Terminal"
+    cleaned = _CHROME_SUFFIX.sub("", title).strip()
+    cleaned = _VSCODE_SUFFIX.sub(" — VS Code", cleaned).strip()
+    if not cleaned:
+        return "Browser"
+    if cleaned.lower() in _TERMINAL_TITLES:
+        return "Terminal"
+    return cleaned[:90]
+
+
+def _app_for_clean_title(title: str) -> str:
+    """Best app key for a cleaned title ("YouTube" -> browser, "VS Code" -> code)."""
+    app = app_name_for_window("", "", title)
+    if app:
+        return app
+    lowered = (title or "").lower()
+    for browser in BROWSERS:
+        if browser in lowered:
+            return browser
+    return ""
+
 _INTROSPECT_ENSURED = False
 _ACCESSIBILITY_ENSURED = False
 _TOOLKIT_ACCESSIBILITY_ENSURED = False
@@ -180,12 +258,38 @@ class SessionContext:
         focused_window: str = "",
         focused_app: str = "",
     ) -> None:
-        """Update browser/site/focus from real window titles (newest window wins)."""
-        self.open_windows = list(windows)[:20]
+        """Update browser/site/focus from real window titles (newest window wins).
+
+        Ultron's Dashboard and the terminal that launched it are excluded, raw shell
+        paths are cleaned, duplicate titles are removed, and when the focused window is
+        one of Ultron's own the last real user window becomes the reported focus.
+        """
+        cleaned_windows: list[str] = []
+        seen: set[str] = set()
+        for raw in windows:
+            if is_launcher_window(raw):
+                continue
+            cleaned = clean_window_title(raw)
+            key = cleaned.lower()
+            if not cleaned or key in seen:
+                continue
+            seen.add(key)
+            cleaned_windows.append(cleaned)
+        if not cleaned_windows:
+            for key in (self.last_browser, self.last_app):
+                if not key:
+                    continue
+                display = _display_name(key)
+                if display and display.lower() not in seen:
+                    seen.add(display.lower())
+                    cleaned_windows.append(display)
+        self.open_windows = cleaned_windows[:20]
+
         browser = ""
         site = ""
-        for title in reversed(self.open_windows):
-            lowered = title.lower()
+        raw_user_titles = [raw for raw in windows if not is_launcher_window(raw)]
+        for raw in reversed(raw_user_titles or cleaned_windows):
+            lowered = raw.lower()
             if not browser:
                 if "mozilla firefox" in lowered or lowered.endswith("firefox"):
                     browser = "firefox"
@@ -207,9 +311,29 @@ class SessionContext:
             # The browser is still open but no site title is visible (for example a new
             # blank tab): keep the site the user was last working in.
             self.active_site = self.last_site
-        if focused_window:
-            self.focused_window = focused_window
-        if focused_app:
+
+        focus_clean = "" if is_launcher_window(focused_window) else clean_window_title(focused_window)
+        if not focus_clean and self.open_windows:
+            # Prefer the newest window that names a site/browser; otherwise the newest.
+            focus_clean = next(
+                (
+                    title
+                    for title in reversed(self.open_windows)
+                    if any(keyword in title.lower() for keyword, _key in SITE_KEYWORDS)
+                ),
+                self.open_windows[-1],
+            )
+        if focus_clean:
+            self.focused_window = focus_clean
+            resolved = _app_for_clean_title(focus_clean)
+            if resolved:
+                self.focused_app = resolved
+            elif browser and any(
+                token in str(focused_window).lower()
+                for token in ("firefox", "brave", "chrome", "chromium")
+            ):
+                self.focused_app = browser
+        elif focused_app and not is_launcher_window(focused_window):
             self.focused_app = focused_app
 
     def note_turn(self, user: str, assistant: str) -> None:
@@ -541,6 +665,7 @@ def _visible_ui_tag(limit: int = 12, max_name: int = 28) -> str:
         "document frame": "document",
     }
     shown: list[str] = []
+    seen: set[str] = set()
     for item in SESSION.screen_elements:
         if len(shown) >= limit:
             break
@@ -551,6 +676,10 @@ def _visible_ui_tag(limit: int = 12, max_name: int = 28) -> str:
         role = role_display.get(str(item.get("role") or ""), str(item.get("role") or "item"))
         if not ref or (not name and not item.get("editable")):
             continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
         shown.append(f'{ref}:{role}:"{name}"' if name else f"{ref}:{role}")
     return ", ".join(shown)
 

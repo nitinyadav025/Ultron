@@ -85,8 +85,8 @@ class AssistantConfig:
     whisper_initial_prompt: str = DEFAULT_WHISPER_INITIAL_PROMPT
     # Short hotwords used only by hands-free listen/wake-train (never the chat path).
     whisper_wake_hotwords: str = "Ultron, Firefox, GitHub, Brave, Downloads"
-    whisper_min_avg_logprob: float = -1.0
-    whisper_max_no_speech_prob: float = 0.60
+    whisper_min_avg_logprob: float = -0.90
+    whisper_max_no_speech_prob: float = 0.45
     whisper_max_compression_ratio: float = 2.4
     mic_source_volume: str = ""
     mic_source_name: str = ""
@@ -419,8 +419,8 @@ def load_config(env_path: Path | None = None, settings_path: Path | None = None)
         whisper_wake_hotwords=(
             merged.get("WHISPER_WAKE_HOTWORDS") or "Ultron, Firefox, GitHub, Brave, Downloads"
         ).strip(),
-        whisper_min_avg_logprob=_float_value("WHISPER_MIN_AVG_LOGPROB", -1.0),
-        whisper_max_no_speech_prob=_float_value("WHISPER_MAX_NO_SPEECH_PROB", 0.60),
+        whisper_min_avg_logprob=_float_value("WHISPER_MIN_AVG_LOGPROB", -0.90),
+        whisper_max_no_speech_prob=_float_value("WHISPER_MAX_NO_SPEECH_PROB", 0.45),
         whisper_max_compression_ratio=_float_value("WHISPER_MAX_COMPRESSION_RATIO", 2.4),
         mic_source_volume=(merged.get("MIC_SOURCE_VOLUME") or "").strip(),
         mic_source_name=(merged.get("MIC_SOURCE_NAME") or "").strip(),

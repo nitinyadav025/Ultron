@@ -25,7 +25,7 @@ import subprocess
 import time
 from typing import Any, Callable
 
-from assistant.brain.context import BROWSERS, SESSION
+from assistant.brain.context import BROWSERS, SESSION, clean_window_title, is_launcher_window
 from assistant.tools import desktop_control as dc
 from assistant.tools.registry import tool
 from assistant.vision.screen_watcher import (
@@ -34,6 +34,7 @@ from assistant.vision.screen_watcher import (
     apply_snapshot,
     find_element,
     format_visible_ui,
+    is_meaningful_element,
     ocr_screen_elements,
     snapshot_screen,
 )
@@ -44,6 +45,93 @@ _MAX_TYPE_CHARS = 4000
 _BROWSER_FIND_DELAY_S = 0.08
 _BROWSER_SELECT_DELAY_S = 0.04
 _SNAPSHOT_MAX_ELEMENTS = 40
+_BROWSER_DISPLAY = {"firefox": "Mozilla Firefox", "brave": "Brave", "chrome": "Google Chrome"}
+_SITE_DISPLAY = {
+    "youtube": "YouTube",
+    "github": "GitHub",
+    "gmail": "Gmail",
+    "whatsapp": "WhatsApp",
+    "gemini": "Gemini",
+    "claude": "Claude",
+    "chatgpt": "ChatGPT",
+    "reddit": "Reddit",
+    "spotify": "Spotify",
+    "amazon": "Amazon",
+    "wikipedia": "Wikipedia",
+}
+_PATH_NOISE = re.compile(
+    r"(?:[\w.-]+@[\w.-]+:|~/|\.venv/|/home/|/usr/|bin/python|main\.py)", re.I
+)
+
+
+def _human_label(value: str) -> str:
+    """A short, speakable label; raw shell/path fragments are dropped."""
+    label = re.sub(r"\s+", " ", str(value or "")).strip().strip("\"'")
+    if not label or _PATH_NOISE.search(label):
+        return ""
+    return label[:60]
+
+
+def _join_naturally(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _screen_summary(
+    *,
+    windows: list[str],
+    browser: str,
+    site: str,
+    focused_window: str,
+    labels: list[str],
+    element_count: int,
+) -> str:
+    """A natural, human screen summary with no shell paths or duplicated chrome."""
+    site_title = _SITE_DISPLAY.get(site, site.title()) if site else ""
+    browser_name = _BROWSER_DISPLAY.get(browser, "")
+    primary = ""
+    others: list[str] = []
+    for title in windows:
+        lowered = title.lower()
+        if site_title and site_title.lower() in lowered:
+            continue
+        if browser_name and browser_name.lower() in lowered:
+            continue
+        if title.lower() == "terminal" and (browser_name or site_title):
+            continue
+        if title not in others:
+            others.append(title)
+
+    if browser_name and site_title:
+        primary = f"You currently have {browser_name} open to {site_title}"
+    elif browser_name:
+        primary = f"You're in {browser_name}"
+    elif site_title:
+        primary = f"You're on {site_title}"
+    elif focused_window:
+        primary = f"You're in {clean_window_title(focused_window)}"
+    elif windows:
+        primary = f"You have {windows[0]} open"
+
+    if others and primary:
+        primary += f" alongside {_join_naturally(others[:2])}"
+
+    sentences: list[str] = []
+    if primary:
+        sentences.append(primary)
+    if labels:
+        sentences.append(f"On screen I can see {_join_naturally(labels)}")
+    elif element_count:
+        sentences.append(f"I can see {element_count} interactive elements")
+    texts = ". ".join(sentences) if sentences else "I can't read anything on the screen right now"
+    if sentences:
+        texts += ". Just tell me what you'd like to open, click, or search."
+    return texts
 
 
 def _snapshot(**kwargs: Any) -> ScreenSnapshot:
@@ -273,15 +361,27 @@ def read_screen(query: str = "") -> dict[str, Any]:
     """Read what is visible on the screen, or answer a question about it."""
     cleaned_query = re.sub(r"\s+", " ", (query or "").strip().strip("\"'"))
     elements = _elements(force=not SESSION.screen_elements)
-    focused_window = SESSION.focused_window or (SESSION.open_windows[0] if SESSION.open_windows else "")
+
+    windows: list[str] = []
+    seen_windows: set[str] = set()
+    for item in SESSION.open_windows:
+        if is_launcher_window(item):
+            continue
+        cleaned = clean_window_title(item)
+        key = cleaned.lower()
+        if cleaned and key not in seen_windows:
+            seen_windows.add(key)
+            windows.append(cleaned)
+    raw_focus = SESSION.focused_window or (windows[0] if windows else "")
+    focused_window = "" if is_launcher_window(raw_focus) else clean_window_title(raw_focus)
     focused_app = SESSION.focused_app
     site = SESSION.active_site
-    windows = list(SESSION.open_windows)
+    browser = SESSION.last_browser if SESSION.last_browser in BROWSERS else ""
 
     if cleaned_query:
         match = find_element(cleaned_query, elements)
         if match is not None:
-            label = match.name or match.role
+            label = _human_label(match.name or match.role)
             reply = f"Yes, I can see {label} on the screen."
             return {
                 "ok": True,
@@ -297,7 +397,7 @@ def read_screen(query: str = "") -> dict[str, Any]:
             item for item in elements if cleaned_query.lower() in item.name.lower()
         ][:3]
         if partial:
-            names = ", ".join(item.name for item in partial)
+            names = ", ".join(_human_label(item.name) for item in partial)
             return {
                 "ok": True,
                 "query": cleaned_query,
@@ -316,30 +416,33 @@ def read_screen(query: str = "") -> dict[str, Any]:
             "focused_app": focused_app,
             "site": site,
             "windows": windows,
-            "reply": f"I don't see {cleaned_query} on the screen right now.",
+            "reply": f"I don't see {_human_label(cleaned_query)} on the screen right now.",
         }
 
-    labels = [
-        item.name
-        for item in elements
-        if item.name and (item.clickable or item.editable)
-    ][:5]
-    parts: list[str] = []
-    if focused_window:
-        where = f'You are in "{focused_window}"'
-        if site:
-            where += f" on {site.title()}"
-        parts.append(where + ".")
-    elif site:
-        parts.append(f"You are on {site.title()}.")
-    elif windows:
-        parts.append(f"You have {len(windows)} windows open.")
-    if labels:
-        parts.append("I can see " + ", ".join(labels) + ".")
-    elif elements:
-        parts.append(f"I can see {len(elements)} text items on the screen.")
-    else:
-        parts.append("I can't read anything on the screen right now.")
+    labels: list[str] = []
+    seen_labels: set[str] = set()
+    for item in elements:
+        if not item.name or not (item.clickable or item.editable):
+            continue
+        if not is_meaningful_element(item):
+            continue
+        label = _human_label(item.name)
+        key = label.lower()
+        if not label or key in seen_labels:
+            continue
+        seen_labels.add(key)
+        labels.append(label)
+        if len(labels) >= 4:
+            break
+
+    reply = _screen_summary(
+        windows=windows,
+        browser=browser,
+        site=site,
+        focused_window=focused_window,
+        labels=labels,
+        element_count=len(elements),
+    )
     return {
         "ok": bool(elements or focused_window or windows),
         "query": "",
@@ -349,7 +452,7 @@ def read_screen(query: str = "") -> dict[str, Any]:
         "windows": windows,
         "elements": len(elements),
         "visible_ui": format_visible_ui(elements),
-        "reply": " ".join(parts),
+        "reply": reply,
     }
 
 

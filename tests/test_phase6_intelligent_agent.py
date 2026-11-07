@@ -121,7 +121,9 @@ class FakeRegistry:
             return {"ok": True, "raw_summary": {"ok": True, "reply": "I've typed that."}}
         return {"ok": True, "raw_summary": {"ok": True}}
 
-    def get_openai_tools(self, compact: bool = False) -> list[dict[str, Any]]:
+    def get_openai_tools(
+        self, compact: bool = False, names: Any | None = None
+    ) -> list[dict[str, Any]]:
         return []
 
 

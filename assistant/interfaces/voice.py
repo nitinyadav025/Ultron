@@ -691,6 +691,9 @@ class VoiceController:
         WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
         # Show the speaking line before sound starts, not after the last sentence.
         self._notify_engine_once(f"Piper ({self.config.piper_voice})")
+        # Layers 1+2: mute the mic for the whole reply, then wait out the room tail.
+        if hasattr(mouth, "begin_speaking"):
+            mouth.begin_speaking(spoken)
         worker = threading.Thread(target=_producer, name="piper-synth", daemon=True)
         worker.start()
 
@@ -717,6 +720,8 @@ class VoiceController:
         finally:
             stop.set()
             worker.join(timeout=1.0)
+            if hasattr(mouth, "end_speaking"):
+                mouth.end_speaking()
 
         if errors:
             prefix = f"Piper spoke {spoken_count} sentence(s), then: " if spoken_count else ""

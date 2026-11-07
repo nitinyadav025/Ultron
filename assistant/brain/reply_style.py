@@ -67,9 +67,11 @@ def clean_llm_reply(text: str) -> str:
     cleaned = clean_model_text(text)
     if not cleaned:
         return ""
-    # A complete question/exclamation may legitimately end on "for?" or "on!". Only a
-    # statement-shaped tail is treated as a token cut.
-    if cleaned.rstrip().endswith(("?", "!")):
+    # NEVER trim a reply that already ends with terminal punctuation: the sentence is
+    # complete, even if its last word is "for"/"on"/"with". The old dangling-word rule
+    # turned "I see you have a page open for." into "I see you have a page open." and
+    # valid prose into fragments. Only unterminated output is repaired.
+    if _ends_with_terminal(cleaned):
         return cleaned
     words = cleaned.split()
     if not words:

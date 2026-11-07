@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from assistant.brain.context import SESSION, app_name_for_window
+from assistant.brain.context import SESSION, app_name_for_window, is_launcher_window, is_ultron_window
 
 logger = logging.getLogger("ultron.vision")
 
@@ -77,6 +77,53 @@ _SYSTEM_APPS = frozenset(
         "xdg-desktop-portal-gtk",
     }
 )
+# GTK/shell window chrome that carries no user meaning. Showing these produced the live
+# "New Terminal, Show Open Tabs, Main Menu, Main Menu, Minimize" reply.
+_CHROME_LABELS = frozenset(
+    {
+        "minimize",
+        "maximize",
+        "restore",
+        "close",
+        "main menu",
+        "new terminal",
+        "show open tabs",
+        "window menu",
+        "toggle maximize",
+        "application menu",
+        "maximize window",
+        "minimize window",
+        "restore window",
+        "close window",
+        "open menu",
+    }
+)
+
+
+def is_meaningful_element(element: "UIElement") -> bool:
+    """False for generic window chrome and Ultron's own dashboard/launcher UI."""
+    name = re.sub(r"\s+", " ", (element.name or "")).strip().lower()
+    if name in _CHROME_LABELS:
+        return False
+    for window in (element.window, element.app):
+        if window and (is_ultron_window(window) or is_launcher_window(window)):
+            return False
+    return True
+
+
+def filter_ui_elements(elements: Iterable["UIElement"]) -> list["UIElement"]:
+    """Drop chrome/noise and duplicate labels (never "Main Menu, Main Menu")."""
+    kept: list[UIElement] = []
+    seen: set[tuple[str, str]] = set()
+    for element in elements:
+        if not is_meaningful_element(element):
+            continue
+        key = ((element.name or "").strip().lower(), element.role)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(element)
+    return kept
 
 
 @dataclass(frozen=True)
@@ -324,6 +371,7 @@ def parse_atspi_snapshot(payload: dict[str, Any]) -> ScreenSnapshot:
         for item in payload.get("elements") or []
         if item.get("ref")
     ]
+    elements = filter_ui_elements(elements)
     windows: list[str] = []
     for item in payload.get("windows") or []:
         if str(item.get("app") or "") in _SYSTEM_APPS:
@@ -398,7 +446,7 @@ def parse_agent_desktop_snapshot(
     window = data.get("window") or {}
     title = str(window.get("title") or data.get("app") or "")
     return ScreenSnapshot(
-        elements=elements,
+        elements=filter_ui_elements(elements),
         windows=[title] if title else [],
         focused_window=title,
         focused_app=app or str(data.get("app") or ""),
@@ -639,7 +687,7 @@ def snapshot_screen(
         )
 
     def finish(snapshot: ScreenSnapshot) -> ScreenSnapshot:
-        snapshot.elements = snapshot.elements[:limit]
+        snapshot.elements = filter_ui_elements(snapshot.elements)[:limit]
         for index, element in enumerate(snapshot.elements, start=1):
             object.__setattr__(element, "ref", f"@e{index}")
         snapshot.errors = errors + list(snapshot.errors)
@@ -786,6 +834,7 @@ def format_visible_ui(
         for item in (elements if elements is not None else SESSION.screen_elements)
     ]
     shown: list[str] = []
+    seen: set[str] = set()
     for item in rows:
         if len(shown) >= limit:
             break
@@ -793,8 +842,14 @@ def format_visible_ui(
             continue
         if item.role not in _UI_ROLES and not item.editable and not item.clickable:
             continue
+        if not is_meaningful_element(item):
+            continue
         role = _ROLE_DISPLAY.get(item.role, item.role or "item")
         name = re.sub(r"\s+", " ", item.name).strip()[:max_name]
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
         if name:
             shown.append(f'{item.ref}:{role}:"{name}"')
         else:
