@@ -72,6 +72,40 @@ def apply_mic_source_volume(
     return True, f"Mic source volume set to {target}"
 
 
+def ensure_mic_unmuted(
+    *,
+    runner: Callable[..., Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    force: bool = False,
+) -> bool:
+    """Un-mute the default source at startup so the microphone is never left muted.
+
+    A previous session that ended mid-utterance (or a TTS guard crash) can leave
+    ``@DEFAULT_AUDIO_SOURCE@`` muted forever, which silently kills every listener.
+    """
+    if not force and runner is None and _tests_must_not_touch_hardware():
+        return False
+    run = runner or subprocess.run
+    find = which or shutil.which
+    if find("wpctl") is None:
+        return False
+    try:
+        proc = run(
+            ["wpctl", "set-mute", DEFAULT_SOURCE, "0"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception as exc:  # wpctl is optional; never block chat/voice startup
+        logger.info("Mic unmute ignored: wpctl failed (%s: %s).", type(exc).__name__, exc)
+        return False
+    if getattr(proc, "returncode", 1) != 0:
+        logger.info("Mic unmute ignored: wpctl set-mute failed.")
+        return False
+    return True
+
+
 def configured_restore_volume(value: object = None, *, env: dict[str, str] | None = None) -> str:
     """Return MIC_SOURCE_VOLUME when valid, else the measured-safe 0.21."""
     source = env if env is not None else os.environ

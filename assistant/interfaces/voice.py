@@ -31,7 +31,7 @@ from assistant.genai_types import types
 from assistant.safety.redact import redact_secrets
 from assistant.speech.denoise import denoise_pcm16
 from assistant.speech.ears import EarsError, WhisperEars
-from assistant.speech.mic_input import agc_guard_needed, guard_mic_agc
+from assistant.speech.mic_input import agc_guard_needed, ensure_mic_unmuted, guard_mic_agc
 from assistant.speech.mouth import MouthError, PiperMouth, split_sentences
 from assistant.speech.recorder import (
     MIN_SPEECH_MS,
@@ -324,6 +324,8 @@ class VoiceController:
 
         VOICE_MODE=fixed keeps the old behaviour: record exactly VOICE_FIXED_SECONDS.
         """
+        # Never capture on a source left muted by an interrupted TTS session.
+        ensure_mic_unmuted()
         mode = (getattr(self.config, "voice_mode", "auto") or "auto").lower()
         if mode == "fixed":
             seconds = duration_sec if duration_sec is not None else self.config.voice_fixed_seconds

@@ -26,6 +26,7 @@ import select
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -865,6 +866,7 @@ def apply_snapshot(snapshot: ScreenSnapshot) -> None:
     """Publish a snapshot into SESSION (never to disk)."""
     SESSION.screen_elements = [item.as_dict() for item in snapshot.elements[:40]]
     SESSION.screen_source = snapshot.source
+    SESSION.screen_elements_at = time.monotonic()
     titles = [title for title in snapshot.windows if title]
     if not titles and snapshot.focused_window:
         titles = [snapshot.focused_window]

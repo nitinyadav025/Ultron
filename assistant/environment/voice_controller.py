@@ -31,6 +31,7 @@ from assistant.interfaces.listen import (
     pcm_to_float32,
 )
 from assistant.speech.ears import WhisperEars, has_real_word
+from assistant.speech.mic_input import ensure_mic_unmuted
 from assistant.speech.mouth import PiperMouth
 from assistant.speech.recorder import (
     FRAME_BYTES,
@@ -136,6 +137,9 @@ class EnvironmentVoiceController:
     def start(self) -> bool:
         if self._thread is not None and self._thread.is_alive():
             return False
+        # A session killed during Piper playback can leave the system source muted, which
+        # makes every later listener deaf. Always clear the mute before streaming frames.
+        ensure_mic_unmuted()
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, name="ultron-environment-voice", daemon=True

@@ -8,6 +8,7 @@ verification script.
 from __future__ import annotations
 
 import json
+import time
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -132,6 +133,118 @@ def test_read_screen_never_emits_paths_or_duplicate_chrome(monkeypatch) -> None:
     assert "~/Downloads/ULTRON" not in reply
     assert "Main Menu, Main Menu" not in reply
     assert "Main Menu" not in reply
+
+
+# --------------------------------------------------------------------------------------
+# Part 2b — final stability pass: mic never left muted, longer replies, fast screen read
+# --------------------------------------------------------------------------------------
+
+
+def test_ensure_mic_unmuted_sends_set_mute_zero() -> None:
+    from assistant.speech.mic_input import DEFAULT_SOURCE, ensure_mic_unmuted
+
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> SimpleNamespace:
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert ensure_mic_unmuted(runner=run, which=lambda _n: "/usr/bin/wpctl") is True
+    assert calls == [["wpctl", "set-mute", DEFAULT_SOURCE, "0"]]
+
+
+def test_ensure_mic_unmuted_is_skipped_under_pytest_without_a_runner() -> None:
+    from assistant.speech.mic_input import ensure_mic_unmuted
+
+    assert ensure_mic_unmuted() is False
+
+
+def test_environment_voice_start_unmutes_before_streaming(monkeypatch) -> None:
+    from assistant.environment import voice_controller as vc
+
+    seen: list[str] = []
+    monkeypatch.setattr(vc, "ensure_mic_unmuted", lambda: seen.append("unmute"))
+
+    class _Source:
+        def start(self) -> None:
+            pass
+
+        def read(self, _size: int, timeout: float = 0.0) -> bytes:
+            time.sleep(0.01)
+            return b""
+
+        def stop(self) -> None:
+            pass
+
+    def _source_factory() -> _Source:
+        seen.append("source")
+        return _Source()
+
+    controller = vc.EnvironmentVoiceController(
+        load_config(), state=EnvironmentState(config_path=Path("/tmp/ultron-unmute-test.json")),
+        source_factory=_source_factory,
+    )
+    controller.start()
+    controller.stop()
+
+    assert seen[0] == "unmute"
+    assert "source" in seen
+
+
+def test_conversational_reply_cap_allows_multiple_sentences() -> None:
+    from assistant.brain.agent_loop import LOCAL_CHAT_MAX_TOKENS
+
+    assert LOCAL_CHAT_MAX_TOKENS == 110
+    assert LOCAL_CHAT_MAX_TOKENS > 34
+
+
+def test_read_screen_uses_the_fresh_cached_snapshot(monkeypatch) -> None:
+    for kwargs in (
+        {"open_windows": ["YouTube - Mozilla Firefox"]},
+        {"focused_window": "YouTube - Mozilla Firefox"},
+        {"active_site": "youtube"},
+        {"last_browser": "firefox"},
+        {"screen_elements": [
+            UIElement.from_dict(
+                {"ref": "@e1", "role": "button", "name": "Subscribe", "window": "YouTube"}
+            ).as_dict()
+        ]},
+        {"screen_elements_at": time.monotonic()},
+    ):
+        for key, value in kwargs.items():
+            monkeypatch.setattr(SESSION, key, value)
+
+    def _must_not_snapshot(**_kwargs: Any) -> Any:
+        raise AssertionError("read_screen must answer from the cached snapshot")
+
+    monkeypatch.setattr(screen_actions, "_snapshot", _must_not_snapshot)
+
+    started = time.monotonic()
+    result = screen_actions.read_screen()
+    elapsed_ms = (time.monotonic() - started) * 1000
+
+    assert result["ok"] is True
+    assert "YouTube" in result["reply"]
+    assert elapsed_ms < 50
+
+
+def test_read_screen_refreshes_when_the_cache_is_stale(monkeypatch) -> None:
+    monkeypatch.setattr(
+        SESSION,
+        "screen_elements",
+        [UIElement.from_dict({"ref": "@e1", "role": "button", "name": "Old"}).as_dict()],
+    )
+    monkeypatch.setattr(SESSION, "screen_elements_at", time.monotonic() - 12.0)
+    monkeypatch.setattr(
+        screen_actions,
+        "_elements",
+        lambda force=False: [UIElement.from_dict({"ref": "@e1", "role": "button", "name": "Fresh"})],
+    )
+
+    result = screen_actions.read_screen()
+
+    assert result["ok"] is True
+    assert "Fresh" in result["visible_ui"]
 
 
 # --------------------------------------------------------------------------------------

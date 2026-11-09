@@ -187,7 +187,7 @@ def extract_action_tags(text: str) -> tuple[str, list[tuple[str, dict[str, Any]]
 # Phase 7: 220 tokens so a type_text paragraph and a 1-2 sentence spoken reply are never
 # chopped mid-sentence ("...goals on." / "...use for."). The sentence guard in
 # reply_style.clean_llm_reply trims a reply that still hits the cap.
-LOCAL_CHAT_MAX_TOKENS = 34
+LOCAL_CHAT_MAX_TOKENS = 110
 LOCAL_MAX_TOKENS_FIRST = 220
 LOCAL_MAX_TOKENS_FOLLOWUP = 220
 

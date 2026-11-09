@@ -1,8 +1,42 @@
 # Ultron progress — Phase 9 (current)
 
-Last updated: 2026-11-07 (Gate 2D runtime stability: self-echo lock, clean screen
-vision, static tools-free brain lane, non-zero telemetry, 649 tests passed, live
-conversational turns 810–888 ms, benchmark 25/25)
+Last updated: 2026-11-09 (Release snapshot: three final stability fixes — startup mic
+unmute, 110-token conversational cap, cached sub-50 ms `read_screen` — plus the
+professional public README, real dashboard screenshots, a documented `.env.example`,
+and 655 tests passed)
+
+> **Release snapshot — 2026-11-09.** Nitin paused active development and published the
+> project to `https://github.com/nitinyadav025/Ultron` (ongoing / work-in-progress). This
+> section is the latest checkpoint; the Gate logs below remain the authoritative history.
+>
+> **Three final stability fixes applied before packaging:**
+> 1. **Microphone is never left muted.** New `assistant/speech/mic_input.py::ensure_mic_unmuted()`
+>    runs `wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0`. It is called from
+>    `EnvironmentVoiceController.start()` (before any frame streaming), from
+>    `run_listen()` at startup, and from `VoiceController.record()` before every capture.
+>    A session killed during Piper playback can no longer leave the source deaf.
+> 2. **Conversational replies are no longer chopped.** `LOCAL_CHAT_MAX_TOKENS` raised
+>    from `34` to **`110`** in `assistant/brain/agent_loop.py`, so multi-sentence answers
+>    reach the sentence guard intact. Tool-lane caps stay at 220.
+> 3. **`read_screen` answers from cache.** `SessionContext.screen_elements_at` records a
+>    monotonic stamp in `apply_snapshot()`; `screen_actions._cached_elements()` serves the
+>    published snapshot when it is **≤ 5 s old**, so a spoken screen question returns in
+>    well under 50 ms instead of blocking ~6 s on a fresh AT-SPI walk. A stale cache
+>    (watcher stopped) still triggers one real snapshot.
+>
+> **Tests:** `tests/test_phase10_stability.py` gained 7 regression cases (unmute command,
+> pytest hardware guard, controller start order, token cap, cached read < 50 ms, stale
+> cache refresh). Full suite: **655 passed** (was 649). Benchmark: **25/25 passed**,
+> average 2.062 ms (mocked routing; live LLM latency is UNVERIFIED here).
+>
+> **Published:** `README.md` (flagship, WIP-marked), `docs/assets/dashboard-overview.jpg`
+> and `docs/assets/dashboard-live-brain.jpg` (real Dashboard V18 screenshots captured from
+> Nitin's 2026-11-07 20:41 sessions), `docs/Ultron_Memory_System_Engineering_Design_Report.pdf`,
+> a clean `.env.example` matching the shipped local defaults, a `.gitignore` that blocks
+> `.env`, `.venv/`, `models/`, `logs/`, `workspace/`, `workspace-*/`, `*.mp4`, and `LICENSE` (MIT).
+>
+> **Still not built (planned, on hold):** deep semantic screen comprehension, the SQLite
+> long-term memory engine, the source ingestion pipeline, and personal LoRA fine-tuning.
 
 > **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
 > now runs from `main.py environment` with a thread-safe live state, managed voice

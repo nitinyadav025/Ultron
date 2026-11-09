@@ -1105,7 +1105,7 @@ def run_listen(config: AssistantConfig) -> int:
     from assistant.interfaces.voice import VoiceController
     from assistant.safety.killswitch import WatchdogMonitor, register_gnome_kill_hotkey
     from assistant.safety.permissions import PermissionGate
-    from assistant.speech.mic_input import apply_mic_source_volume
+    from assistant.speech.mic_input import apply_mic_source_volume, ensure_mic_unmuted
     from assistant.speech.vad import get_shared_vad
     from assistant.tools.apps import close_app, open_app, switch_app
     from assistant.tools.browser_tabs import interact_with_tab, list_browser_tabs, switch_to_tab
@@ -1131,6 +1131,7 @@ def run_listen(config: AssistantConfig) -> int:
 
     configure_runtime(config)
     register_gnome_kill_hotkey(config.kill_hotkey_binding)
+    ensure_mic_unmuted()
     _mic_ok, mic_msg = apply_mic_source_volume(config.mic_source_volume)
     if config.mic_source_volume:
         print(f"  Mic input: {mic_msg}", flush=True)

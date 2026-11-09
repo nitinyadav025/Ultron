@@ -1,29 +1,47 @@
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
+# =============================================================================
+# Ultron — things that must never be pushed
+# =============================================================================
+
+# Secrets and local configuration
 .env
-logs/
-.backups/
-workspace/*.py
-workspace/*.wav
-!workspace/.gitkeep
-models/
 .env.*
 !.env.example
-venv/
-workspace/
-*.pyc
-*.wav
-*.gguf
-*.onnx
-*.bin
-*.tar.gz
-*.zip
 *.pem
 *.key
 *.p12
-*.sqlite
-*.db
+
+# Virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+
+# Local only: model weights, recordings, logs, scratch workspace
+models/
+logs/
+workspace/
+!workspace/.gitkeep
+.backups/
 *.log
+
+# Model and archive binaries
+*.gguf
+*.onnx
+*.bin
+*.wav
+*.mp4
+*.tar.gz
+*.zip
+
+# Local databases (the planned SQLite memory engine)
+*.sqlite
+*.sqlite3
+*.db
+
+# Demo / scratch reference directories (workspace-<uuid>)
+workspace-*/
+
+# Tooling metadata
 .commandcode/

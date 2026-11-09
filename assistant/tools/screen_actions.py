@@ -194,6 +194,23 @@ def _elements(force: bool = False) -> list[UIElement]:
     return list(snapshot.elements)
 
 
+_SCREEN_CACHE_MAX_AGE_S = 5.0
+
+
+def _cached_elements(max_age_s: float = _SCREEN_CACHE_MAX_AGE_S) -> list[UIElement] | None:
+    """The published SESSION snapshot when it is fresh enough to answer instantly.
+
+    ``ScreenWatcher`` refreshes SESSION every 1.2 s, so a spoken question inside that
+    window must answer from memory instead of blocking ~6 s on a fresh AT-SPI walk.
+    """
+    if not SESSION.screen_elements:
+        return None
+    updated = float(getattr(SESSION, "screen_elements_at", 0.0) or 0.0)
+    if updated and (time.monotonic() - updated) > max_age_s:
+        return None
+    return [UIElement.from_dict(item) for item in SESSION.screen_elements]
+
+
 def _semantic_click(element: UIElement) -> tuple[bool, str, str]:
     """Tier 1: the element's own accessibility action."""
     if element.source == "ocr":
@@ -360,7 +377,9 @@ def click_element(target: str) -> dict[str, Any]:
 def read_screen(query: str = "") -> dict[str, Any]:
     """Read what is visible on the screen, or answer a question about it."""
     cleaned_query = re.sub(r"\s+", " ", (query or "").strip().strip("\"'"))
-    elements = _elements(force=not SESSION.screen_elements)
+    cached = _cached_elements()
+    # A stale cache means the watcher is not refreshing; take one real snapshot now.
+    elements = cached if cached is not None else _elements(force=True)
 
     windows: list[str] = []
     seen_windows: set[str] = set()

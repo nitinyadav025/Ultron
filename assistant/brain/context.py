@@ -203,6 +203,9 @@ class SessionContext:
     # ``assistant.vision.screen_watcher.UIElement.as_dict``).
     screen_elements: list[dict[str, Any]] = field(default_factory=list)
     screen_source: str = ""
+    # Monotonic time the snapshot above was published by the ScreenWatcher. ``read_screen``
+    # trusts it for a few seconds so a spoken question never blocks on a fresh AT-SPI walk.
+    screen_elements_at: float = 0.0
     turns: deque[tuple[str, str]] = field(default_factory=lambda: deque(maxlen=5))
 
     def reset(self) -> None:
@@ -219,6 +222,7 @@ class SessionContext:
         self.open_windows.clear()
         self.screen_elements.clear()
         self.screen_source = ""
+        self.screen_elements_at = 0.0
         self.turns.clear()
 
     def note_app(self, app_name: str, *, browser: bool | None = None) -> None:
