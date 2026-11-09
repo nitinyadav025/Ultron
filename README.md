@@ -312,6 +312,6 @@ Because this project is currently on hold (Work in Progress), the following item
 
 ## 👤 Author & License
 
-**Author:** Nitin Kumar Yadav ([@nitinyadav025](https://github.com/nitinyadav025))
+**Author:** Nitin Yadav ([@nitinyadav025](https://github.com/nitinyadav025))
 
 **License:** MIT — see [LICENSE](LICENSE).
