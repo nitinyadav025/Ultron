@@ -38,6 +38,13 @@ and 655 tests passed)
 > **Still not built (planned, on hold):** deep semantic screen comprehension, the SQLite
 > long-term memory engine, the source ingestion pipeline, and personal LoRA fine-tuning.
 
+## Maintenance — 2026-11-13
+
+Repository maintenance only; no functional changes. The working tree was clean at release
+commit `c70f05c` and `main` matched `origin/main`. This entry records the new session
+checkpoint so the public repository stays in sync. The project is still paused (WIP) and
+the open items listed in the release snapshot above are unchanged.
+
 > **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
 > now runs from `main.py environment` with a thread-safe live state, managed voice
 > controller, barge-in, Brave/Firefox browser bridge, and a local REST+SSE server on
