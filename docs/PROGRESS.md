@@ -45,6 +45,14 @@ commit `c70f05c` and `main` matched `origin/main`. This entry records the new se
 checkpoint so the public repository stays in sync. The project is still paused (WIP) and
 the open items listed in the release snapshot above are unchanged.
 
+## Maintenance — 2026-11-15
+
+Repository maintenance only; no functional changes. `main` was clean at `017e101` and
+matched `origin/main` (no CI workflows are configured in this repository, so there are no
+check runs on any commit). Full suite re-run this session: **655 passed** in 83.61 s with
+`.venv/bin/python -m pytest`. The project is still paused (WIP); the open items listed in
+the release snapshot above are unchanged.
+
 > **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
 > now runs from `main.py environment` with a thread-safe live state, managed voice
 > controller, barge-in, Brave/Firefox browser bridge, and a local REST+SSE server on
