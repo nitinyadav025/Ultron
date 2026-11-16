@@ -53,6 +53,14 @@ check runs on any commit). Full suite re-run this session: **655 passed** in 83.
 `.venv/bin/python -m pytest`. The project is still paused (WIP); the open items listed in
 the release snapshot above are unchanged.
 
+## Maintenance — 2026-11-16
+
+Documentation-only checkpoint; no code or configuration changes. `main` was clean at `7c30c34`
+and matched `origin/main` before this entry. The test suite was **not** re-run this session
+because nothing executable changed — the last recorded run remains 655 passed on 2026-11-15.
+The project is still paused (WIP); the open items listed in the release snapshot above are
+unchanged.
+
 > **Gate 1 is complete** (Fedora 45 / GNOME 51.1 repair). **Gate 2A is complete**: Ultron
 > now runs from `main.py environment` with a thread-safe live state, managed voice
 > controller, barge-in, Brave/Firefox browser bridge, and a local REST+SSE server on
